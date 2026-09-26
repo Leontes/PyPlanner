@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Herramientas externas compiladas en local (VAL)
+tools/

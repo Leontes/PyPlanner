@@ -1,0 +1,49 @@
+# Dominios de evaluación
+
+Benchmarks para evaluar el planificador, organizados en **tiers**. Cada tier corresponde a
+una iteración del [roadmap](../docs/ROADMAP.md). Al terminar la iteración *N* tienen que
+resolverse **todos** los problemas de los tiers 1…*N*. Así, la funcionalidad nueva nunca
+puede romper la anterior.
+
+| Tier | Iteración | Dominio | Requisitos declarados | Origen |
+|------|-----------|---------|-----------------------|--------|
+| 1 | STRIPS | `blocksworld` | `:strips` | IPC 2000 (blocks-strips-untyped) |
+| 1 | STRIPS | `gripper` | ninguno (STRIPS implícito) | IPC 1998 (gripper-round-1-strips) |
+| 2 | PDDL 1.2 (ADL) | `rubiks-cube` | `:adl` | IPC 2023 classical (sat) |
+| 2 | PDDL 1.2 (ADL) | `slitherlink` | `:typing :adl` | IPC 2023 classical (sat) |
+| 3 | PDDL 2.1 numérico | `numeric/counters` | `:strips :typing :equality :adl` + funciones | IPC 2023 numeric |
+| 3 | PDDL 2.1 numérico | `numeric/zenotravel` | `:typing :fluents` | IPC 2023 numeric |
+| 3 | PDDL 2.1 temporal | `temporal/driverlog` | `:typing :durative-actions` | IPC 2002 (driverlog-time-simple-automatic) |
+| 3 | PDDL 2.1 temporal | `temporal/zenotravel` | `:durative-actions :typing` | IPC 2002 (zenotravel-time-simple-automatic) |
+| 4 | PDDL 2.2 | `derived-predicates/psr-middle` | `:adl :derived-predicates` | IPC 2004 (psr-middle-derived-predicates-adl) |
+| 4 | PDDL 2.2 | `timed-initial-literals/satellite` | `:strips :equality :typing :fluents :durative-actions :timed-initial-literals` | IPC 2004 (satellite-time-time-windows-strips) |
+| 5 | PDDL+ | `car` | `:typing :durative-actions :fluents :time :negative-preconditions :timed-initial-literals` | SMTPlan (car_nodrag) |
+| 5 | PDDL+ | `generator` | `:fluents :durative-actions :duration-inequalities :adl :typing :time` | SMTPlan (generator_events) |
+
+Cada dominio tiene `domain.pddl` y dos problemas, `p01.pddl` y `p02.pddl`. Son las dos primeras
+instancias de la colección original, que suelen ser las más sencillas.
+
+## Convenciones
+
+- Estructura: `tierN-<nombre>/[<subtipo>/]<dominio>/{domain.pddl, pNN.pddl}`.
+- Los ficheros se copian **sin modificar**. Si un dominio necesita retoques, se añade como
+  dominio nuevo y se explica en esta tabla.
+- Para añadir problemas basta con copiar más `pNN.pddl`; la batería de tests los
+  descubre sola.
+
+## Procedencia
+
+| Colección | Repositorio | Commit |
+|-----------|-------------|--------|
+| IPC 1998–2004 | [potassco/pddl-instances](https://github.com/potassco/pddl-instances) | `cf19edf` |
+| IPC 2023 classical | [ipc2023-classical/ipc2023-dataset](https://github.com/ipc2023-classical/ipc2023-dataset) | `1e29a0e` |
+| IPC 2023 numeric | [ipc2023-numeric/ipc2023-dataset](https://github.com/ipc2023-numeric/ipc2023-dataset) | `0799944` |
+| PDDL+ | [KCL-Planning/SMTPlan](https://github.com/KCL-Planning/SMTPlan) (`benchmarks/`) | `b085bd7` |
+
+Notas:
+- Las IPC 2023 no tienen track temporal ni de PDDL+. Por eso los tiers 1, 3 (temporal),
+  4 y 5 salen del archivo histórico de las IPC y de los benchmarks de SMTPlan.
+- Los benchmarks PDDL+ de ENHSP se han descartado porque usan `:constraint`, una
+  extensión propia de ese planificador que no forma parte del estándar.
+- Varios dominios usan funcionalidad de tiers anteriores (por ejemplo, `car` usa
+  `:timed-initial-literals`). Es lo esperado, porque cada tier incluye a los anteriores.
