@@ -190,19 +190,19 @@ máximo soportado es una constante que se sube al cerrar cada iteración.
   `:objects`, `:action` (`:parameters`, `:precondition` y `:effect` como conjunciones de
   átomos positivos, más `not` en los efectos), `:init` y `:goal`. Errores con número de línea.
 - **Parser:** ✅ hecho (fases 1 y 2, esquema v1, conversor inverso, CLI `parse`/`check`).
-- **Motor:**
-  - grounding con poda por alcanzabilidad relajada;
-  - estado compacto (bitset sobre enteros) en lugar de conjuntos de tuplas;
-  - búsquedas GBFS, A* y WA* **configurables y cancelables** (ver "Motor de búsqueda");
-  - heurísticas h_max, h_add y h_FF, con acciones útiles (*preferred operators*);
-  - interfaz de evaluación por lotes; backends de referencia (Python) y PyTorch (CPU y
-    GPU) para h_max y h_add, y para h_FF si rinde; búsqueda con `batch_size`;
+- **Motor:** ✅ hecho (ver [motor-busqueda.md](motor-busqueda.md)):
+  - grounding con poda por alcanzabilidad relajada y eliminación de hechos estáticos;
+  - estado compacto: bitset sobre enteros de Python;
+  - búsquedas GBFS, A* y WA*, inmediatas o perezosas, **configurables y cancelables**;
+  - heurísticas blind, goalcount, h_max, h_add y h_FF, con acciones útiles;
+  - interfaz de evaluación por lotes. h_max, h_add y h_FF tienen implementación de
+    referencia (Python) y en PyTorch (CPU y GPU), con valores idénticos. La búsqueda
+    admite `batch_size`;
   - salida del plan en formato IPC (para VAL) y en JSON;
-  - al final de la iteración: **portfolio paralelo** con varias configuraciones.
-- **Tests:** tier 1 (blocksworld y gripper) validado con VAL, problemas sin solución hechos
-  a mano, tests del portfolio (primera solución gana, cancelación del resto) y
-  equivalencia entre los backends de referencia y PyTorch (se saltan si no hay PyTorch
-  o GPU).
+  - **portfolio paralelo** con varias configuraciones.
+- **Tests:** ✅ tier 1 (blocksworld y gripper) resuelto y validado con VAL, con la
+  configuración por defecto y con el portfolio. También hay problemas sin solución hechos
+  a mano, tests del portfolio y tests de equivalencia entre la referencia y PyTorch.
 
 ## Iteración 2: PDDL 1.2 (subconjunto ADL)
 

@@ -36,7 +36,7 @@ def test_minimal_documents_are_valid() -> None:
 @pytest.mark.parametrize(
     ("document", "path"),
     [
-        ({"kind": "plan"}, "kind"),
+        ({"kind": "trace"}, "kind"),
         (minimal_domain(version=99), "version"),
         (minimal_domain(extra=True), "<raíz>"),
         (minimal_domain(name="1bad"), "name"),

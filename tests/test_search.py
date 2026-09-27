@@ -1,0 +1,215 @@
+"""Tests del motor de búsqueda y de su configuración."""
+
+import threading
+from collections.abc import Mapping, Sequence
+
+import pytest
+
+from pyplanner.frontend import read_domain, read_problem
+from pyplanner.grounding import GroundTask, State, ground
+from pyplanner.heuristics import Evaluation, Heuristic
+from pyplanner.plan import simulate
+from pyplanner.search import (
+    DEFAULT_PORTFOLIO,
+    PRESETS,
+    ConfigError,
+    SearchConfig,
+    SearchStatus,
+    search,
+)
+from tests.tasks import build, chain, fork, token, unreachable
+from tests.tiers import DOMINIOS_DIR
+
+
+def tier1(domain: str, problem: str) -> GroundTask:
+    base = DOMINIOS_DIR / "tier1-strips" / domain
+    loaded = read_domain(base / "domain.pddl")
+    return ground(loaded, read_problem(base / f"{problem}.pddl", loaded))
+
+
+GRIPPER = tier1("gripper", "p01")
+BLOCKS = tier1("blocksworld", "p02")
+
+
+@pytest.mark.parametrize("name", sorted(PRESETS))
+@pytest.mark.parametrize(
+    "task", [chain(), fork(), GRIPPER, BLOCKS], ids=["chain", "fork", "gripper", "blocks"]
+)
+def test_every_preset_finds_a_valid_plan(task: GroundTask, name: str) -> None:
+    result = search(task, PRESETS[name])
+    assert result.status is SearchStatus.SOLVED
+    assert result.plan is not None
+    assert simulate(task, result.plan) is None
+    assert result.cost == len(result.plan)
+    assert result.config_name == name
+
+
+@pytest.mark.parametrize("batch_size", [1, 4, 64])
+@pytest.mark.parametrize("name", ["astar-hmax", "astar-blind"])
+def test_astar_is_optimal_even_with_batches(name: str, batch_size: int) -> None:
+    config = PRESETS[name].with_changes(batch_size=batch_size)
+    assert search(GRIPPER, config).cost == 11
+    assert search(BLOCKS, config).cost == 10
+
+
+@pytest.mark.parametrize("name", sorted(PRESETS))
+def test_unsolvable_task_is_proven(name: str) -> None:
+    result = search(token(), PRESETS[name])
+    assert result.status is SearchStatus.UNSOLVABLE
+    assert result.plan is None
+
+
+def test_dead_end_initial_state() -> None:
+    result = search(unreachable(), PRESETS["gbfs-ff"])
+    assert result.status is SearchStatus.UNSOLVABLE
+    assert result.statistics.expanded == 0
+
+
+def test_initial_state_already_goal() -> None:
+    task = chain()
+    solved = GroundTask(
+        task.domain_name, task.problem_name, task.facts, task.actions, task.goal, task.goal_facts
+    )
+    for name in ("gbfs-ff", "lazy-ff-pref"):
+        result = search(solved, PRESETS[name])
+        assert result.status is SearchStatus.SOLVED
+        assert result.plan == ()
+
+
+def test_expansion_limit() -> None:
+    config = PRESETS["astar-blind"].with_changes(max_expansions=3)
+    result = search(GRIPPER, config)
+    assert result.status is SearchStatus.LIMIT_REACHED
+    assert result.statistics.expanded == 3
+
+
+def test_time_limit() -> None:
+    config = PRESETS["astar-blind"].with_changes(max_time=1e-9)
+    assert search(GRIPPER, config).status is SearchStatus.LIMIT_REACHED
+
+
+def test_stop_signal_cancels() -> None:
+    stop = threading.Event()
+    stop.set()
+    result = search(GRIPPER, PRESETS["astar-blind"], stop=stop)
+    assert result.status is SearchStatus.CANCELLED
+
+
+def test_batches_reduce_evaluation_calls() -> None:
+    single = search(GRIPPER, PRESETS["gbfs-add"])
+    batched = search(GRIPPER, PRESETS["gbfs-add"].with_changes(batch_size=8))
+    assert batched.solved and single.solved
+    assert batched.statistics.evaluation_batches < single.statistics.evaluation_batches
+
+
+def test_random_tie_breaking_is_reproducible() -> None:
+    config = PRESETS["gbfs-goalcount-rnd"]
+    first, second = search(GRIPPER, config), search(GRIPPER, config)
+    assert first.plan == second.plan
+    assert first.statistics.expanded == second.statistics.expanded
+
+
+def test_lazy_search_evaluates_fewer_states() -> None:
+    eager = search(GRIPPER, PRESETS["gbfs-ff-pref"])
+    lazy = search(GRIPPER, PRESETS["lazy-ff-pref"])
+    assert lazy.statistics.evaluated < eager.statistics.evaluated
+
+
+def test_default_portfolio_uses_presets() -> None:
+    assert set(DEFAULT_PORTFOLIO) <= set(PRESETS)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"algorithm": "dfs"}, "algoritmo"),
+        ({"heuristic": "magic"}, "heurística desconocida"),
+        ({"device": "tpu"}, "dispositivo"),
+        ({"heuristic": "goalcount", "device": "cuda"}, "PyTorch"),
+        ({"tie_breaking": "coin"}, "desempate"),
+        ({"algorithm": "wastar", "weight": 0.5}, "peso"),
+        ({"heuristic": "hadd", "preferred_operators": True}, "acciones útiles"),
+        ({"algorithm": "astar", "lazy": True}, "perezosa"),
+        ({"batch_size": 0}, "batch_size"),
+        ({"max_time": 0}, "max_time"),
+        ({"max_expansions": -1}, "max_expansions"),
+    ],
+)
+def test_invalid_configs(changes: dict[str, object], message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        SearchConfig(**changes)  # type: ignore[arg-type]
+
+
+def test_config_helpers() -> None:
+    assert PRESETS["astar-hmax"].is_optimal
+    assert not PRESETS["gbfs-ff"].is_optimal
+    assert PRESETS["gbfs-ff"].to_dict()["heuristic"] == "ff"
+
+
+# --- Casos límite con un grafo y una heurística a medida -------------------------------
+
+GRAPH_DOMAIN = """
+(define (domain graph)
+  (:predicates (at ?x) (edge ?x ?y))
+  (:action move :parameters (?x ?y)
+    :precondition (and (at ?x) (edge ?x ?y))
+    :effect (and (at ?y) (not (at ?x)))))
+"""
+
+
+def graph(edges: list[tuple[str, str]], goal: str) -> GroundTask:
+    nodes = sorted({n for edge in edges for n in edge})
+    problem = (
+        f"(define (problem g) (:domain graph) (:objects {' '.join(nodes)})"
+        f" (:init (at s) {' '.join(f'(edge {a} {b})' for a, b in edges)})"
+        f" (:goal (at {goal})))"
+    )
+    return build(GRAPH_DOMAIN, problem)
+
+
+class TableHeuristic(Heuristic):
+    """Heurística dada por una tabla: nodo del grafo → valor."""
+
+    name = "table"
+
+    def __init__(self, task: GroundTask, table: Mapping[str, float]) -> None:
+        super().__init__(task)
+        self.table = table
+
+    def evaluate_batch(self, states: Sequence[State]) -> list[Evaluation]:
+        result = []
+        for state in states:
+            [fact] = self.task.atoms(state)
+            result.append(Evaluation(self.table[str(fact.args[0])]))
+        return result
+
+
+def test_astar_reopens_closed_nodes() -> None:
+    # Camino largo s-a-a2-c y corto s-b-c. Con h(b) = 2 (admisible, pero inconsistente
+    # con h(c) = 0) y desempate LIFO, c se cierra primero con g = 3 y después hay que
+    # reabrirlo con g = 2 para devolver el plan óptimo (coste 3).
+    task = graph([("s", "a"), ("a", "a2"), ("a2", "c"), ("s", "b"), ("b", "c"), ("c", "t")], "t")
+    table = {"s": 0, "a": 0, "a2": 0, "b": 2, "c": 0, "t": 0}
+    config = SearchConfig("astar-table", "astar", "blind", tie_breaking="lifo")
+    result = search(task, config, heuristic=TableHeuristic(task, table))
+    assert result.cost == 3
+    assert result.statistics.reopened == 1
+
+
+def test_goal_that_is_not_first_in_a_batch_waits() -> None:
+    # s tiene dos sucesores con f = 1: n y el objetivo t, que entran en ese orden. Con FIFO
+    # y lotes de 2, n sale primero y t después; t tiene que volver a la cola en lugar de
+    # aceptarse ya.
+    task = graph([("s", "t"), ("s", "n")], "t")
+    table = {"s": 0, "t": 0, "n": 0}
+    config = SearchConfig("astar-table", "astar", "blind", batch_size=2)
+    result = search(task, config, heuristic=TableHeuristic(task, table))
+    assert result.cost == 1
+    assert result.statistics.expanded == 2  # s y n
+
+
+def test_lazy_search_dead_end_and_limits() -> None:
+    lazy = PRESETS["lazy-ff-pref"]
+    assert search(unreachable(), lazy).status is SearchStatus.UNSOLVABLE
+    limited = search(GRIPPER, lazy.with_changes(max_expansions=1))
+    assert limited.status is SearchStatus.LIMIT_REACHED

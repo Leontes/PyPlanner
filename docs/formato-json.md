@@ -21,7 +21,8 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 
 ## Convenciones
 
-- Cada documento es un dominio (`"kind": "domain"`) o un problema (`"kind": "problem"`).
+- Cada documento es un dominio (`"kind": "domain"`), un problema (`"kind": "problem"`) o
+  un plan (`"kind": "plan"`, la salida del planificador).
 - `version` es la versión del formato (ahora mismo, 1). Las versiones posteriores solo
   **añaden** construcciones, así que un documento v1 seguirá siendo válido.
 - Los nombres siguen el patrón `[A-Za-z][A-Za-z0-9_-]*`. La fase 2 los pasa a minúsculas,
@@ -92,6 +93,24 @@ Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fó
         {"op": "atom", "predicate": "ontable", "args": ["?x"]}
       ]}
     }
+  ]
+}
+```
+
+## Plan (salida)
+
+El planificador devuelve los planes con `"kind": "plan"` (`pyplanner solve -f json`):
+
+```json
+{
+  "version": 1,
+  "kind": "plan",
+  "domain": "blocks",
+  "problem": "blocks-4-0",
+  "cost": 6,
+  "steps": [
+    {"name": "pick-up", "args": ["b"]},
+    {"name": "stack", "args": ["b", "a"]}
   ]
 }
 ```

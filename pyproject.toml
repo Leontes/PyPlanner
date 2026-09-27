@@ -22,6 +22,13 @@ dev = [
     "types-jsonschema",
 ]
 
+# PyTorch para evaluar heurísticas por lotes en CPU o GPU. Para GPUs antiguas (p. ej.
+# Maxwell) hay que instalarlo desde el índice cu126; ver README.
+gpu = [
+    "torch>=2.4",
+    "numpy",
+]
+
 [project.scripts]
 pyplanner = "pyplanner.cli:main"
 
