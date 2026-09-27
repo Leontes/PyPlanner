@@ -40,7 +40,9 @@ src/pyplanner/
   grounding/   instanciación de acciones y análisis de alcanzabilidad
   model/       tarea instanciada: estado, acciones, objetivos
   search/      algoritmos de búsqueda (GBFS, A*, WA*) sobre una interfaz común
-  heuristics/  h_add, h_max, h_FF y sus extensiones numéricas y temporales
+  heuristics/  h_add, h_max, h_FF y sus extensiones numéricas y temporales;
+               interfaz por lotes; backends de referencia y PyTorch (tensor/)
+  portfolio/   ejecución paralela de configuraciones (procesos, cancelación)
   plan/        representación del plan; salida en formato IPC (la que lee VAL) o en JSON
   cli.py
 ```
@@ -69,6 +71,97 @@ Decisiones propuestas:
   parser no sabe nada de la búsqueda.
 - **Identificadores en inglés; docstrings y documentación en español.**
 
+## Motor de búsqueda: diseño y repertorio
+
+No se trata de revolucionar el estado del arte, sino de tener un planificador al día que
+podamos controlar y modificar. Para eso hay que conocer desde el principio el repertorio de
+técnicas disponible y diseñar el motor para poder incorporarlas sin rehacerlo.
+
+**Configuración de búsqueda.** Una búsqueda queda definida por una configuración:
+algoritmo, heurística, desempate, uso de acciones útiles, evaluación perezosa o
+inmediata, **tamaño de lote**, **dispositivo de evaluación** (Python, CPU o GPU con
+PyTorch), semilla y límites de tiempo, memoria y expansiones. Toda búsqueda se puede
+**cancelar desde fuera**, comprobando periódicamente una señal de parada.
+
+**Paralelismo: portfolio.** Por el GIL de Python, el paralelismo real exige procesos y no
+hilos. El planificador usa un **portfolio paralelo**:
+- N procesos, cada uno con una configuración distinta; gana la primera solución y el
+  resto se cancelan;
+- la tarea se instancia una vez y los hijos la heredan con `fork` (copia bajo demanda);
+- las configuraciones tienen que ser **diversas** (heurística, algoritmo, desempate,
+  semilla…), porque N búsquedas deterministas idénticas encuentran lo mismo al mismo tiempo;
+- coste: la memoria se multiplica por N (cada proceso tiene su propia frontera).
+
+**Evaluación de estados por lotes (CPU o GPU con PyTorch).** Se incorpora desde la
+iteración 1 porque condiciona la interfaz de la heurística y el ciclo de la búsqueda, que
+son lo más caro de cambiar después. No necesita Python sin GIL: el paralelismo está dentro
+de cada llamada a PyTorch, no en hilos de Python.
+- **Interfaz:** toda heurística expone `evaluate_batch(states) -> valores`. La
+  evaluación de un solo estado es un lote de tamaño 1.
+- **Backends:** cada heurística tiene una **implementación de referencia en Python puro**
+  (siempre disponible, la que usan los tests) y, si se puede expresar con tensores, una
+  implementación en PyTorch que funciona en CPU o en GPU. Las dos tienen que dar los mismos
+  valores; los tests lo comprueban en todas las instancias soportadas.
+- **Tarea tensorial:** tras el grounding, la tarea se compila una vez a tensores
+  (matriz de precondiciones, matriz de efectos, costes). Los estados en bitset se
+  convierten en lotes de vectores binarios.
+- **Qué se puede pasar a tensores:**
+  - h_max y h_add: sí, como un punto fijo de operaciones min/suma sobre matrices.
+  - h_FF: los costes de h_add se calculan en tensores; la extracción del plan relajado va
+    en tensores o en CPU según rinda.
+  - Heurísticas numéricas y temporales: se estudian en su iteración. Si una no se puede
+    pasar a tensores, se queda solo con la implementación de referencia.
+- **Búsqueda por lotes:** con `batch_size = 1` la búsqueda es la clásica. Con `k > 1`,
+  se sacan hasta *k* nodos de la cola, se expanden y sus sucesores se evalúan juntos.
+  El orden de expansión cambia ligeramente, y eso es aceptable.
+- **GPU y portfolio:**
+  - CUDA no es compatible con `fork` una vez inicializado. Los miembros del portfolio
+    que usen la GPU se lanzan con `spawn`, y el proceso padre nunca inicializa CUDA.
+  - Cada proceso con CUDA reserva su propio contexto en la GPU (cientos de MB). Con la
+    GPU actual, una GTX 970 de 4 GB, habrá como mucho 1 o 2 miembros en GPU; el resto va
+    en CPU.
+- **Dependencia opcional:** PyTorch no es obligatorio (`pip install -e ".[gpu]"`). Sin
+  PyTorch, el planificador funciona con los backends de Python y los tests de PyTorch se
+  saltan.
+- **Expectativa realista:** la GPU compensa con tareas grandes y lotes grandes. En tareas
+  pequeñas manda el coste de pasar los datos entre CPU y GPU, y gana la CPU. El portfolio
+  permite tener las dos opciones a la vez.
+
+**Descartado: búsqueda distribuida (HDA\*, reparto de la frontera).** Repartir los estados
+entre procesos obliga a serializarlos y enviarlos. En Python ese coste supera a la ganancia.
+Solo se reconsideraría si el núcleo del motor pasara a un lenguaje compilado.
+
+**Prioridades de eficiencia.** Antes que el paralelismo, que mejora como mucho en un factor
+igual al número de núcleos, pesan más:
+1. una representación compacta del estado;
+2. buenas heurísticas;
+3. acciones útiles;
+4. evaluación perezosa.
+
+El portfolio se monta encima de todo eso.
+
+**Repertorio de referencia** (para tenerlo presente, no para implementarlo todo):
+
+| Técnica | Qué aporta | Estado |
+|---------|------------|--------|
+| GBFS, A*, WA* | búsquedas base (satisfacible / óptima / acotada) | iteración 1 |
+| h_max, h_add, h_FF | heurísticas de relajación | iteración 1 |
+| Acciones útiles, evaluación perezosa | menos evaluaciones de la heurística | iteración 1 |
+| Portfolio paralelo | robustez y aprovechamiento de varios núcleos | final de la iteración 1 |
+| Enforced hill-climbing (FF) | búsqueda local rápida | opcional |
+| Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional |
+| Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional |
+| Landmarks (h_LM) | heurística informada más potente | opcional |
+| HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
+| Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
+| Búsqueda completa en GPU | expansión masiva en paralelo | descartado (ver abajo) |
+
+**Sobre la búsqueda completa en GPU.** Hay trabajos que hacen toda la búsqueda en GPU
+(expansión, detección de estados repetidos y cola de prioridad). Pero la búsqueda es
+irregular: cada estado tiene un número distinto de sucesores, hay muchas bifurcaciones
+en el código y la cola de prioridad es secuencial. Llevarla a GPU exige rediseñar el
+motor entero. Solo se lleva a GPU la evaluación de la heurística, que sí es regular.
+
 ## Evaluación por tiers
 
 Los benchmarks están en `dominios/tierN-*/` (detalles y procedencia en
@@ -96,13 +189,20 @@ máximo soportado es una constante que se sube al cerrar cada iteración.
 - **Parser:** `define`, `domain`, `problem`, `:requirements`, `:predicates`, `:constants`,
   `:objects`, `:action` (`:parameters`, `:precondition` y `:effect` como conjunciones de
   átomos positivos, más `not` en los efectos), `:init` y `:goal`. Errores con número de línea.
+- **Parser:** ✅ hecho (fases 1 y 2, esquema v1, conversor inverso, CLI `parse`/`check`).
 - **Motor:**
   - grounding con poda por alcanzabilidad relajada;
-  - estado como conjunto inmutable de hechos (`frozenset` o bitset);
-  - búsquedas GBFS y A*;
-  - heurísticas h_max, h_add y h_FF;
-  - salida del plan en formato IPC.
-- **Tests:** tier 1 (blocksworld y gripper) y problemas sin solución hechos a mano.
+  - estado compacto (bitset sobre enteros) en lugar de conjuntos de tuplas;
+  - búsquedas GBFS, A* y WA* **configurables y cancelables** (ver "Motor de búsqueda");
+  - heurísticas h_max, h_add y h_FF, con acciones útiles (*preferred operators*);
+  - interfaz de evaluación por lotes; backends de referencia (Python) y PyTorch (CPU y
+    GPU) para h_max y h_add, y para h_FF si rinde; búsqueda con `batch_size`;
+  - salida del plan en formato IPC (para VAL) y en JSON;
+  - al final de la iteración: **portfolio paralelo** con varias configuraciones.
+- **Tests:** tier 1 (blocksworld y gripper) validado con VAL, problemas sin solución hechos
+  a mano, tests del portfolio (primera solución gana, cancelación del resto) y
+  equivalencia entre los backends de referencia y PyTorch (se saltan si no hay PyTorch
+  o GPU).
 
 ## Iteración 2: PDDL 1.2 (subconjunto ADL)
 
@@ -210,6 +310,11 @@ Es la iteración más grande, así que se divide en dos.
   - Hoffmann & Nebel, 2001: FF;
   - Hoffmann, 2003: Metric-FF;
   - Scala et al., 2016–2020: ENHSP y las heurísticas numéricas.
+- Búsqueda paralela y portfolios:
+  - Helmert, Röger & Karpas, 2011: Fast Downward Stone Soup (portfolio secuencial);
+  - Nakhost, Müller et al., 2011: Arvand y ArvandHerd (paseos aleatorios, portfolio paralelo);
+  - Kishimoto, Fukunaga & Botea, 2009: HDA\* (búsqueda distribuida por hash);
+  - Kuroiwa & Fukunaga, 2019–2020: anomalías de la GBFS paralela.
 - Planificación temporal: Coles et al., 2010 (POPF) y Eyerich et al., 2009 (TFD).
 - PDDL+:
   - Della Penna et al., 2009: UPMurphi;
