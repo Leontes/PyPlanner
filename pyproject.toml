@@ -28,6 +28,9 @@ pyplanner = "pyplanner.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+pyplanner = ["py.typed", "schema/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

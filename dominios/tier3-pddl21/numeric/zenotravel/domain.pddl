@@ -4,7 +4,7 @@
 ;; Originally developed for the IPC-2002
 ;; Author unknown
 (define (domain zenotravel)
-;(:requirements :typing :fluents)
+(:requirements :typing :fluents)
 (:types locatable city - object
 	aircraft person - locatable)
 (:predicates (located ?x - locatable  ?c - city)

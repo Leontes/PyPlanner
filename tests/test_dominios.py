@@ -1,6 +1,6 @@
 """Comprobaciones de integridad del conjunto de benchmarks de ``dominios/``."""
 
-from tests.tiers import SUPPORTED_TIER, discover_instances
+from tests.tiers import PARSER_TIER, SUPPORTED_TIER, discover_instances
 
 EXPECTED_TIERS = {1, 2, 3, 4, 5}
 
@@ -19,5 +19,5 @@ def test_every_domain_has_at_least_two_problems() -> None:
     assert all(count >= 2 for count in per_domain.values()), per_domain
 
 
-def test_supported_tier_is_in_range() -> None:
-    assert 0 <= SUPPORTED_TIER <= max(EXPECTED_TIERS)
+def test_supported_tiers_are_in_range() -> None:
+    assert 0 <= SUPPORTED_TIER <= PARSER_TIER <= max(EXPECTED_TIERS)

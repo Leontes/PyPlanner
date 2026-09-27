@@ -219,3 +219,6 @@ __marimo__/
 
 # Herramientas externas compiladas en local (VAL)
 tools/
+
+# Configuración local del editor
+.vscode/

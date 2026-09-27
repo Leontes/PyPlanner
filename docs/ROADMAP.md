@@ -12,8 +12,14 @@ PDDL 3.0 queda fuera del alcance (`:constraints`, `:preferences`).
 En cada iteración hay que:
 
 1. **Parser**: ampliar las dos fases (PDDL → JSON y JSON → AST), el esquema JSON y el
-   AST para aceptar los nuevos requisitos. Si un fichero declara un requisito que todavía no está soportado, se rechaza con
-   un error claro.
+   AST para aceptar los nuevos requisitos. Si un fichero declara un requisito que todavía
+   no está soportado, se rechaza con un error claro.
+   **Modo estricto:** toda construcción tiene que tener su requisito declarado en
+   `:requirements` (en el dominio o en el problema). Si un fichero usa, por ejemplo,
+   `:types` sin declarar `:typing`, se rechaza aunque `:typing` esté soportado. Si no se
+   declara ningún requisito, se supone `:strips`. La comprobación se hace en las dos fases,
+   porque el JSON puede venir de otra fuente. La tabla construcción → requisito ya existe
+   en la fase 1 (`_FUTURE_*` en `pddl/parser.py`) y hay que llevarla a un sitio común.
 2. **Motor**: ampliar el grounding, el modelo de estado, la aplicación de acciones y la
    heurística para la nueva semántica.
 3. **Documentación**: docstrings en todo el código público y notas de diseño en `docs/`.

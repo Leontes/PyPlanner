@@ -10,8 +10,13 @@ from pathlib import Path
 
 DOMINIOS_DIR = Path(__file__).resolve().parent.parent / "dominios"
 
-#: Tier máximo que el planificador tiene que resolver. Se sube al cerrar cada iteración.
+#: Tier máximo que el planificador tiene que resolver (con plan válido según VAL).
+#: Se sube al cerrar cada iteración.
 SUPPORTED_TIER = 0
+
+#: Tier máximo que el parser (fases 1 y 2) tiene que aceptar. Durante una iteración va por
+#: delante de :data:`SUPPORTED_TIER`; al cerrarla, los dos valen lo mismo.
+PARSER_TIER = 1
 
 _TIER_DIR = re.compile(r"^tier(\d+)-")
 

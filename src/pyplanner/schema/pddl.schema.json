@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Leontes/PyPlanner/schema/pddl.schema.json",
+  "title": "PyPlanner PDDL-JSON",
+  "description": "Representación JSON de un dominio o un problema PDDL. Es el formato de entrada del planificador (fase 2 del parser). Versión 1: STRIPS.",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": { "enum": ["domain", "problem"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "domain" } } },
+      "then": { "$ref": "#/$defs/domain" }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "problem" } } },
+      "then": { "$ref": "#/$defs/problem" }
+    }
+  ],
+  "$defs": {
+    "version": {
+      "description": "Versión del formato. Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1
+    },
+    "loc": {
+      "description": "Posición opcional en el fichero PDDL original (el fichero va en 'source' a nivel de documento).",
+      "type": "object",
+      "required": ["line", "column"],
+      "properties": {
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "name": {
+      "description": "Nombre PDDL: empieza por letra y sigue con letras, dígitos, '-' o '_'.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "variable": {
+      "description": "Variable PDDL: un nombre precedido de '?'.",
+      "type": "string",
+      "pattern": "^\\?[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "term": {
+      "description": "Argumento de un átomo: una variable si empieza por '?' y un objeto o constante en otro caso.",
+      "anyOf": [{ "$ref": "#/$defs/name" }, { "$ref": "#/$defs/variable" }]
+    },
+    "requirement": {
+      "type": "string",
+      "pattern": "^:[a-z][a-z-]*$"
+    },
+    "requirements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/requirement" }
+    },
+    "parameter": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/variable" },
+        "loc": { "$ref": "#/$defs/loc" }
+      },
+      "additionalProperties": false
+    },
+    "parameters": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/parameter" }
+    },
+    "object": {
+      "description": "Declaración de un objeto (problema) o una constante (dominio).",
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "loc": { "$ref": "#/$defs/loc" }
+      },
+      "additionalProperties": false
+    },
+    "objects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/object" }
+    },
+    "predicate": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "parameters": { "$ref": "#/$defs/parameters" },
+        "loc": { "$ref": "#/$defs/loc" }
+      },
+      "additionalProperties": false
+    },
+    "atom": {
+      "description": "Átomo: (predicado arg1 arg2 ...).",
+      "type": "object",
+      "required": ["op", "predicate", "args"],
+      "properties": {
+        "op": { "const": "atom" },
+        "predicate": { "$ref": "#/$defs/name" },
+        "args": { "type": "array", "items": { "$ref": "#/$defs/term" } },
+        "loc": { "$ref": "#/$defs/loc" }
+      },
+      "additionalProperties": false
+    },
+    "formula": {
+      "description": "Fórmula lógica (precondiciones y objetivos). v1: átomos y conjunciones.",
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": { "enum": ["atom", "and"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "const": "atom" } } },
+          "then": { "$ref": "#/$defs/atom" }
+        },
+        {
+          "if": { "properties": { "op": { "const": "and" } } },
+          "then": {
+            "type": "object",
+            "required": ["op", "args"],
+            "properties": {
+              "op": { "const": "and" },
+              "args": { "type": "array", "items": { "$ref": "#/$defs/formula" } },
+              "loc": { "$ref": "#/$defs/loc" }
+            },
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "effect": {
+      "description": "Efecto de una acción. v1: átomos añadidos, átomos borrados ('not') y conjunciones.",
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": { "enum": ["atom", "not", "and"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "const": "atom" } } },
+          "then": { "$ref": "#/$defs/atom" }
+        },
+        {
+          "if": { "properties": { "op": { "const": "not" } } },
+          "then": {
+            "type": "object",
+            "required": ["op", "arg"],
+            "properties": {
+              "op": { "const": "not" },
+              "arg": { "$ref": "#/$defs/atom" },
+              "loc": { "$ref": "#/$defs/loc" }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "and" } } },
+          "then": {
+            "type": "object",
+            "required": ["op", "args"],
+            "properties": {
+              "op": { "const": "and" },
+              "args": { "type": "array", "items": { "$ref": "#/$defs/effect" } },
+              "loc": { "$ref": "#/$defs/loc" }
+            },
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "action": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "parameters": { "$ref": "#/$defs/parameters" },
+        "precondition": { "$ref": "#/$defs/formula" },
+        "effect": { "$ref": "#/$defs/effect" },
+        "loc": { "$ref": "#/$defs/loc" }
+      },
+      "additionalProperties": false
+    },
+    "domain": {
+      "type": "object",
+      "required": ["version", "kind", "name"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "kind": { "const": "domain" },
+        "name": { "$ref": "#/$defs/name" },
+        "source": { "type": "string", "description": "Fichero PDDL del que procede el documento." },
+        "requirements": { "$ref": "#/$defs/requirements" },
+        "constants": { "$ref": "#/$defs/objects" },
+        "predicates": { "type": "array", "items": { "$ref": "#/$defs/predicate" } },
+        "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+      },
+      "additionalProperties": false
+    },
+    "problem": {
+      "type": "object",
+      "required": ["version", "kind", "name", "domain", "goal"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "kind": { "const": "problem" },
+        "name": { "$ref": "#/$defs/name" },
+        "domain": { "$ref": "#/$defs/name" },
+        "source": { "type": "string", "description": "Fichero PDDL del que procede el documento." },
+        "requirements": { "$ref": "#/$defs/requirements" },
+        "objects": { "$ref": "#/$defs/objects" },
+        "init": { "type": "array", "items": { "$ref": "#/$defs/atom" } },
+        "goal": { "$ref": "#/$defs/formula" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

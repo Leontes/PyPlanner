@@ -11,8 +11,8 @@ puede romper la anterior.
 | 1 | STRIPS | `gripper` | ninguno (STRIPS implícito) | IPC 1998 (gripper-round-1-strips) |
 | 2 | PDDL 1.2 (ADL) | `rubiks-cube` | `:adl` | IPC 2023 classical (sat) |
 | 2 | PDDL 1.2 (ADL) | `slitherlink` | `:typing :adl` | IPC 2023 classical (sat) |
-| 3 | PDDL 2.1 numérico | `numeric/counters` | `:strips :typing :equality :adl` + funciones | IPC 2023 numeric |
-| 3 | PDDL 2.1 numérico | `numeric/zenotravel` | `:typing :fluents` | IPC 2023 numeric |
+| 3 | PDDL 2.1 numérico | `numeric/counters` | `:strips :typing :equality :adl :numeric-fluents` (*) | IPC 2023 numeric |
+| 3 | PDDL 2.1 numérico | `numeric/zenotravel` | `:typing :fluents` (*) | IPC 2023 numeric |
 | 3 | PDDL 2.1 temporal | `temporal/driverlog` | `:typing :durative-actions` | IPC 2002 (driverlog-time-simple-automatic) |
 | 3 | PDDL 2.1 temporal | `temporal/zenotravel` | `:durative-actions :typing` | IPC 2002 (zenotravel-time-simple-automatic) |
 | 4 | PDDL 2.2 | `derived-predicates/psr-middle` | `:adl :derived-predicates` | IPC 2004 (psr-middle-derived-predicates-adl) |
@@ -27,7 +27,10 @@ instancias de la colección original, que suelen ser las más sencillas.
 
 - Estructura: `tierN-<nombre>/[<subtipo>/]<dominio>/{domain.pddl, pNN.pddl}`.
 - Los ficheros se copian **sin modificar**. Si un dominio necesita retoques, se añade como
-  dominio nuevo y se explica en esta tabla.
+  dominio nuevo y se explica en esta tabla. La única excepción son las erratas en
+  `:requirements` marcadas con (*), que se corrigen en el propio fichero.
+- **Modo estricto:** el planificador exige que toda construcción que se use tenga su
+  requisito declarado. Si no se declara `:requirements`, se supone `:strips`.
 - Para añadir problemas basta con copiar más `pNN.pddl`; la batería de tests los
   descubre sola.
 
@@ -45,5 +48,9 @@ Notas:
   4 y 5 salen del archivo histórico de las IPC y de los benchmarks de SMTPlan.
 - Los benchmarks PDDL+ de ENHSP se han descartado porque usan `:constraint`, una
   extensión propia de ese planificador que no forma parte del estándar.
+- (*) En los dominios numéricos de las IPC 2023 la línea `:requirements` venía comentada,
+  aunque usan tipos y fluentes numéricos. Se trata como una errata y se ha descomentado
+  sin tocar el resto del dominio. En `counters` la línea original tampoco incluía los
+  fluentes numéricos, así que además se le ha añadido `:numeric-fluents`.
 - Varios dominios usan funcionalidad de tiers anteriores (por ejemplo, `car` usa
   `:timed-initial-literals`). Es lo esperado, porque cada tier incluye a los anteriores.

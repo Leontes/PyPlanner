@@ -33,10 +33,14 @@ scripts/build_val.sh          # deja el ejecutable en tools/bin/Validate
 ## Uso
 
 ```bash
-pyplanner dominio.pddl problema.pddl
-# o bien
-python -m pyplanner dominio.pddl problema.pddl
+# Fase 1: PDDL → JSON (el formato de entrada del planificador, ver docs/formato-json.md)
+pyplanner parse dominio.pddl -o dominio.json
+
+# Fases 1 y 2: comprueba que un dominio y un problema son válidos (.pddl o .json)
+pyplanner check dominio.pddl problema.pddl
 ```
+
+La búsqueda (`pyplanner solve`) llega en la iteración 1; ver [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Desarrollo
 
