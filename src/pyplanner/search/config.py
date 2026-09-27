@@ -113,12 +113,37 @@ PRESETS: dict[str, SearchConfig] = {
     )
 }
 
-#: Portfolio por defecto: configuraciones diversas y no óptimas, pensadas para encontrar
-#: un plan cuanto antes.
-DEFAULT_PORTFOLIO = (
-    "gbfs-ff-pref",
-    "lazy-ff-pref",
-    "gbfs-add",
-    "wastar-add-3",
-    "gbfs-goalcount-rnd",
-)
+#: Portfolios por número de núcleos. Cada uno contiene al anterior y añade las
+#: configuraciones que más diversidad aportan (heurística, evaluación, desempate):
+#:
+#: * 1 núcleo: la configuración individual más robusta (perezosa, h_FF, acciones útiles);
+#: * 2 núcleos: + la más distinta y barata (objetivos pendientes, desempate aleatorio);
+#: * 4 núcleos: + h_FF con evaluación inmediata y h_add;
+#: * 5 núcleos: + WA* con h_add, que tiende a planes más cortos.
+PORTFOLIOS: dict[int, tuple[str, ...]] = {
+    1: ("lazy-ff-pref",),
+    2: ("lazy-ff-pref", "gbfs-goalcount-rnd"),
+    4: ("lazy-ff-pref", "gbfs-goalcount-rnd", "gbfs-ff-pref", "gbfs-add"),
+    5: ("lazy-ff-pref", "gbfs-goalcount-rnd", "gbfs-ff-pref", "gbfs-add", "wastar-add-3"),
+}
+
+#: Núcleos que usa el planificador si no se indica otra cosa (máxima robustez).
+DEFAULT_CORES = 5
+
+#: Portfolio por defecto (el de :data:`DEFAULT_CORES` núcleos).
+DEFAULT_PORTFOLIO = PORTFOLIOS[DEFAULT_CORES]
+
+
+def portfolio_for_cores(cores: int) -> tuple[SearchConfig, ...]:
+    """Configuraciones que se ejecutan con ``cores`` núcleos.
+
+    Se elige el portfolio más grande que cabe en los núcleos disponibles, de modo que nunca
+    hay más búsquedas que núcleos. Con más núcleos que el portfolio más grande, se usa ese.
+
+    Raises:
+        ConfigError: si ``cores`` es menor que 1.
+    """
+    if cores < 1:
+        raise ConfigError(f"el número de núcleos tiene que ser ≥ 1 (se ha pedido {cores})")
+    size = max(size for size in PORTFOLIOS if size <= cores)
+    return tuple(PRESETS[name] for name in PORTFOLIOS[size])

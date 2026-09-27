@@ -5,9 +5,11 @@ Subcomandos:
 * ``parse FICHERO``: fase 1. Convierte un dominio o problema PDDL en JSON.
 * ``check DOMINIO PROBLEMA``: fases 1 y 2. Comprueba que la tarea es válida y la resume.
   Acepta ficheros ``.pddl`` y ``.json``.
-* ``solve DOMINIO PROBLEMA``: busca un plan con una configuración o con un portfolio.
-  El plan sale por la salida estándar (o a un fichero) y las estadísticas por la de error.
-* ``configs``: lista las configuraciones de búsqueda predefinidas.
+* ``solve DOMINIO PROBLEMA``: busca un plan. Por defecto lanza el portfolio que corresponde
+  a los núcleos indicados con ``-j`` (5, o menos si la máquina no los tiene); con ``-c`` se
+  eligen las configuraciones a mano. El plan sale por la salida estándar (o a un fichero)
+  y las estadísticas por la de error.
+* ``configs``: lista las configuraciones predefinidas y los portfolios por núcleos.
 
 Códigos de salida: 0 plan encontrado (o comando correcto), 2 entrada no válida, 3 se ha
 demostrado que no hay plan, 4 no se ha encontrado plan dentro de los límites.
@@ -23,8 +25,15 @@ from pyplanner import __version__
 from pyplanner.errors import PDDLError
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.pddl import parse_file
-from pyplanner.planner import PlanningResult, solve
-from pyplanner.search import DEFAULT_PORTFOLIO, PRESETS, SearchStatus
+from pyplanner.planner import PlanningResult, available_cores, solve
+from pyplanner.search import (
+    DEFAULT_CORES,
+    PORTFOLIOS,
+    PRESETS,
+    ConfigError,
+    SearchStatus,
+    portfolio_for_cores,
+)
 
 #: Código de salida cuando la entrada no es válida.
 EXIT_INVALID_INPUT = 2
@@ -32,9 +41,6 @@ EXIT_INVALID_INPUT = 2
 EXIT_UNSOLVABLE = 3
 #: Código de salida cuando no se ha encontrado plan dentro de los límites.
 EXIT_NO_PLAN = 4
-
-#: Configuración de ``solve`` si no se indica ninguna.
-DEFAULT_CONFIG = "gbfs-ff-pref"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,11 +70,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         choices=sorted(PRESETS),
         metavar="NOMBRE",
-        help=f"configuración de búsqueda (repetible: varias forman un portfolio; "
-        f"por defecto {DEFAULT_CONFIG}; ver 'pyplanner configs')",
+        help="configuración de búsqueda (repetible: varias forman un portfolio); por "
+        "defecto se usa el portfolio de los núcleos disponibles (ver 'pyplanner configs')",
     )
     solve_cmd.add_argument(
-        "-p", "--portfolio", action="store_true", help="usa el portfolio paralelo por defecto"
+        "-j",
+        "--cores",
+        type=int,
+        help=f"núcleos a usar (por defecto {DEFAULT_CORES}, o los que tenga la máquina si son "
+        "menos); determina qué búsquedas se lanzan",
     )
     solve_cmd.add_argument("-t", "--time-limit", type=float, help="límite de tiempo en segundos")
     solve_cmd.add_argument("--batch-size", type=int, help="tamaño de lote de evaluación")
@@ -132,9 +142,28 @@ def _check(args: argparse.Namespace) -> int:
 
 
 def _solve(args: argparse.Namespace) -> int:
-    names = list(DEFAULT_PORTFOLIO) if args.portfolio else []
-    names += [n for n in args.config or [] if n not in names]
-    configs = [PRESETS[n] for n in names or [DEFAULT_CONFIG]]
+    machine = available_cores()
+    cores = args.cores if args.cores is not None else min(DEFAULT_CORES, machine)
+    if args.config:
+        names = list(dict.fromkeys(args.config))  # sin repetidos, en orden
+        if cores < 1:
+            raise ConfigError(f"el número de núcleos tiene que ser ≥ 1 (se ha pedido {cores})")
+        if len(names) > cores:
+            raise ConfigError(
+                f"se han pedido {len(names)} configuraciones pero solo {cores} núcleos; "
+                "sube --cores o quita configuraciones"
+            )
+        configs = [PRESETS[n] for n in names]
+    else:
+        configs = list(portfolio_for_cores(cores))
+    if not args.quiet:
+        if cores > machine:
+            print(
+                f"aviso: se han pedido {cores} núcleos, pero la máquina tiene {machine}",
+                file=sys.stderr,
+            )
+        searches = ", ".join(c.name for c in configs)
+        print(f"Núcleos: {cores} → {len(configs)} búsqueda(s): {searches}", file=sys.stderr)
     overrides = {
         key: value
         for key, value in (("batch_size", args.batch_size), ("device", args.device))
@@ -192,6 +221,11 @@ def _report(result: PlanningResult) -> None:
 
 
 def _configs() -> int:
+    membership: dict[str, list[int]] = {}
+    for size, names in PORTFOLIOS.items():
+        for name in names:
+            membership.setdefault(name, []).append(size)
+    print("Configuraciones:")
     for name, config in PRESETS.items():
         extras = []
         if config.preferred_operators:
@@ -203,14 +237,16 @@ def _configs() -> int:
         if config.tie_breaking != "fifo":
             extras.append(f"desempate {config.tie_breaking}")
         tags = []
-        if name in DEFAULT_PORTFOLIO:
-            tags.append("portfolio")
-        if name == DEFAULT_CONFIG:
-            tags.append("por defecto")
+        if name in membership:
+            tags.append("núcleos " + ",".join(map(str, membership[name])))
         if config.is_optimal:
             tags.append("óptima")
-        detail = f"{config.algorithm} + {config.heuristic}" + (
-            f" ({', '.join(extras)})" if extras else ""
-        )
-        print(f"{name:20s} {detail}" + (f"  [{', '.join(tags)}]" if tags else ""))
+        detail = f"{config.algorithm} + {config.heuristic}"
+        if extras:
+            detail += f" ({', '.join(extras)})"
+        print(f"  {name:20s} {detail}" + (f"  [{', '.join(tags)}]" if tags else ""))
+    print(f"\nPortfolios por núcleos (-j N; por defecto {DEFAULT_CORES}):")
+    for size, names in PORTFOLIOS.items():
+        print(f"  {size}: {', '.join(names)}")
+    print("  Con otro número de núcleos se usa el portfolio más grande que quepa.")
     return 0

@@ -34,10 +34,10 @@ scripts/build_val.sh          # deja el ejecutable en tools/bin/Validate
 
 ```bash
 # Buscar un plan (formato IPC por la salida estándar; estadísticas por la de error)
-pyplanner solve dominio.pddl problema.pddl
-pyplanner solve -p -t 60 dominio.pddl problema.pddl       # portfolio paralelo, 60 s
+pyplanner solve dominio.pddl problema.pddl               # portfolio de 5 núcleos (o menos)
+pyplanner solve -j 1 -t 60 dominio.pddl problema.pddl     # un solo núcleo, 60 s
 pyplanner solve -c astar-hmax -f json -o plan.json dominio.pddl problema.pddl
-pyplanner configs                                          # configuraciones disponibles
+pyplanner configs                                          # configuraciones y portfolios
 
 # Fase 1: PDDL → JSON (el formato de entrada del planificador, ver docs/formato-json.md)
 pyplanner parse dominio.pddl -o dominio.json

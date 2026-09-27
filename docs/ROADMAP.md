@@ -199,9 +199,10 @@ máximo soportado es una constante que se sube al cerrar cada iteración.
     referencia (Python) y en PyTorch (CPU y GPU), con valores idénticos. La búsqueda
     admite `batch_size`;
   - salida del plan en formato IPC (para VAL) y en JSON;
-  - **portfolio paralelo** con varias configuraciones.
-- **Tests:** ✅ tier 1 (blocksworld y gripper) resuelto y validado con VAL, con la
-  configuración por defecto y con el portfolio. También hay problemas sin solución hechos
+  - **portfolio paralelo** con varias configuraciones, con portfolios predefinidos para
+    1, 2, 4 y 5 núcleos (`-j N`; por defecto 5, o los que tenga la máquina).
+- **Tests:** ✅ tier 1 (blocksworld y gripper) resuelto y validado con VAL, con el
+  portfolio de cada número de núcleos. También hay problemas sin solución hechos
   a mano, tests del portfolio y tests de equivalencia entre la referencia y PyTorch.
 
 ## Iteración 2: PDDL 1.2 (subconjunto ADL)

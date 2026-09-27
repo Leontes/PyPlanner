@@ -10,11 +10,14 @@ from pyplanner.grounding import GroundTask, State, ground
 from pyplanner.heuristics import Evaluation, Heuristic
 from pyplanner.plan import simulate
 from pyplanner.search import (
+    DEFAULT_CORES,
     DEFAULT_PORTFOLIO,
+    PORTFOLIOS,
     PRESETS,
     ConfigError,
     SearchConfig,
     SearchStatus,
+    portfolio_for_cores,
     search,
 )
 from tests.tasks import build, chain, fork, token, unreachable
@@ -115,8 +118,26 @@ def test_lazy_search_evaluates_fewer_states() -> None:
     assert lazy.statistics.evaluated < eager.statistics.evaluated
 
 
-def test_default_portfolio_uses_presets() -> None:
-    assert set(DEFAULT_PORTFOLIO) <= set(PRESETS)
+def test_portfolios_by_cores() -> None:
+    assert PORTFOLIOS[DEFAULT_CORES] == DEFAULT_PORTFOLIO
+    for size, names in PORTFOLIOS.items():
+        assert 1 <= len(names) <= size
+        assert len(set(names)) == len(names)
+        assert set(names) <= set(PRESETS)
+    # Cada portfolio contiene al anterior: con más núcleos nunca se pierde una búsqueda.
+    sizes = sorted(PORTFOLIOS)
+    for smaller, larger in zip(sizes, sizes[1:], strict=False):
+        assert set(PORTFOLIOS[smaller]) <= set(PORTFOLIOS[larger])
+
+
+@pytest.mark.parametrize(("cores", "size"), [(1, 1), (2, 2), (3, 2), (4, 4), (5, 5), (64, 5)])
+def test_portfolio_for_cores(cores: int, size: int) -> None:
+    assert [c.name for c in portfolio_for_cores(cores)] == list(PORTFOLIOS[size])
+
+
+def test_portfolio_for_zero_cores() -> None:
+    with pytest.raises(ConfigError, match="≥ 1"):
+        portfolio_for_cores(0)
 
 
 @pytest.mark.parametrize(

@@ -13,6 +13,7 @@ interna del plan. Es el punto de entrada para usar el planificador como librerí
         print(result.plan.to_ipc())
 """
 
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -22,6 +23,14 @@ from pyplanner.loader.ast import Domain, Problem
 from pyplanner.plan import Plan, simulate
 from pyplanner.portfolio import PortfolioResult, run_portfolio
 from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
+
+
+def available_cores() -> int:
+    """Núcleos que puede usar este proceso (respeta los límites de WSL, contenedores, etc.)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # pragma: no cover - sistemas sin sched_getaffinity
+        return os.cpu_count() or 1
 
 
 class InvalidPlanError(RuntimeError):

@@ -79,8 +79,8 @@ Configuraciones predefinidas (`pyplanner configs`):
 
 | Nombre | Configuración | Notas |
 |--------|---------------|-------|
-| `gbfs-ff-pref` | GBFS + h_FF + acciones útiles | por defecto |
-| `lazy-ff-pref` | GBFS perezosa + h_FF + acciones útiles | evalúa muchos menos estados |
+| `gbfs-ff-pref` | GBFS + h_FF + acciones útiles | |
+| `lazy-ff-pref` | GBFS perezosa + h_FF + acciones útiles | evalúa muchos menos estados; la de 1 núcleo |
 | `gbfs-ff` | GBFS + h_FF | |
 | `gbfs-add` | GBFS + h_add | |
 | `wastar-add-3` | WA* (w = 3) + h_add | |
@@ -88,10 +88,28 @@ Configuraciones predefinidas (`pyplanner configs`):
 | `astar-hmax` | A* + h_max | óptima |
 | `astar-blind` | A* ciega | óptima; coste uniforme |
 
-El **portfolio por defecto** (`-p`) incluye `gbfs-ff-pref`, `lazy-ff-pref`, `gbfs-add`,
-`wastar-add-3` y `gbfs-goalcount-rnd`.
-
 ## Portfolio
+
+**Qué búsquedas se lanzan.** Depende del número de núcleos (`-j N`). Hay un portfolio
+predefinido para 1, 2, 4 y 5 núcleos (`PORTFOLIOS` en `search/config.py`), y cada uno
+contiene al anterior:
+
+| Núcleos | Búsquedas | Qué se añade |
+|---------|-----------|--------------|
+| 1 | `lazy-ff-pref` | la configuración individual más robusta; se ejecuta en el propio proceso |
+| 2 | + `gbfs-goalcount-rnd` | la más distinta: muy barata y con desempate aleatorio |
+| 4 | + `gbfs-ff-pref`, `gbfs-add` | h_FF con evaluación inmediata y h_add |
+| 5 | + `wastar-add-3` | WA*, que tiende a planes más cortos |
+
+- Con otro número de núcleos se usa el portfolio más grande que quepa: con 3, el de 2;
+  con más de 5, el de 5. Nunca hay más búsquedas que núcleos.
+- **Por defecto se usan 5 núcleos**, para la máxima robustez, pero limitados a los que
+  tenga la máquina (`os.sched_getaffinity`). En un sistema mononúcleo se usa el
+  portfolio de 1 sin necesidad de indicarlo.
+- Con `-c` se eligen las configuraciones a mano. Si se piden más configuraciones que
+  núcleos, es un error.
+
+**Cómo se ejecutan.**
 
 - Un proceso por configuración; gana el primer plan y el resto se cancelan.
 - Se usa `fork` cuando es seguro: sin CUDA, sin PyTorch cargado en el padre y con un
@@ -102,10 +120,11 @@ El **portfolio por defecto** (`-p`) incluye `gbfs-ff-pref`, `lazy-ff-pref`, `gbf
 ## Uso desde la terminal
 
 ```bash
-pyplanner configs                                   # configuraciones disponibles
-pyplanner solve dominio.pddl problema.pddl          # gbfs-ff-pref
+pyplanner configs                                   # configuraciones y portfolios
+pyplanner solve dominio.pddl problema.pddl          # portfolio de 5 núcleos (o menos)
+pyplanner solve -j 1 dominio.pddl problema.pddl     # un solo núcleo
+pyplanner solve -j 2 -t 60 dominio.pddl p.pddl      # 2 núcleos, 60 s como máximo
 pyplanner solve -c astar-hmax dominio.pddl p.pddl   # plan óptimo
-pyplanner solve -p -t 60 dominio.pddl p.pddl        # portfolio, 60 s como máximo
 pyplanner solve -c gbfs-add --device cuda --batch-size 64 dominio.pddl p.pddl
 pyplanner solve -f json -o plan.json dominio.pddl p.pddl
 ```
@@ -123,11 +142,11 @@ pyplanner solve -f json -o plan.json dominio.pddl p.pddl
 ```python
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.planner import solve
-from pyplanner.search import PRESETS
+from pyplanner.search import portfolio_for_cores
 
 domain = read_domain("domain.pddl")
 problem = read_problem("p01.pddl", domain)
-result = solve(domain, problem, [PRESETS["gbfs-ff-pref"], PRESETS["lazy-ff-pref"]], time_limit=60)
+result = solve(domain, problem, portfolio_for_cores(2), time_limit=60)
 if result.plan is not None:
     print(result.plan.to_ipc())  # o result.plan.to_dict() para el JSON
 ```
@@ -155,7 +174,7 @@ Medido en la máquina de desarrollo (GTX 970, 12 núcleos) con gripper de las IP
 | `gbfs-add` | 167 | 1.1 s |
 | `gbfs-add`, CPU, lote 64 | 163 | 5.0 s |
 | `gbfs-add`, GPU, lote 64 | 163 | 4.1 s |
-| portfolio por defecto (`-p`) | 129 (ganó `gbfs-goalcount-rnd`) | 0.52 s |
+| portfolio de 5 núcleos | 129 (ganó `gbfs-goalcount-rnd`) | 0.52 s |
 
 Conclusiones:
 

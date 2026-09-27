@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from pyplanner import __version__
+from pyplanner import __version__, cli
 from pyplanner.cli import EXIT_INVALID_INPUT, EXIT_NO_PLAN, EXIT_UNSOLVABLE, main
 from tests.samples import DOMAIN, PROBLEM
 
@@ -70,21 +70,59 @@ def test_missing_file_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture[
 
 
 def test_solve_prints_ipc_plan(task: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["solve", str(task[0]), str(task[1])]) == 0
+    assert main(["solve", "-j", "1", str(task[0]), str(task[1])]) == 0
     captured = capsys.readouterr()
     assert captured.out.endswith("; cost = 2 (unit cost)\n")
     assert "(move home kitchen)" in captured.out
-    assert "Resultado: solved (gbfs-ff-pref)" in captured.err
+    assert "Núcleos: 1 → 1 búsqueda(s): lazy-ff-pref" in captured.err
+    assert "Resultado: solved (lazy-ff-pref)" in captured.err
 
 
-def test_solve_json_to_file_with_portfolio(
+@pytest.mark.parametrize(("cores", "expected"), [(1, 1), (2, 2), (3, 2), (4, 4), (5, 5), (9, 5)])
+def test_solve_selects_portfolio_by_cores(
+    task: tuple[Path, Path], capsys: pytest.CaptureFixture[str], cores: int, expected: int
+) -> None:
+    assert main(["solve", "-j", str(cores), *map(str, task)]) == 0
+    assert f"Núcleos: {cores} → {expected} búsqueda(s)" in capsys.readouterr().err
+
+
+def test_default_cores_are_limited_by_the_machine(
+    task: tuple[Path, Path], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "available_cores", lambda: 2)
+    assert main(["solve", *map(str, task)]) == 0
+    assert "Núcleos: 2 → 2 búsqueda(s)" in capsys.readouterr().err
+
+
+def test_asking_for_more_cores_than_available_warns(
+    task: tuple[Path, Path], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "available_cores", lambda: 1)
+    assert main(["solve", "-j", "2", *map(str, task)]) == 0
+    assert "aviso: se han pedido 2 núcleos, pero la máquina tiene 1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["-j", "0"], "≥ 1"),
+        (["-j", "0", "-c", "gbfs-add"], "≥ 1"),
+        (["-j", "1", "-c", "gbfs-add", "-c", "astar-hmax"], "2 configuraciones pero solo 1"),
+    ],
+)
+def test_invalid_core_requests(
+    task: tuple[Path, Path], capsys: pytest.CaptureFixture[str], args: list[str], message: str
+) -> None:
+    assert main(["solve", *args, *map(str, task)]) == EXIT_INVALID_INPUT
+    assert message in capsys.readouterr().err
+
+
+def test_solve_json_to_file_with_manual_portfolio(
     task: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     out = tmp_path / "plan.json"
-    code = main(
-        ["solve", "-p", "-c", "astar-hmax", "-f", "json", "-o", str(out), "-q", *map(str, task)]
-    )
-    assert code == 0
+    args = ["-c", "astar-hmax", "-c", "gbfs-add", "-f", "json", "-o", str(out), "-q"]
+    assert main(["solve", *args, *map(str, task)]) == 0
     assert capsys.readouterr().err == ""
     document = json.loads(out.read_text())
     assert document["kind"] == "plan" and document["cost"] == 2
@@ -112,5 +150,6 @@ def test_solve_limit(task: tuple[Path, Path]) -> None:
 def test_configs_lists_presets(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["configs"]) == 0
     out = capsys.readouterr().out
-    assert "gbfs-ff-pref" in out and "[portfolio, por defecto]" in out
+    assert "lazy-ff-pref" in out and "[núcleos 1,2,4,5]" in out
     assert "astar-hmax" in out and "óptima" in out
+    assert "1: lazy-ff-pref" in out

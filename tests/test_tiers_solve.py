@@ -1,7 +1,7 @@
 """Evaluación por tiers del planificador completo: plan encontrado y validado con VAL.
 
-Cada instancia de los tiers soportados se resuelve con la configuración por defecto y con
-el portfolio, y el plan se valida con VAL (``tools/bin/Validate``, ver
+Cada instancia de los tiers soportados se resuelve con el portfolio de cada número de
+núcleos (1, 2, 4 y 5), y el plan se valida con VAL (``tools/bin/Validate``, ver
 ``scripts/build_val.sh``). Si VAL no está compilado, estos tests se saltan.
 """
 
@@ -12,7 +12,7 @@ import pytest
 
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.planner import solve
-from pyplanner.search import DEFAULT_PORTFOLIO, PRESETS, SearchStatus
+from pyplanner.search import PORTFOLIOS, SearchStatus, portfolio_for_cores
 from tests.tiers import DOMINIOS_DIR, SUPPORTED_TIER, Instance, discover_instances
 
 VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
@@ -44,18 +44,14 @@ def validate_with_val(instance: Instance, plan_file: Path) -> str:
 
 
 @requires_val
-@pytest.mark.parametrize(
-    "configs",
-    [["gbfs-ff-pref"], list(DEFAULT_PORTFOLIO)],
-    ids=["gbfs-ff-pref", "portfolio"],
-)
+@pytest.mark.parametrize("cores", sorted(PORTFOLIOS), ids=lambda n: f"{n}-cores")
 @pytest.mark.parametrize("instance", INSTANCES, ids=lambda i: i.id)
 def test_supported_tiers_are_solved_and_validated(
-    instance: Instance, configs: list[str], tmp_path: Path
+    instance: Instance, cores: int, tmp_path: Path
 ) -> None:
     domain = read_domain(instance.domain)
     problem = read_problem(instance.problem, domain)
-    result = solve(domain, problem, [PRESETS[n] for n in configs], time_limit=TIME_LIMIT)
+    result = solve(domain, problem, portfolio_for_cores(cores), time_limit=TIME_LIMIT)
     assert result.status is SearchStatus.SOLVED, result.search.message
     assert result.plan is not None
     plan_file = tmp_path / "plan.ipc"
