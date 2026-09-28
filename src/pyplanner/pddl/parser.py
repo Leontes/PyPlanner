@@ -10,16 +10,29 @@ Hay dos clases de error:
 
 * :class:`~pyplanner.errors.PDDLSyntaxError` si el texto no es PDDL bien formado.
 * :class:`~pyplanner.errors.UnsupportedFeatureError` si es PDDL válido pero usa algo que el
-  planificador todavía no soporta (por ejemplo, ``:types`` o una precondición negativa).
+  planificador todavía no soporta (por ejemplo, ``:functions`` o acciones durativas).
+* :class:`~pyplanner.errors.UndeclaredRequirementError` si un **dominio** usa una
+  construcción sin declarar su requisito (modo estricto, ver :mod:`pyplanner.requirements`).
+  Los problemas se comprueban en la fase 2, porque sus requisitos dependen del dominio.
 """
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
-from pyplanner.errors import PDDLSyntaxError, SourceLocation, UnsupportedFeatureError
+from pyplanner.errors import (
+    PDDLSyntaxError,
+    SourceLocation,
+    UndeclaredRequirementError,
+    UnsupportedFeatureError,
+)
 from pyplanner.pddl.sexpr import SExpr, SList, Symbol, parse_sexprs
-from pyplanner.requirements import KNOWN_REQUIREMENTS, unsupported_requirements
+from pyplanner.requirements import (
+    KNOWN_REQUIREMENTS,
+    first_undeclared,
+    unsupported_requirements,
+)
 from pyplanner.schema import SCHEMA_VERSION
 
 JSONDict = dict[str, Any]
@@ -31,7 +44,6 @@ _NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 # Secciones y operadores de versiones posteriores de PDDL, con el requisito que los introduce.
 # Sirven para dar un error de "no soportado" en lugar de uno de sintaxis.
 _FUTURE_DOMAIN_SECTIONS = {
-    ":types": ":typing",
     ":functions": ":numeric-fluents",
     ":durative-action": ":durative-actions",
     ":derived": ":derived-predicates",
@@ -43,13 +55,10 @@ _FUTURE_PROBLEM_SECTIONS = {
     ":metric": ":numeric-fluents",
     ":constraints": ":constraints",
 }
+#: Operadores lógicos: no pueden usarse como nombre de predicado dentro de un borrado.
+_OPERATORS = frozenset({"and", "or", "not", "imply", "exists", "forall", "=", "when"})
+
 _FUTURE_FORMULA_OPS = {
-    "not": ":negative-preconditions",
-    "or": ":disjunctive-preconditions",
-    "imply": ":disjunctive-preconditions",
-    "exists": ":existential-preconditions",
-    "forall": ":universal-preconditions",
-    "=": ":equality",
     "<": ":numeric-fluents",
     ">": ":numeric-fluents",
     "<=": ":numeric-fluents",
@@ -57,8 +66,6 @@ _FUTURE_FORMULA_OPS = {
     "preference": ":preferences",
 }
 _FUTURE_EFFECT_OPS = {
-    "when": ":conditional-effects",
-    "forall": ":conditional-effects",
     "assign": ":numeric-fluents",
     "increase": ":numeric-fluents",
     "decrease": ":numeric-fluents",
@@ -81,8 +88,26 @@ def parse_pddl(text: str, filename: str | None = None, *, locations: bool = True
     Raises:
         PDDLSyntaxError: si el texto no es PDDL bien formado.
         UnsupportedFeatureError: si usa funcionalidad todavía no soportada.
+        UndeclaredRequirementError: si un dominio usa una construcción sin declarar su
+            requisito.
     """
-    return _Parser(filename, locations).parse(text)
+    document = _Parser(filename, locations).parse(text)
+    if document["kind"] == "domain":
+        _check_declared(document, filename)
+    return document
+
+
+def _check_declared(document: JSONDict, filename: str | None) -> None:
+    use = first_undeclared(document, document["requirements"])
+    if use is not None:
+        location = None
+        if use.loc is not None:
+            location = SourceLocation(use.loc["line"], use.loc["column"], filename)
+        raise UndeclaredRequirementError(
+            f"{use.construct} necesita declarar el requisito {use.requirement}",
+            location,
+            use.path,
+        )
 
 
 def parse_domain(text: str, filename: str | None = None, *, locations: bool = True) -> JSONDict:
@@ -157,7 +182,7 @@ class _Parser:
 
     def _domain(self, name: str, sections: list[tuple[Symbol, SList]]) -> JSONDict:
         document = self._header("domain", name)
-        document.update(requirements=[], constants=[], predicates=[], actions=[])
+        document.update(requirements=[], types=[], constants=[], predicates=[], actions=[])
         seen: set[str] = set()
         for keyword, section in sections:
             key = keyword.value
@@ -166,6 +191,8 @@ class _Parser:
             body = section.items[1:]
             if key == ":requirements":
                 document["requirements"] = self._requirements(body)
+            elif key == ":types":
+                document["types"] = self._types(body)
             elif key == ":constants":
                 document["constants"] = self._objects(body)
             elif key == ":predicates":
@@ -275,29 +302,84 @@ class _Parser:
         if not formula.items:
             raise PDDLSyntaxError("fórmula vacía", formula.location)
         head = self._symbol(formula.items[0], "un operador o un predicado")
-        if head.value == "and":
-            args = [self._formula(item) for item in formula.items[1:]]
-            return self._with_loc({"op": "and", "args": args}, formula)
-        if head.value in _FUTURE_FORMULA_OPS:
-            self._unsupported(f"'{head.value}' en fórmulas", _FUTURE_FORMULA_OPS[head.value], head)
-        return self._atom(formula)
+        op, rest = head.value, formula.items[1:]
+        if op in ("and", "or"):
+            node: JSONDict = {"op": op, "args": [self._formula(item) for item in rest]}
+        elif op == "not":
+            self._arity(formula, rest, 1, "(not <fórmula>)")
+            node = {"op": "not", "arg": self._formula(rest[0])}
+        elif op == "imply":
+            self._arity(formula, rest, 2, "(imply <fórmula> <fórmula>)")
+            node = {"op": "imply", "args": [self._formula(rest[0]), self._formula(rest[1])]}
+        elif op in ("exists", "forall"):
+            self._arity(formula, rest, 2, f"({op} (<variables>) <fórmula>)")
+            node = {
+                "op": op,
+                "parameters": self._quantified(rest[0]),
+                "arg": self._formula(rest[1]),
+            }
+        elif op == "=":
+            self._arity(formula, rest, 2, "(= <término> <término>)")
+            node = {"op": "=", "args": [self._term(rest[0]), self._term(rest[1])]}
+        elif op in _FUTURE_FORMULA_OPS:
+            self._unsupported(f"'{op}' en fórmulas", _FUTURE_FORMULA_OPS[op], head)
+        else:
+            return self._atom(formula)
+        return self._with_loc(node, formula)
 
-    def _effect(self, expr: SExpr) -> JSONDict:
+    def _effect(self, expr: SExpr, *, conditional: bool = False) -> JSONDict:
+        """Un efecto. Dentro de ``when`` (``conditional``) solo se admiten literales y ``and``."""
         effect = self._list(expr, "un efecto")
         if not effect.items:
             raise PDDLSyntaxError("efecto vacío", effect.location)
         head = self._symbol(effect.items[0], "un operador o un predicado")
-        if head.value == "and":
-            args = [self._effect(item) for item in effect.items[1:]]
+        op, rest = head.value, effect.items[1:]
+        if op == "and":
+            args = [self._effect(item, conditional=conditional) for item in rest]
             return self._with_loc({"op": "and", "args": args}, effect)
-        if head.value == "not":
-            if len(effect.items) != 2:
+        if op == "not":
+            if len(rest) != 1:
                 raise PDDLSyntaxError("(not ...) lleva exactamente un átomo", effect.location)
-            atom = self._atom(self._list(effect.items[1], "un átomo"))
+            negated = self._list(rest[0], "un átomo")
+            if negated.items and self._is_symbol_in(negated.items[0], _OPERATORS):
+                raise PDDLSyntaxError(
+                    "en un efecto, (not ...) solo puede negar un átomo", negated.location
+                )
+            atom = self._atom(negated)
             return self._with_loc({"op": "not", "arg": atom}, effect)
-        if head.value in _FUTURE_EFFECT_OPS:
-            self._unsupported(f"'{head.value}' en efectos", _FUTURE_EFFECT_OPS[head.value], head)
+        if op in ("forall", "when") and conditional:
+            raise PDDLSyntaxError(
+                f"dentro de 'when' solo se admiten literales y 'and', no '{op}'", head.location
+            )
+        if op == "forall":
+            self._arity(effect, rest, 2, "(forall (<variables>) <efecto>)")
+            node = {
+                "op": "forall",
+                "parameters": self._quantified(rest[0]),
+                "arg": self._effect(rest[1]),
+            }
+            return self._with_loc(node, effect)
+        if op == "when":
+            self._arity(effect, rest, 2, "(when <fórmula> <efecto>)")
+            node = {
+                "op": "when",
+                "condition": self._formula(rest[0]),
+                "arg": self._effect(rest[1], conditional=True),
+            }
+            return self._with_loc(node, effect)
+        if op in _FUTURE_EFFECT_OPS:
+            self._unsupported(f"'{op}' en efectos", _FUTURE_EFFECT_OPS[op], head)
         return self._atom(effect)
+
+    def _arity(self, expr: SList, rest: tuple[SExpr, ...], count: int, form: str) -> None:
+        if len(rest) != count:
+            raise PDDLSyntaxError(f"se esperaba {form}", expr.location)
+
+    def _quantified(self, expr: SExpr) -> list[JSONDict]:
+        variables = self._list(expr, "la lista de variables del cuantificador")
+        if not variables.items:
+            raise PDDLSyntaxError("el cuantificador no declara variables", variables.location)
+        return self._parameters(variables.items)
 
     def _atom(self, atom: SList) -> JSONDict:
         if not atom.items:
@@ -335,20 +417,65 @@ class _Parser:
         return requirements
 
     def _objects(self, items: tuple[SExpr, ...]) -> list[JSONDict]:
-        self._reject_types(items)
-        return [
-            self._with_loc({"name": self._name(item, "un nombre de objeto")}, item)
-            for item in items
-        ]
+        return self._typed_list(items, lambda item: self._name(item, "un nombre de objeto"))
 
     def _parameters(self, items: tuple[SExpr, ...]) -> list[JSONDict]:
-        self._reject_types(items)
-        return [self._with_loc({"name": self._variable(item)}, item) for item in items]
+        return self._typed_list(items, self._variable)
 
-    def _reject_types(self, items: tuple[SExpr, ...]) -> None:
-        for item in items:
-            if isinstance(item, Symbol) and item.value == "-":
-                self._unsupported("listas con tipos", ":typing", item)
+    def _types(self, items: tuple[SExpr, ...]) -> list[JSONDict]:
+        """``(:types a b - c d)``: cada tipo con su supertipo (``parent``), si lo tiene."""
+        types = self._typed_list(
+            items, lambda item: self._name(item, "un nombre de tipo"), allow_either=False
+        )
+        for node in types:
+            if "type" in node:
+                node["parent"] = node.pop("type")
+        return types
+
+    def _typed_list(
+        self,
+        items: tuple[SExpr, ...],
+        element: Callable[[SExpr], str],
+        *,
+        allow_either: bool = True,
+    ) -> list[JSONDict]:
+        """Lista PDDL con tipos opcionales: ``a b - t c - (either u v) d``.
+
+        Los elementos sin tipo (los del final) no llevan el campo ``type``.
+        """
+        result: list[JSONDict] = []
+        pending: list[JSONDict] = []
+        i = 0
+        while i < len(items):
+            item = items[i]
+            if self._is_symbol(item, "-"):
+                if not pending:
+                    raise PDDLSyntaxError("'-' sin elementos antes", item.location)
+                if i + 1 >= len(items):
+                    raise PDDLSyntaxError("falta el tipo después de '-'", item.location)
+                type_spec = self._type_spec(items[i + 1], allow_either)
+                for node in pending:
+                    node["type"] = type_spec
+                result.extend(pending)
+                pending = []
+                i += 2
+            else:
+                pending.append(self._with_loc({"name": element(item)}, item))
+                i += 1
+        result.extend(pending)
+        return result
+
+    def _type_spec(self, expr: SExpr, allow_either: bool) -> str | list[str]:
+        if isinstance(expr, Symbol):
+            return self._name(expr, "un tipo")
+        if not allow_either:
+            raise PDDLSyntaxError("un supertipo tiene que ser un nombre de tipo", expr.location)
+        if not expr.items or not self._is_symbol(expr.items[0], "either"):
+            raise PDDLSyntaxError("se esperaba un tipo o (either <tipos>)", expr.location)
+        types = [self._name(item, "un tipo") for item in expr.items[1:]]
+        if not types:
+            raise PDDLSyntaxError("(either) sin tipos", expr.location)
+        return types
 
     # --- Utilidades --------------------------------------------------------------------
 
@@ -408,6 +535,9 @@ class _Parser:
 
     def _is_symbol(self, expr: SExpr, value: str) -> bool:
         return isinstance(expr, Symbol) and expr.value == value
+
+    def _is_symbol_in(self, expr: SExpr, values: frozenset[str]) -> bool:
+        return isinstance(expr, Symbol) and expr.value in values
 
     def _is_empty_list(self, expr: SExpr) -> bool:
         return isinstance(expr, SList) and not expr.items

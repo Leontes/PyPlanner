@@ -75,8 +75,24 @@ def test_problem_requires_a_goal() -> None:
         validate_document(document)
 
 
-def test_not_is_only_allowed_in_effects() -> None:
-    negated = {"op": "not", "arg": {"op": "atom", "predicate": "p", "args": []}}
-    validate_document(minimal_domain(actions=[{"name": "a", "effect": negated}]))
+def test_delete_effects_negate_atoms_only() -> None:
+    negated_atom = {"op": "not", "arg": {"op": "atom", "predicate": "p", "args": []}}
+    validate_document(minimal_domain(actions=[{"name": "a", "effect": negated_atom}]))
+    validate_document(minimal_domain(actions=[{"name": "a", "precondition": negated_atom}]))
+    negated_and = {"op": "not", "arg": {"op": "and", "args": []}}
+    validate_document(minimal_domain(actions=[{"name": "a", "precondition": negated_and}]))
     with pytest.raises(SchemaValidationError):
-        validate_document(minimal_domain(actions=[{"name": "a", "precondition": negated}]))
+        validate_document(minimal_domain(actions=[{"name": "a", "effect": negated_and}]))
+
+
+def test_when_only_contains_literal_effects() -> None:
+    atom = {"op": "atom", "predicate": "p", "args": []}
+    inner = {"op": "when", "condition": atom, "arg": atom}
+    validate_document(minimal_domain(actions=[{"name": "a", "effect": inner}]))
+    nested = {"op": "when", "condition": atom, "arg": inner}
+    with pytest.raises(SchemaValidationError):
+        validate_document(minimal_domain(actions=[{"name": "a", "effect": nested}]))
+
+
+def test_version_1_documents_are_still_valid() -> None:
+    validate_document({**minimal_domain(), "version": 1})

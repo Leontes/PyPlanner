@@ -4,12 +4,21 @@ Es el resultado de la fase 2 del parser. Todas las clases son inmutables y *hash
 que se pueden usar como claves de diccionarios y en conjuntos durante el grounding.
 
 El AST sigue siendo *levantado* (lifted): las acciones tienen parámetros y las fórmulas
-pueden contener variables. La instanciación es trabajo de :mod:`pyplanner.grounding`.
+pueden contener variables y cuantificadores. La normalización y la instanciación son
+trabajo de :mod:`pyplanner.grounding`.
 
 Los nombres están siempre en minúsculas, porque PDDL no distingue mayúsculas.
+
+**Tipos.** Todo objeto, constante y parámetro tiene una tupla de tipos: un solo tipo, o
+varios si se declaró con ``(either ...)``. Sin ``:typing``, todo es de tipo ``object``, la
+raíz de la jerarquía.
 """
 
 from dataclasses import dataclass
+from functools import cached_property
+
+#: Tipo raíz de la jerarquía; existe siempre.
+OBJECT = "object"
 
 
 @dataclass(frozen=True)
@@ -24,7 +33,7 @@ class Variable:
 
 @dataclass(frozen=True)
 class Constant:
-    """Un objeto del problema o una constante del dominio."""
+    """Un objeto del problema o una constante del dominio, usado como término."""
 
     name: str
 
@@ -33,6 +42,35 @@ class Constant:
 
 
 Term = Variable | Constant
+
+
+@dataclass(frozen=True)
+class Parameter:
+    """Declaración de una variable con su tipo (parámetro de acción, predicado o cuantificador)."""
+
+    name: str
+    types: tuple[str, ...] = (OBJECT,)
+
+    @property
+    def variable(self) -> Variable:
+        """La variable declarada, para usarla como término."""
+        return Variable(self.name)
+
+
+@dataclass(frozen=True)
+class ObjectDecl:
+    """Declaración de un objeto del problema o de una constante del dominio, con su tipo."""
+
+    name: str
+    types: tuple[str, ...] = (OBJECT,)
+
+    @property
+    def constant(self) -> Constant:
+        """El objeto declarado, para usarlo como término."""
+        return Constant(self.name)
+
+
+# --- Fórmulas -----------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -52,10 +90,21 @@ class Atom:
 
 
 @dataclass(frozen=True)
-class Not:
-    """Negación. En la v1 solo aparece en efectos, aplicada a un átomo (borrado)."""
+class Equals:
+    """Igualdad entre dos términos ``(= t1 t2)`` (requisito ``:equality``)."""
 
-    arg: Atom
+    left: Term
+    right: Term
+
+    def __str__(self) -> str:
+        return f"(= {self.left} {self.right})"
+
+
+@dataclass(frozen=True)
+class Not:
+    """Negación. En una fórmula niega cualquier fórmula; en un efecto, un átomo (borrado)."""
+
+    arg: "Formula"
 
     def __str__(self) -> str:
         return f"(not {self.arg})"
@@ -71,19 +120,92 @@ class And:
         return f"({' '.join(['and', *map(str, self.args)])})"
 
 
-#: Fórmula lógica (precondiciones y objetivos). v1: átomos y conjunciones.
-Formula = Atom | And
+@dataclass(frozen=True)
+class Or:
+    """Disyunción. ``Or(())`` es la fórmula falsa."""
 
-#: Efecto de una acción. v1: átomos añadidos, átomos borrados y conjunciones.
-Effect = Atom | Not | And
+    args: tuple["Formula", ...] = ()
+
+    def __str__(self) -> str:
+        return f"({' '.join(['or', *map(str, self.args)])})"
+
+
+@dataclass(frozen=True)
+class Imply:
+    """Implicación ``(imply antecedente consecuente)``."""
+
+    left: "Formula"
+    right: "Formula"
+
+    def __str__(self) -> str:
+        return f"(imply {self.left} {self.right})"
+
+
+@dataclass(frozen=True)
+class Exists:
+    """Cuantificador existencial sobre variables con tipo."""
+
+    parameters: tuple[Parameter, ...]
+    arg: "Formula"
+
+    def __str__(self) -> str:
+        return f"(exists ({' '.join(p.name for p in self.parameters)}) {self.arg})"
+
+
+@dataclass(frozen=True)
+class Forall:
+    """Cuantificador universal sobre variables con tipo."""
+
+    parameters: tuple[Parameter, ...]
+    arg: "Formula"
+
+    def __str__(self) -> str:
+        return f"(forall ({' '.join(p.name for p in self.parameters)}) {self.arg})"
+
+
+#: Fórmula lógica (precondiciones, objetivos y condiciones de efectos condicionales).
+Formula = Atom | Equals | Not | And | Or | Imply | Exists | Forall
+
+
+# --- Efectos ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ForallEffect:
+    """Efecto universal: ``arg`` se aplica para cada asignación de las variables."""
+
+    parameters: tuple[Parameter, ...]
+    arg: "Effect"
+
+    def __str__(self) -> str:
+        return f"(forall ({' '.join(p.name for p in self.parameters)}) {self.arg})"
+
+
+@dataclass(frozen=True)
+class When:
+    """Efecto condicional: ``arg`` se aplica si ``condition`` es cierta *antes* de la acción."""
+
+    condition: Formula
+    arg: "Effect"
+
+    def __str__(self) -> str:
+        return f"(when {self.condition} {self.arg})"
+
+
+#: Efecto de una acción: añadidos (``Atom``), borrados (``Not(Atom)``), conjunciones y, desde
+#: la iteración 2, efectos universales y condicionales.
+Effect = Atom | Not | And | ForallEffect | When
+
+
+# --- Declaraciones ------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Predicate:
-    """Declaración de un predicado: nombre y parámetros."""
+    """Declaración de un predicado: nombre y parámetros con tipo."""
 
     name: str
-    parameters: tuple[Variable, ...] = ()
+    parameters: tuple[Parameter, ...] = ()
 
     @property
     def arity(self) -> int:
@@ -93,13 +215,13 @@ class Predicate:
 
 @dataclass(frozen=True)
 class Action:
-    """Esquema de acción STRIPS.
+    """Esquema de acción.
 
     Una precondición o un efecto ausentes se representan con ``And(())``.
     """
 
     name: str
-    parameters: tuple[Variable, ...]
+    parameters: tuple[Parameter, ...]
     precondition: Formula
     effect: Effect
 
@@ -111,13 +233,33 @@ class Domain:
     Attributes:
         requirements: requisitos declarados y todos los que implican (ver
             :func:`pyplanner.requirements.expand_requirements`).
+        types: pares (tipo, supertipo), sin incluir ``object``. Vacío sin ``:typing``.
     """
 
     name: str
     requirements: frozenset[str]
-    constants: tuple[Constant, ...]
+    types: tuple[tuple[str, str], ...]
+    constants: tuple[ObjectDecl, ...]
     predicates: tuple[Predicate, ...]
     actions: tuple[Action, ...]
+
+    @cached_property
+    def _parents(self) -> dict[str, str]:
+        return dict(self.types)
+
+    def supertypes(self, type_name: str) -> tuple[str, ...]:
+        """El tipo y todos sus supertipos, hasta ``object`` incluido."""
+        chain = [type_name]
+        while chain[-1] != OBJECT:
+            chain.append(self._parents.get(chain[-1], OBJECT))
+        return tuple(chain)
+
+    def is_subtype(self, types: tuple[str, ...], of: tuple[str, ...]) -> bool:
+        """``True`` si todo objeto de ``types`` es también de alguno de los tipos ``of``.
+
+        Con varios tipos (``either``), cada uno tiene que ser subtipo de alguno de ``of``.
+        """
+        return all(any(t in of for t in self.supertypes(own)) for own in types)
 
     def predicate(self, name: str) -> Predicate | None:
         """Devuelve la declaración del predicado ``name``, o ``None`` si no existe."""
@@ -140,6 +282,6 @@ class Problem:
     name: str
     domain_name: str
     requirements: frozenset[str]
-    objects: tuple[Constant, ...]
+    objects: tuple[ObjectDecl, ...]
     init: frozenset[Atom]
     goal: Formula

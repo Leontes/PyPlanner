@@ -2,12 +2,19 @@
 
 Es el punto de entrada del planificador cuando se integra en otro sistema, así que **no se
 fía de su entrada**: el JSON puede venir de la fase 1 o de cualquier otro componente. Por
-eso hace tres comprobaciones, en este orden:
+eso hace cuatro comprobaciones, en este orden:
 
 1. **Estructura**: el documento cumple el esquema (:func:`pyplanner.schema.validate_document`).
 2. **Requisitos**: todos los requisitos declarados existen y están soportados.
-3. **Semántica**: nombres sin repetir, predicados declarados y con la aridad correcta,
-   variables ligadas a un parámetro, objetos declarados y problema asociado a su dominio.
+3. **Modo estricto**: toda construcción usada tiene su requisito declarado (en el problema
+   cuentan los del dominio y los del problema).
+4. **Semántica**:
+   * nombres sin repetir;
+   * tipos declarados y jerarquía sin ciclos;
+   * predicados declarados y con la aridad correcta;
+   * variables ligadas a un parámetro o a un cuantificador, sin ocultar otra variable;
+   * objetos declarados y con un tipo compatible con el del predicado;
+   * problema asociado a su dominio.
 
 Los errores indican la ruta dentro del JSON y, si el documento trae posiciones (``loc``),
 la línea y la columna del PDDL original.
@@ -16,24 +23,41 @@ la línea y la columna del PDDL original.
 from collections.abc import Iterable, Mapping
 from typing import Any, NoReturn
 
-from pyplanner.errors import SemanticError, SourceLocation, UnsupportedFeatureError
+from pyplanner.errors import (
+    PDDLError,
+    SemanticError,
+    SourceLocation,
+    UndeclaredRequirementError,
+    UnsupportedFeatureError,
+)
 from pyplanner.loader.ast import (
+    OBJECT,
     Action,
     And,
     Atom,
     Constant,
     Domain,
     Effect,
+    Equals,
+    Exists,
+    Forall,
+    ForallEffect,
     Formula,
+    Imply,
     Not,
+    ObjectDecl,
+    Or,
+    Parameter,
     Predicate,
     Problem,
     Term,
     Variable,
+    When,
 )
 from pyplanner.requirements import (
     KNOWN_REQUIREMENTS,
     expand_requirements,
+    first_undeclared,
     unsupported_requirements,
 )
 from pyplanner.schema import validate_document
@@ -47,6 +71,7 @@ def load_domain(document: JSON) -> Domain:
     Raises:
         SchemaValidationError: si el documento no cumple el esquema.
         UnsupportedFeatureError: si declara requisitos no soportados.
+        UndeclaredRequirementError: si usa una construcción sin declarar su requisito.
         SemanticError: si el dominio no es coherente.
     """
     validate_document(document)
@@ -54,26 +79,30 @@ def load_domain(document: JSON) -> Domain:
     if document["kind"] != "domain":
         ctx.fail("se esperaba un documento de dominio", document, "kind")
     requirements = ctx.requirements(document)
+    ctx.check_declared(document, document.get("requirements", []))
 
-    constants = ctx.unique_names(document.get("constants", []), "constants", "constante")
+    types = ctx.types(document.get("types", []))
+    ctx.known_types = {OBJECT, *(name for name, _ in types)}
+    constants = ctx.objects(document.get("constants", []), "constants", "constante")
     predicates: dict[str, Predicate] = {}
     for i, node in enumerate(document.get("predicates", [])):
         path = f"predicates[{i}]"
         name = node["name"].lower()
         if name in predicates:
             ctx.fail(f"predicado '{name}' declarado dos veces", node, path)
-        parameters = ctx.parameters(node, path)
-        predicates[name] = Predicate(name, parameters)
+        predicates[name] = Predicate(name, ctx.parameters(node.get("parameters", []), path))
 
-    scope = _Scope(predicates, frozenset(c.name for c in constants))
+    # Dominio provisional (sin acciones) para consultar la jerarquía de tipos al comprobar.
+    ctx.domain = Domain(document["name"].lower(), requirements, types, constants, (), ())
+    scope = _Scope(predicates, {c.name: c.types for c in constants})
     actions: dict[str, Action] = {}
     for i, node in enumerate(document.get("actions", [])):
         path = f"actions[{i}]"
         name = node["name"].lower()
         if name in actions:
             ctx.fail(f"acción '{name}' declarada dos veces", node, path)
-        parameters = ctx.parameters(node, path)
-        action_scope = scope.with_variables(p.name for p in parameters)
+        parameters = ctx.parameters(node.get("parameters", []), path)
+        action_scope = scope.bind(parameters)
         precondition: Formula = And()
         effect: Effect = And()
         if "precondition" in node:
@@ -85,6 +114,7 @@ def load_domain(document: JSON) -> Domain:
     return Domain(
         name=document["name"].lower(),
         requirements=requirements,
+        types=types,
         constants=constants,
         predicates=tuple(predicates.values()),
         actions=tuple(actions.values()),
@@ -95,11 +125,12 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
     """Convierte un documento JSON de problema en un :class:`~pyplanner.loader.ast.Problem`.
 
     El problema se comprueba contra ``domain``: tiene que referirse a él y usar solo sus
-    predicados.
+    predicados y tipos.
 
     Raises:
         SchemaValidationError: si el documento no cumple el esquema.
         UnsupportedFeatureError: si declara requisitos no soportados.
+        UndeclaredRequirementError: si usa una construcción sin declarar su requisito.
         SemanticError: si el problema no es coherente con el dominio.
     """
     validate_document(document)
@@ -114,15 +145,18 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
             "domain",
         )
     requirements = ctx.requirements(document) | domain.requirements
+    ctx.check_declared(document, requirements)
 
-    constant_names = {c.name for c in domain.constants}
+    ctx.domain = domain
+    ctx.known_types = {OBJECT, *(name for name, _ in domain.types)}
+    constant_types = {c.name: c.types for c in domain.constants}
     objects = tuple(
         o
-        for o in ctx.unique_names(document.get("objects", []), "objects", "objeto")
-        if o.name not in constant_names
+        for o in ctx.objects(document.get("objects", []), "objects", "objeto")
+        if o.name not in constant_types
     )
     predicates = {p.name: p for p in domain.predicates}
-    scope = _Scope(predicates, frozenset(constant_names | {o.name for o in objects}))
+    scope = _Scope(predicates, {**constant_types, **{o.name: o.types for o in objects}})
 
     init: set[Atom] = set()
     for i, node in enumerate(document.get("init", [])):
@@ -145,15 +179,17 @@ class _Scope:
     def __init__(
         self,
         predicates: Mapping[str, Predicate],
-        objects: frozenset[str],
-        variables: frozenset[str] = frozenset(),
+        objects: Mapping[str, tuple[str, ...]],
+        variables: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
         self.predicates = predicates
         self.objects = objects
-        self.variables = variables
+        self.variables: Mapping[str, tuple[str, ...]] = variables or {}
 
-    def with_variables(self, names: Iterable[str]) -> "_Scope":
-        return _Scope(self.predicates, self.objects, self.variables | frozenset(names))
+    def bind(self, parameters: Iterable[Parameter]) -> "_Scope":
+        variables = dict(self.variables)
+        variables.update((p.name, p.types) for p in parameters)
+        return _Scope(self.predicates, self.objects, variables)
 
 
 class _Context:
@@ -161,19 +197,23 @@ class _Context:
 
     def __init__(self, document: JSON) -> None:
         self.source: str | None = document.get("source")
+        self.known_types: set[str] = {OBJECT}
+        self.domain: Domain | None = None
 
     def fail(
         self,
         message: str,
-        node: JSON,
+        node: JSON | None,
         path: str,
-        error: type[SemanticError | UnsupportedFeatureError] = SemanticError,
+        error: type[PDDLError] = SemanticError,
     ) -> NoReturn:
         location = None
-        loc = node.get("loc")
+        loc = node.get("loc") if node is not None else None
         if loc is not None:
             location = SourceLocation(loc["line"], loc["column"], self.source)
         raise error(message, location, path)
+
+    # --- Requisitos -----------------------------------------------------------------
 
     def requirements(self, document: JSON) -> frozenset[str]:
         declared = [r.lower() for r in document.get("requirements", [])]
@@ -190,45 +230,127 @@ class _Context:
             )
         return expand_requirements(declared)
 
-    def unique_names(self, nodes: list[JSON], path: str, what: str) -> tuple[Constant, ...]:
-        seen: dict[str, Constant] = {}
+    def check_declared(self, document: JSON, declared: Iterable[str]) -> None:
+        use = first_undeclared(document, declared)
+        if use is not None:
+            self.fail(
+                f"{use.construct} necesita declarar el requisito {use.requirement}",
+                {"loc": use.loc} if use.loc is not None else None,
+                use.path,
+                UndeclaredRequirementError,
+            )
+
+    # --- Declaraciones --------------------------------------------------------------
+
+    def types(self, nodes: list[JSON]) -> tuple[tuple[str, str], ...]:
+        """Jerarquía de tipos. Un supertipo no declarado se declara implícitamente."""
+        parents: dict[str, str] = {}
+        for i, node in enumerate(nodes):
+            name = node["name"].lower()
+            if name == OBJECT:
+                continue
+            if name in parents:
+                self.fail(f"tipo '{name}' declarado dos veces", node, f"types[{i}]")
+            parents[name] = node.get("parent", OBJECT).lower()
+        for parent in list(parents.values()):
+            if parent != OBJECT and parent not in parents:
+                parents[parent] = OBJECT
+        for i, node in enumerate(nodes):
+            seen = {node["name"].lower()}
+            current = parents.get(node["name"].lower(), OBJECT)
+            while current != OBJECT:
+                if current in seen:
+                    self.fail(
+                        f"ciclo en la jerarquía de tipos: {' - '.join(seen)}", node, f"types[{i}]"
+                    )
+                seen.add(current)
+                current = parents[current]
+        return tuple(sorted(parents.items()))
+
+    def type_spec(self, node: JSON, path: str) -> tuple[str, ...]:
+        spec = node.get("type", OBJECT)
+        names = [spec] if isinstance(spec, str) else list(spec)
+        types = tuple(dict.fromkeys(t.lower() for t in names))
+        for type_name in types:
+            if type_name not in self.known_types:
+                self.fail(f"tipo '{type_name}' no declarado", node, path)
+        return types
+
+    def objects(self, nodes: list[JSON], path: str, what: str) -> tuple[ObjectDecl, ...]:
+        seen: dict[str, ObjectDecl] = {}
         for i, node in enumerate(nodes):
             name = node["name"].lower()
             if name in seen:
                 self.fail(f"{what} '{name}' declarado dos veces", node, f"{path}[{i}]")
-            seen[name] = Constant(name)
+            seen[name] = ObjectDecl(name, self.type_spec(node, f"{path}[{i}]"))
         return tuple(seen.values())
 
-    def parameters(self, node: JSON, path: str) -> tuple[Variable, ...]:
-        seen: dict[str, Variable] = {}
-        for i, parameter in enumerate(node.get("parameters", [])):
+    def parameters(self, nodes: list[JSON], path: str) -> tuple[Parameter, ...]:
+        seen: dict[str, Parameter] = {}
+        for i, parameter in enumerate(nodes):
             name = parameter["name"].lower()
             if name in seen:
                 self.fail(f"parámetro '{name}' repetido", parameter, f"{path}.parameters[{i}]")
-            seen[name] = Variable(name)
+            seen[name] = Parameter(name, self.type_spec(parameter, f"{path}.parameters[{i}]"))
         return tuple(seen.values())
 
+    # --- Fórmulas y efectos ---------------------------------------------------------
+
     def formula(self, node: JSON, path: str, scope: _Scope) -> Formula:
-        if node["op"] == "and":
-            return And(
-                tuple(
-                    self.formula(arg, f"{path}.args[{i}]", scope)
-                    for i, arg in enumerate(node["args"])
-                )
+        op = node["op"]
+        if op in ("and", "or"):
+            args = tuple(
+                self.formula(arg, f"{path}.args[{i}]", scope) for i, arg in enumerate(node["args"])
             )
+            return And(args) if op == "and" else Or(args)
+        if op == "not":
+            return Not(self.formula(node["arg"], f"{path}.arg", scope))
+        if op == "imply":
+            left, right = node["args"]
+            return Imply(
+                self.formula(left, f"{path}.args[0]", scope),
+                self.formula(right, f"{path}.args[1]", scope),
+            )
+        if op in ("exists", "forall"):
+            parameters, inner = self.quantified(node, path, scope)
+            body = self.formula(node["arg"], f"{path}.arg", inner)
+            return Exists(parameters, body) if op == "exists" else Forall(parameters, body)
+        if op == "=":
+            left, right = (self.term(t.lower(), node, path, scope) for t in node["args"])
+            return Equals(left, right)
         return self.atom(node, path, scope)
 
     def effect(self, node: JSON, path: str, scope: _Scope) -> Effect:
-        if node["op"] == "and":
+        op = node["op"]
+        if op == "and":
             return And(
                 tuple(
                     self.effect(arg, f"{path}.args[{i}]", scope)
                     for i, arg in enumerate(node["args"])
                 )
             )
-        if node["op"] == "not":
+        if op == "not":
             return Not(self.atom(node["arg"], f"{path}.arg", scope))
+        if op == "forall":
+            parameters, inner = self.quantified(node, path, scope)
+            return ForallEffect(parameters, self.effect(node["arg"], f"{path}.arg", inner))
+        if op == "when":
+            condition = self.formula(node["condition"], f"{path}.condition", scope)
+            return When(condition, self.effect(node["arg"], f"{path}.arg", scope))
         return self.atom(node, path, scope)
+
+    def quantified(
+        self, node: JSON, path: str, scope: _Scope
+    ) -> tuple[tuple[Parameter, ...], _Scope]:
+        parameters = self.parameters(node["parameters"], path)
+        for i, parameter in enumerate(parameters):
+            if parameter.name in scope.variables:
+                self.fail(
+                    f"la variable '{parameter.name}' ya está ligada fuera del cuantificador",
+                    node["parameters"][i],
+                    f"{path}.parameters[{i}]",
+                )
+        return parameters, scope.bind(parameters)
 
     def atom(self, node: JSON, path: str, scope: _Scope) -> Atom:
         name = node["predicate"].lower()
@@ -240,15 +362,30 @@ class _Context:
             self.fail(
                 f"'{name}' espera {predicate.arity} argumentos y recibe {len(args)}", node, path
             )
-        return Atom(name, tuple(self.term(arg.lower(), node, path, scope) for arg in args))
+        terms = tuple(self.term(arg.lower(), node, path, scope) for arg in args)
+        assert self.domain is not None
+        for position, (term, parameter) in enumerate(zip(terms, predicate.parameters, strict=True)):
+            if isinstance(term, Constant):
+                own = scope.objects[term.name]
+                if not self.domain.is_subtype(own, parameter.types):
+                    self.fail(
+                        f"'{term.name}' ({' | '.join(own)}) no es del tipo "
+                        f"{' | '.join(parameter.types)} que espera el argumento "
+                        f"{position + 1} de '{name}'",
+                        node,
+                        path,
+                    )
+        return Atom(name, terms)
 
     def term(self, name: str, node: JSON, path: str, scope: _Scope) -> Term:
         if name.startswith("?"):
             if name not in scope.variables:
-                where = (
-                    "no es un parámetro de la acción" if scope.variables else "no se permite aquí"
+                self.fail(
+                    f"la variable '{name}' no está ligada (no es un parámetro ni una variable "
+                    "cuantificada)",
+                    node,
+                    path,
                 )
-                self.fail(f"la variable '{name}' {where}", node, path)
             return Variable(name)
         if name not in scope.objects:
             self.fail(f"objeto o constante '{name}' no declarado", node, path)

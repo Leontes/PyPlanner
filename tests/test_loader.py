@@ -6,7 +6,17 @@ import pytest
 
 from pyplanner.errors import SchemaValidationError, SemanticError, UnsupportedFeatureError
 from pyplanner.loader import load_domain, load_problem
-from pyplanner.loader.ast import Action, And, Atom, Constant, Domain, Not, Variable
+from pyplanner.loader.ast import (
+    Action,
+    And,
+    Atom,
+    Constant,
+    Domain,
+    Not,
+    ObjectDecl,
+    Parameter,
+    Variable,
+)
 from pyplanner.pddl import parse_domain, parse_problem
 from tests.samples import DOMAIN, PROBLEM
 
@@ -27,7 +37,7 @@ def c(name: str) -> Constant:
 def test_domain_ast(domain: Domain) -> None:
     assert domain.name == "test"
     assert domain.requirements == {":strips"}
-    assert domain.constants == (c("home"), c("robot"))
+    assert domain.constants == (ObjectDecl("home"), ObjectDecl("robot"))
     assert [(p.name, p.arity) for p in domain.predicates] == [
         ("at", 2),
         ("free", 0),
@@ -35,7 +45,7 @@ def test_domain_ast(domain: Domain) -> None:
     ]
     assert domain.action("move") == Action(
         name="move",
-        parameters=(x("?from"), x("?to")),
+        parameters=(Parameter("?from"), Parameter("?to")),
         precondition=And((Atom("at", (c("robot"), x("?from"))), Atom("free"))),
         effect=And(
             (
@@ -57,7 +67,7 @@ def test_missing_precondition_is_empty_conjunction(domain: Domain) -> None:
 def test_problem_ast(domain: Domain) -> None:
     problem = load_problem(parse_problem(PROBLEM), domain)
     assert problem.domain_name == "test"
-    assert problem.objects == (c("kitchen"),)
+    assert problem.objects == (ObjectDecl("kitchen"),)
     assert problem.init == {Atom("at", (c("robot"), c("home"))), Atom("free")}
     assert problem.goal == And(
         (Atom("visited", (c("kitchen"),)), Atom("at", (c("robot"), c("home"))))
@@ -91,7 +101,7 @@ def test_json_names_are_normalised_to_lowercase() -> None:
 
 def test_objects_that_repeat_constants_are_merged(domain: Domain) -> None:
     document = parse_problem(PROBLEM.replace("(:objects kitchen)", "(:objects kitchen home)"))
-    assert load_problem(document, domain).objects == (c("kitchen"),)
+    assert load_problem(document, domain).objects == (ObjectDecl("kitchen"),)
 
 
 def test_schema_errors_are_reported_before_semantics() -> None:
@@ -107,8 +117,8 @@ def test_loading_a_problem_as_domain_fails(domain: Domain) -> None:
 
 
 def test_unsupported_requirements_in_json() -> None:
-    document = {"version": 1, "kind": "domain", "name": "d", "requirements": [":typing"]}
-    with pytest.raises(UnsupportedFeatureError, match=":typing"):
+    document = {"version": 1, "kind": "domain", "name": "d", "requirements": [":fluents"]}
+    with pytest.raises(UnsupportedFeatureError, match=":numeric-fluents"):
         load_domain(document)
 
 
@@ -130,7 +140,7 @@ def domain_with(body: str) -> str:
         ("(:action a :effect (p))", "espera 1 argumentos y recibe 0", "actions[0].effect"),
         (
             "(:action a :parameters (?x) :precondition (and (q) (p ?y)))",
-            "variable '\\?y' no es un parámetro",
+            "variable '\\?y' no está ligada",
             "actions[0].precondition.args[1]",
         ),
         ("(:action a :effect (not (p z)))", "'z' no declarado", "actions[0].effect.arg"),
@@ -171,7 +181,7 @@ def problem_with(body: str, domain_name: str = "d") -> dict[str, Any]:
     ("body", "message", "path"),
     [
         ("(:goal (q))", None, None),
-        ("(:init (p ?x)) (:goal (q))", "variable '\\?x' no se permite", "init[0]"),
+        ("(:init (p ?x)) (:goal (q))", "variable '\\?x' no está ligada", "init[0]"),
         ("(:init (p z)) (:goal (q))", "'z' no declarado", "init[0]"),
         ("(:objects o) (:init (p o)) (:goal (and (p k) (r)))", "'r' no declarado", "goal.args[1]"),
         ("(:objects o o) (:goal (q))", "objeto 'o' declarado dos veces", "objects[1]"),
@@ -192,8 +202,8 @@ def test_problem_semantic_errors(body: str, message: str | None, path: str | Non
 def test_unsupported_requirements_in_problem_json() -> None:
     domain = load_domain(parse_domain(domain_with("")))
     document = problem_with("(:goal (q))")
-    document["requirements"] = [":typing"]
-    with pytest.raises(UnsupportedFeatureError, match=":typing"):
+    document["requirements"] = [":time"]
+    with pytest.raises(UnsupportedFeatureError, match=":time"):
         load_problem(document, domain)
 
 

@@ -1,4 +1,4 @@
-# Formato JSON de entrada (versión 1)
+# Formato JSON de entrada (versión 2)
 
 El planificador recibe los dominios y problemas en JSON. Este documento es el contrato para
 cualquier componente que quiera generar ese JSON sin pasar por PDDL. El esquema formal
@@ -23,8 +23,12 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 
 - Cada documento es un dominio (`"kind": "domain"`), un problema (`"kind": "problem"`) o
   un plan (`"kind": "plan"`, la salida del planificador).
-- `version` es la versión del formato (ahora mismo, 1). Las versiones posteriores solo
-  **añaden** construcciones, así que un documento v1 seguirá siendo válido.
+- `version` es la versión del formato:
+  - v1: STRIPS;
+  - v2 (actual): PDDL 1.2, subconjunto ADL.
+
+  Cada versión solo **añade** construcciones, así que un documento v1 sigue siendo
+  válido.
 - Los nombres siguen el patrón `[A-Za-z][A-Za-z0-9_-]*`. La fase 2 los pasa a minúsculas,
   porque PDDL no distingue mayúsculas.
 - Los argumentos de un átomo son cadenas: una **variable** si empieza por `?` y un
@@ -41,8 +45,9 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 |-------|-------------|-----------|
 | `version`, `kind`, `name` | sí | |
 | `requirements` | no | lista de requisitos (`":strips"`…). Vacía equivale a `:strips` |
-| `constants` | no | `[{"name": "home"}, ...]` |
-| `predicates` | no | `[{"name": "at", "parameters": [{"name": "?x"}, ...]}, ...]` |
+| `types` | no | `[{"name": "truck", "parent": "vehicle"}, {"name": "place"}, ...]`; sin `parent`, el supertipo es `object` |
+| `constants` | no | `[{"name": "home", "type": "place"}, ...]` |
+| `predicates` | no | `[{"name": "at", "parameters": [{"name": "?x", "type": "truck"}, ...]}, ...]` |
 | `actions` | no | ver abajo |
 
 Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fórmula) y
@@ -59,7 +64,57 @@ Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fó
 | `objects` | no | como `constants`. Si repiten una constante del dominio, se ignoran |
 | `init` | no | lista de átomos sin variables |
 
-## Fórmulas y efectos (v1: STRIPS)
+## Tipos (v2)
+
+- `type` es opcional en constantes, objetos y parámetros (de acciones, predicados y
+  cuantificadores). Si falta, el tipo es `object`.
+- Una lista de tipos equivale a `(either ...)`: `{"name": "?x", "type": ["truck", "plane"]}`.
+- Un supertipo que no se declara como tipo se declara implícitamente, con supertipo
+  `object`.
+- La fase 2 comprueba que las constantes y los objetos que aparecen en los átomos tienen
+  un tipo compatible con el del predicado.
+
+## Modo estricto
+
+Toda construcción tiene que tener su requisito declarado, en el dominio o en el problema.
+Las reglas están en `pyplanner/requirements.py`:
+
+| Construcción | Requisito |
+|--------------|-----------|
+| `types`, o `type` en cualquier declaración | `:typing` |
+| `not` sobre un átomo o una igualdad, en una fórmula | `:negative-preconditions` |
+| `not` sobre una fórmula compuesta, `or`, `imply` | `:disjunctive-preconditions` |
+| `exists` | `:existential-preconditions` |
+| `forall` en una fórmula | `:universal-preconditions` |
+| `=` | `:equality` |
+| `forall` o `when` en un efecto | `:conditional-effects` |
+
+- `not` en un efecto es un borrado STRIPS y no necesita nada.
+- `:adl` y `:quantified-preconditions` equivalen a sus requisitos componentes.
+
+## Fórmulas y efectos
+
+| `op` | Campos | Dónde puede aparecer | Desde |
+|------|--------|----------------------|-------|
+| `atom` | `predicate`, `args` | fórmulas, efectos, `init` | v1 |
+| `and` | `args` (lista de nodos) | fórmulas, efectos | v1 |
+| `not` | `arg` (un átomo) | efectos (borrado) | v1 |
+| `not` | `arg` (una fórmula) | fórmulas | v2 |
+| `or` | `args` | fórmulas | v2 |
+| `imply` | `args` (exactamente 2) | fórmulas | v2 |
+| `exists`, `forall` | `parameters` (al menos 1), `arg` (una fórmula) | fórmulas | v2 |
+| `=` | `args` (exactamente 2 términos) | fórmulas | v2 |
+| `forall` | `parameters`, `arg` (un efecto) | efectos | v2 |
+| `when` | `condition` (fórmula), `arg` (solo `atom`, `not` y `and`) | efectos | v2 |
+
+Otras restricciones:
+
+- Una variable cuantificada no puede llevar el nombre de otra variable ya ligada (un
+  parámetro o un cuantificador exterior). Dos cuantificadores hermanos sí pueden usar el
+  mismo nombre.
+- La condición de `when` se evalúa sobre el estado **anterior** a la acción.
+
+### Tabla de la versión 1 (sin cambios)
 
 | `op` | Campos | Dónde puede aparecer |
 |------|--------|----------------------|
@@ -126,4 +181,5 @@ posición en el PDDL (`location`) y la ruta en el JSON (`path`, p. ej.
 | `PDDLSyntaxError` | 1 | PDDL mal formado |
 | `SchemaValidationError` | 2 | el JSON no cumple el esquema, o no es JSON |
 | `UnsupportedFeatureError` | 1 y 2 | requisito o construcción que esta versión no soporta |
-| `SemanticError` | 2 | predicado sin declarar, aridad incorrecta, variable libre, objeto desconocido, nombre repetido, dominio que no coincide… |
+| `UndeclaredRequirementError` | 1 (dominios) y 2 | construcción usada sin declarar su requisito (modo estricto) |
+| `SemanticError` | 2 | predicado sin declarar, aridad incorrecta, variable libre, objeto desconocido, nombre repetido, dominio que no coincide, tipo no declarado o incompatible, ciclo de tipos… |

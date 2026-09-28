@@ -59,6 +59,10 @@ class UnsupportedFeatureError(PDDLError):
     """La entrada usa un requisito o una construcción que esta versión no soporta."""
 
 
+class UndeclaredRequirementError(PDDLError):
+    """La entrada usa una construcción sin declarar su requisito (modo estricto)."""
+
+
 class SchemaValidationError(PDDLError):
     """El documento JSON no cumple el esquema (fase 2, validación estructural)."""
 

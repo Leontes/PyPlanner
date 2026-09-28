@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Leontes/PyPlanner/schema/pddl.schema.json",
   "title": "PyPlanner PDDL-JSON",
-  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS.",
+  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales).",
   "type": "object",
   "required": [
     "kind"
@@ -56,10 +56,10 @@
   ],
   "$defs": {
     "version": {
-      "description": "Versión del formato. Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
+      "description": "Versión del formato (1 o 2). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
       "type": "integer",
       "minimum": 1,
-      "maximum": 1
+      "maximum": 2
     },
     "loc": {
       "description": "Posición opcional en el fichero PDDL original (el fichero va en 'source' a nivel de documento).",
@@ -122,6 +122,9 @@
         },
         "loc": {
           "$ref": "#/$defs/loc"
+        },
+        "type": {
+          "$ref": "#/$defs/type_spec"
         }
       },
       "additionalProperties": false
@@ -133,7 +136,7 @@
       }
     },
     "object": {
-      "description": "Declaración de un objeto (problema) o una constante (dominio).",
+      "description": "Declaración de un objeto (problema) o una constante (dominio), con tipo opcional.",
       "type": "object",
       "required": [
         "name"
@@ -144,6 +147,9 @@
         },
         "loc": {
           "$ref": "#/$defs/loc"
+        },
+        "type": {
+          "$ref": "#/$defs/type_spec"
         }
       },
       "additionalProperties": false
@@ -200,7 +206,7 @@
       "additionalProperties": false
     },
     "formula": {
-      "description": "Fórmula lógica (precondiciones y objetivos). v1: átomos y conjunciones.",
+      "description": "Fórmula lógica (precondiciones, objetivos y condiciones de 'when'). v1: átomos y conjunciones; v2: or, not, imply, exists, forall e =.",
       "type": "object",
       "required": [
         "op"
@@ -209,7 +215,13 @@
         "op": {
           "enum": [
             "atom",
-            "and"
+            "and",
+            "or",
+            "not",
+            "imply",
+            "exists",
+            "forall",
+            "="
           ]
         }
       },
@@ -256,11 +268,200 @@
             },
             "additionalProperties": false
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "or"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "or"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/formula"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "not"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "not"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "imply"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "imply"
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/$defs/formula"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "exists"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "parameters",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "exists"
+              },
+              "parameters": {
+                "$ref": "#/$defs/quantified"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "forall"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "parameters",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "forall"
+              },
+              "parameters": {
+                "$ref": "#/$defs/quantified"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "="
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "="
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/$defs/term"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       ]
     },
     "effect": {
-      "description": "Efecto de una acción. v1: átomos añadidos, átomos borrados ('not') y conjunciones.",
+      "description": "Efecto de una acción. v1: átomos añadidos, átomos borrados ('not') y conjunciones; v2: forall y when.",
       "type": "object",
       "required": [
         "op"
@@ -270,7 +471,9 @@
           "enum": [
             "atom",
             "not",
-            "and"
+            "and",
+            "forall",
+            "when"
           ]
         }
       },
@@ -345,6 +548,70 @@
             },
             "additionalProperties": false
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "forall"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "parameters",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "forall"
+              },
+              "parameters": {
+                "$ref": "#/$defs/quantified"
+              },
+              "arg": {
+                "$ref": "#/$defs/effect"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "when"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "condition",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "when"
+              },
+              "condition": {
+                "$ref": "#/$defs/formula"
+              },
+              "arg": {
+                "$ref": "#/$defs/literal_effect"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       ]
     },
@@ -395,6 +662,12 @@
         },
         "requirements": {
           "$ref": "#/$defs/requirements"
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type_decl"
+          }
         },
         "constants": {
           "$ref": "#/$defs/objects"
@@ -510,6 +783,137 @@
         }
       },
       "additionalProperties": false
+    },
+    "type_spec": {
+      "description": "Tipo de un objeto o parámetro: un nombre, o una lista de nombres para (either ...).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/name"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      ]
+    },
+    "type_decl": {
+      "description": "Declaración de un tipo; sin 'parent', su supertipo es 'object'.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "parent": {
+          "$ref": "#/$defs/name"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "quantified": {
+      "description": "Variables de un cuantificador (al menos una).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/parameter"
+      }
+    },
+    "literal_effect": {
+      "description": "Efecto simple: un átomo añadido, un átomo borrado ('not') o una conjunción de ellos. Es lo único que admite 'when'.",
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "atom",
+            "not",
+            "and"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "atom"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/atom"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "not"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "not"
+              },
+              "arg": {
+                "$ref": "#/$defs/atom"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "and"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "and"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/literal_effect"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      ]
     }
   }
 }

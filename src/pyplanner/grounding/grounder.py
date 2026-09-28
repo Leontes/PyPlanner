@@ -17,6 +17,7 @@ Después:
 from collections.abc import Iterator, Mapping
 from itertools import product
 
+from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding.task import GroundAction, GroundTask, mask_of
 from pyplanner.loader.ast import (
     Action,
@@ -41,7 +42,8 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
     Returns:
         La tarea instanciada, con hechos y acciones en un orden determinista.
     """
-    universe = sorted({c.name for c in domain.constants} | {o.name for o in problem.objects})
+    declarations = {o.name: o.types for o in (*domain.constants, *problem.objects)}
+    universe = _TypedUniverse(domain, declarations)
     schemas = [_Schema(action) for action in domain.actions]
     fluent_predicates = {
         atom.predicate for schema in schemas for atom in (*schema.adds, *schema.deletes)
@@ -118,11 +120,13 @@ class _Schema:
     def __init__(self, action: Action) -> None:
         self.name = action.name
         self.parameters = [p.name for p in action.parameters]
+        self.parameter_types = {p.name: p.types for p in action.parameters}
         self.preconditions = list(_conjuncts(action.precondition))
         self.adds: list[Atom] = []
         self.deletes: list[Atom] = []
         for effect in _effects(action.effect):
             if isinstance(effect, Not):
+                assert isinstance(effect.arg, Atom)
                 self.deletes.append(effect.arg)
             else:
                 self.adds.append(effect)
@@ -132,15 +136,19 @@ class _Schema:
         )
 
     def bindings(
-        self, reachable: Mapping[str, set[tuple[str, ...]]], universe: list[str]
+        self, reachable: Mapping[str, set[tuple[str, ...]]], universe: "_TypedUniverse"
     ) -> Iterator[Binding]:
-        """Asignaciones de los parámetros que hacen alcanzables todas las precondiciones."""
+        """Asignaciones de los parámetros que hacen alcanzables todas las precondiciones y
+        respetan los tipos de los parámetros."""
         for binding in self._join(0, {}, reachable):
+            if not all(universe.has_type(v, self.parameter_types[p]) for p, v in binding.items()):
+                continue
             free = [p for p in self.parameters if p not in binding]
             if not free:
                 yield binding
                 continue
-            for values in product(universe, repeat=len(free)):
+            domains = [universe.objects_of(self.parameter_types[p]) for p in free]
+            for values in product(*domains):
                 yield {**binding, **dict(zip(free, values, strict=True))}
 
     def _join(
@@ -159,6 +167,23 @@ class _Schema:
     def ground(atoms: list[Atom], binding: Binding) -> Iterator[Fact]:
         for atom in atoms:
             yield (atom.predicate, _instantiate(atom, binding))
+
+
+class _TypedUniverse:
+    """Objetos del problema (y constantes del dominio) agrupados por tipo."""
+
+    def __init__(self, domain: Domain, declarations: Mapping[str, tuple[str, ...]]) -> None:
+        self.domain = domain
+        self.declarations = declarations
+        self._cache: dict[tuple[str, ...], list[str]] = {}
+
+    def has_type(self, name: str, types: tuple[str, ...]) -> bool:
+        return self.domain.is_subtype(self.declarations.get(name, ("object",)), types)
+
+    def objects_of(self, types: tuple[str, ...]) -> list[str]:
+        if types not in self._cache:
+            self._cache[types] = sorted(n for n in self.declarations if self.has_type(n, types))
+        return self._cache[types]
 
 
 def _unify(atom: Atom, args: tuple[str, ...], binding: Binding) -> Binding | None:
@@ -195,13 +220,19 @@ def _conjuncts(formula: Formula) -> Iterator[Atom]:
     if isinstance(formula, And):
         for part in formula.args:
             yield from _conjuncts(part)  # type: ignore[arg-type]
-    else:
+    elif isinstance(formula, Atom):
         yield formula
+    else:
+        raise UnsupportedFeatureError(
+            f"el motor todavía no admite '{formula}' en precondiciones u objetivos"
+        )
 
 
 def _effects(effect: Effect) -> Iterator[Atom | Not]:
     if isinstance(effect, And):
         for part in effect.args:
-            yield from _effects(part)
-    else:
+            yield from _effects(part)  # type: ignore[arg-type]
+    elif isinstance(effect, Atom) or (isinstance(effect, Not) and isinstance(effect.arg, Atom)):
         yield effect
+    else:
+        raise UnsupportedFeatureError(f"el motor todavía no admite el efecto '{effect}'")

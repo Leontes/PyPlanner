@@ -21,6 +21,7 @@ def test_domain_document() -> None:
         "kind": "domain",
         "name": "test",
         "requirements": [":strips"],
+        "types": [],
         "constants": [{"name": "home"}, {"name": "robot"}],
         "predicates": [
             {"name": "at", "parameters": [{"name": "?x"}, {"name": "?y"}]},
@@ -143,19 +144,13 @@ def test_syntax_errors(text: str, message: str) -> None:
 @pytest.mark.parametrize(
     ("text", "requirement"),
     [
-        ("(define (domain d) (:requirements :typing))", ":typing"),
-        ("(define (domain d) (:requirements :adl))", ":adl"),
-        ("(define (domain d) (:types block))", ":typing"),
+        ("(define (domain d) (:requirements :fluents))", ":fluents"),
+        ("(define (domain d) (:requirements :durative-actions))", ":durative-actions"),
         ("(define (domain d) (:functions (f)))", ":numeric-fluents"),
         ("(define (domain d) (:durative-action a))", ":durative-actions"),
         ("(define (domain d) (:derived (p) (q)))", ":derived-predicates"),
         ("(define (domain d) (:process p))", ":time"),
-        ("(define (domain d) (:constants a - thing))", ":typing"),
-        ("(define (domain d) (:action a :precondition (not (p))))", ":negative-preconditions"),
-        ("(define (domain d) (:action a :precondition (or (p) (q))))", ":disjunctive"),
-        ("(define (domain d) (:action a :precondition (forall (?x) (p ?x))))", ":universal"),
-        ("(define (domain d) (:action a :precondition (= ?x ?y)))", ":equality"),
-        ("(define (domain d) (:action a :effect (when (p) (q))))", ":conditional-effects"),
+        ("(define (domain d) (:action a :precondition (< (f) 1)))", ":numeric-fluents"),
         ("(define (domain d) (:action a :effect (increase (f) 1)))", ":numeric-fluents"),
         ("(define (problem p) (:domain d) (:init (= (f) 1)) (:goal (q)))", ":numeric-fluents"),
         (

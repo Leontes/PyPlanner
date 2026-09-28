@@ -16,7 +16,7 @@ SUPPORTED_TIER = 1
 
 #: Tier máximo que el parser (fases 1 y 2) tiene que aceptar. Durante una iteración va por
 #: delante de :data:`SUPPORTED_TIER`; al cerrarla, los dos valen lo mismo.
-PARSER_TIER = 1
+PARSER_TIER = 2
 
 _TIER_DIR = re.compile(r"^tier(\d+)-")
 

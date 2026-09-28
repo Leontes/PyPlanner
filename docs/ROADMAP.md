@@ -211,7 +211,8 @@ máximo soportado es una constante que se sube al cerrar cada iteración.
 `:equality`, `:existential-preconditions`, `:universal-preconditions`,
 `:quantified-preconditions`, `:conditional-effects` y `:adl`.
 
-- **Parser:**
+- **Parser:** ✅ hecho (esquema JSON v2, modo estricto en las dos fases, tipos y ADL;
+  ver [formato-json.md](formato-json.md)):
   - jerarquía de tipos (`either` incluido);
   - fórmulas arbitrarias con `not`, `or`, `imply`, `exists`, `forall` y `=`;
   - efectos `forall` y `when`;
