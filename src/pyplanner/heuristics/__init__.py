@@ -3,10 +3,18 @@
 Dispositivos:
 
 * ``"python"``: implementación de referencia en Python puro; siempre disponible.
+* ``"numba"``: la misma implementación compilada con Numba (``pip install -e ".[fast]"``);
+  unas 10 veces más rápida. Da exactamente los mismos resultados que la referencia.
 * ``"cpu"`` o ``"cuda"``: implementación en PyTorch, evaluando por lotes. Solo está
-  disponible si PyTorch está instalado (``pip install -e ".[gpu]"``) y solo para las
-  heurísticas que se pueden expresar con tensores.
+  disponible si PyTorch está instalado (``pip install -e ".[gpu]"``); compensa con lotes
+  grandes, sobre todo en GPU.
+* ``"auto"`` (por defecto): ``"numba"`` si Numba está instalado y ``"python"`` si no.
+
+Las heurísticas triviales (``blind``, ``goalcount``) usan siempre la implementación en
+Python con ``"auto"`` y ``"numba"``, porque no hay nada que acelerar.
 """
+
+from functools import cache
 
 from pyplanner.errors import PDDLError
 from pyplanner.grounding import GroundTask
@@ -20,8 +28,11 @@ HEURISTICS = ("blind", "goalcount", "hmax", "hadd", "ff")
 #: Heurísticas con implementación en PyTorch.
 TENSOR_HEURISTICS = ("hmax", "hadd", "ff")
 
+#: Heurísticas con implementación compilada con Numba.
+COMPILED_HEURISTICS = ("hmax", "hadd", "ff")
+
 #: Dispositivos de evaluación.
-DEVICES = ("python", "cpu", "cuda")
+DEVICES = ("auto", "python", "numba", "cpu", "cuda")
 
 #: Heurísticas que calculan acciones útiles.
 PREFERRED_HEURISTICS = ("ff",)
@@ -31,7 +42,17 @@ class HeuristicError(PDDLError):
     """Heurística o dispositivo no válidos."""
 
 
-def create_heuristic(name: str, task: GroundTask, device: str = "python") -> Heuristic:
+@cache
+def numba_available() -> bool:
+    """``True`` si Numba está instalado y se puede importar."""
+    try:
+        import numba  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuristic:
     """Crea la heurística ``name`` para ``task`` en el dispositivo indicado.
 
     Raises:
@@ -46,6 +67,10 @@ def create_heuristic(name: str, task: GroundTask, device: str = "python") -> Heu
         raise HeuristicError(
             f"dispositivo desconocido '{device}' (disponibles: {', '.join(DEVICES)})"
         )
+    if device == "auto":
+        device = "numba" if numba_available() else "python"
+    if device == "numba" and name not in COMPILED_HEURISTICS:
+        device = "python"  # nada que acelerar
     if device == "python":
         reference: dict[str, type[Heuristic]] = {
             "blind": BlindHeuristic,
@@ -55,6 +80,19 @@ def create_heuristic(name: str, task: GroundTask, device: str = "python") -> Heu
             "ff": FFHeuristic,
         }
         return reference[name](task)
+    if device == "numba":
+        if not numba_available():
+            raise HeuristicError(
+                "el dispositivo 'numba' necesita Numba; instálalo con pip install -e \".[fast]\""
+            )
+        from pyplanner.heuristics import compiled
+
+        compiled_classes: dict[str, type[compiled._CompiledHeuristic]] = {
+            "hmax": compiled.CompiledHMaxHeuristic,
+            "hadd": compiled.CompiledHAddHeuristic,
+            "ff": compiled.CompiledFFHeuristic,
+        }
+        return compiled_classes[name](task)
     if name not in TENSOR_HEURISTICS:
         raise HeuristicError(f"la heurística '{name}' no tiene implementación en PyTorch")
     try:
@@ -73,6 +111,7 @@ def create_heuristic(name: str, task: GroundTask, device: str = "python") -> Heu
 
 
 __all__ = [
+    "COMPILED_HEURISTICS",
     "DEAD_END",
     "DEVICES",
     "HEURISTICS",
@@ -82,4 +121,5 @@ __all__ = [
     "Heuristic",
     "HeuristicError",
     "create_heuristic",
+    "numba_available",
 ]

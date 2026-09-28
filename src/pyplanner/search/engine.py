@@ -18,6 +18,10 @@ con una heurística admisible sigue devolviendo planes óptimos.
 sucesores, y la preferente, solo con los generados por acciones útiles. Se alterna entre
 ellas. Como todos los sucesores están en la cola normal, la búsqueda sigue siendo completa.
 
+**Exploración por tipos.** Con ``exploration="type-based"`` se alterna además con una
+cola que saca un nodo al azar de un tipo (h, g) al azar (ver :class:`_TypeBuckets`). Ayuda
+en dominios con mesetas o muchos callejones sin salida, donde la búsqueda voraz se atasca.
+
 **Callejones sin salida.** Los estados con valor heurístico infinito se descartan. Es
 seguro con las heurísticas disponibles, porque solo dan infinito si el objetivo es
 inalcanzable incluso en la relajación.
@@ -33,6 +37,7 @@ from pyplanner.grounding import GroundTask, State
 from pyplanner.heuristics import Evaluation, Heuristic, create_heuristic
 from pyplanner.search.config import SearchConfig
 from pyplanner.search.result import SearchResult, SearchStatistics, SearchStatus, StopSignal
+from pyplanner.search.successors import create_successor_generator
 
 #: Cada cuántas iteraciones se consulta la señal de parada (consultarla tiene un coste).
 STOP_CHECK_INTERVAL = 32
@@ -64,13 +69,58 @@ def search(
     return engine_class(task, config, heuristic, stop).run()
 
 
+class _TypeBuckets:
+    """Lista abierta para la exploración por tipos (Xie, Müller, Holte e Imai, 2014).
+
+    Agrupa las entradas por su *tipo* (el par h, g). Al sacar, elige un tipo al azar con la
+    misma probabilidad para todos y, dentro de él, una entrada al azar. Así la búsqueda
+    visita de vez en cuando zonas que la heurística considera peores, lo que ayuda a salir
+    de mesetas y regiones con muchos callejones sin salida. Todas las operaciones son O(1).
+    """
+
+    def __init__(self, seed: int) -> None:
+        self._rng = random.Random(seed)
+        self._buckets: dict[tuple[float, ...], list[tuple[int, ...]]] = {}
+        self._types: list[tuple[float, ...]] = []
+        self._position: dict[tuple[float, ...], int] = {}
+
+    def push(self, type_key: tuple[float, ...], item: tuple[int, ...]) -> None:
+        bucket = self._buckets.get(type_key)
+        if bucket is None:
+            bucket = self._buckets[type_key] = []
+            self._position[type_key] = len(self._types)
+            self._types.append(type_key)
+        bucket.append(item)
+
+    def pop(self) -> tuple[int, ...]:
+        type_key = self._types[self._rng.randrange(len(self._types))]
+        bucket = self._buckets[type_key]
+        i = self._rng.randrange(len(bucket))
+        bucket[i], bucket[-1] = bucket[-1], bucket[i]
+        item = bucket.pop()
+        if not bucket:  # se quita el tipo intercambiándolo con el último
+            del self._buckets[type_key]
+            index = self._position.pop(type_key)
+            last = self._types.pop()
+            if last != type_key:
+                self._types[index] = last
+                self._position[last] = index
+        return item
+
+    def __bool__(self) -> bool:
+        return bool(self._types)
+
+
 class _OpenLists:
-    """Una o dos colas de prioridad (normal y preferente) que se usan por turnos."""
+    """Colas que se usan por turnos: la normal, la preferente (acciones útiles) y la de
+    exploración por tipos, según la configuración."""
 
     def __init__(self, config: SearchConfig) -> None:
         self.queues: list[list[_Entry]] = [[]]
         if config.preferred_operators:
             self.queues.append([])
+        self.types = _TypeBuckets(config.seed) if config.exploration == "type-based" else None
+        self._slots = len(self.queues) + (1 if self.types is not None else 0)
         self._turn = 0
         if config.tie_breaking == "random":
             rng = random.Random(config.seed)
@@ -80,24 +130,36 @@ class _OpenLists:
         else:
             self._tie = (float(i) for i in itertools.count())
 
-    def push(self, key: tuple[float, ...], item: tuple[int, ...], preferred: bool) -> None:
+    def push(
+        self,
+        key: tuple[float, ...],
+        item: tuple[int, ...],
+        preferred: bool,
+        type_key: tuple[float, ...],
+    ) -> None:
         entry: _Entry = (key, next(self._tie), item)
         heapq.heappush(self.queues[0], entry)
         if preferred and len(self.queues) > 1:
             heapq.heappush(self.queues[1], entry)
+        if self.types is not None:
+            self.types.push(type_key, item)
 
     def pop(self) -> tuple[int, ...] | None:
-        """Saca la mejor entrada de la cola a la que le toca (o de otra si está vacía)."""
-        for offset in range(len(self.queues)):
-            queue = self.queues[(self._turn + offset) % len(self.queues)]
-            if queue:
-                self._turn = (self._turn + 1) % len(self.queues)
-                _, _, item = heapq.heappop(queue)
-                return item
+        """Saca una entrada de la cola a la que le toca (o de la siguiente si está vacía)."""
+        for offset in range(self._slots):
+            slot = (self._turn + offset) % self._slots
+            if slot < len(self.queues):
+                queue = self.queues[slot]
+                if queue:
+                    self._turn = (slot + 1) % self._slots
+                    return heapq.heappop(queue)[2]
+            elif self.types:
+                self._turn = (slot + 1) % self._slots
+                return self.types.pop()
         return None
 
     def __bool__(self) -> bool:
-        return any(self.queues)
+        return any(self.queues) or bool(self.types)
 
 
 class _BestFirstSearch:
@@ -113,6 +175,7 @@ class _BestFirstSearch:
         self.task = task
         self.config = config
         self.heuristic = heuristic
+        self.successors = create_successor_generator(task, config.device)
         self.stop = stop
         self.stats = SearchStatistics()
         self.open = _OpenLists(config)
@@ -230,7 +293,7 @@ class EagerSearch(_BestFirstSearch):
                 self.stats.expanded += 1
                 state, g = self.states[node], self.g[node]
                 useful = self.preferred[node]
-                for action in self.task.applicable(state):
+                for action in self.successors(state):
                     self.stats.generated += 1
                     successor = self.task.apply(state, action)
                     new_g = g + action.cost
@@ -264,7 +327,8 @@ class EagerSearch(_BestFirstSearch):
     def push(self, node: int, preferred: bool) -> None:
         h = self.h[node]
         assert h is not None
-        self.open.push(self.priority(self.g[node], h), (node,), preferred)
+        g = self.g[node]
+        self.open.push(self.priority(g, h), (node,), preferred, (h, g))
 
     def pop_batch(self) -> list[int] | int | None:
         """Saca hasta ``batch_size`` nodos por expandir.
@@ -344,7 +408,8 @@ class LazySearch(_BestFirstSearch):
         h = self.h[node]
         assert h is not None
         useful = self.preferred[node]
-        for action in self.task.applicable(self.states[node]):
+        for action in self.successors(self.states[node]):
             self.stats.generated += 1
             key = self.priority(self.g[node] + action.cost, h)
-            self.open.push(key, (node, action.index), action.index in useful)
+            g = self.g[node] + action.cost
+            self.open.push(key, (node, action.index), action.index in useful, (h, g))

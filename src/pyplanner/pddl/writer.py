@@ -6,13 +6,16 @@ Sirve para dos cosas:
   tiene que dar el mismo documento);
 * pasarle a herramientas externas como VAL una tarea que llegó directamente en JSON.
 
-El documento se supone válido según el esquema; no se vuelve a comprobar aquí.
+El documento se supone válido según el esquema; no se vuelve a comprobar aquí. Una
+precondición o un efecto ausentes se escriben como ``(and)``, porque VAL no acepta
+acciones sin ``:precondition``. Es equivalente: una precondición ausente es la vacía.
 """
 
 from collections.abc import Mapping
 from typing import Any
 
 _INDENT = "  "
+_EMPTY = {"op": "and", "args": []}
 
 
 def write_pddl(document: Mapping[str, Any]) -> str:
@@ -40,10 +43,10 @@ def _write_domain(document: Mapping[str, Any]) -> str:
     for action in document.get("actions", []):
         lines.append(f"{_INDENT}(:action {action['name']}")
         lines.append(f"{_INDENT * 2}:parameters ({_typed_list(action.get('parameters', []))})")
-        if "precondition" in action:
-            lines.append(f"{_INDENT * 2}:precondition {_formula(action['precondition'])}")
-        if "effect" in action:
-            lines.append(f"{_INDENT * 2}:effect {_effect(action['effect'])}")
+        # VAL exige :precondition y :effect aunque estén vacíos, así que se escriben siempre.
+        precondition = action.get("precondition", _EMPTY)
+        lines.append(f"{_INDENT * 2}:precondition {_formula(precondition)}")
+        lines.append(f"{_INDENT * 2}:effect {_effect(action.get('effect', _EMPTY))}")
         lines.append(f"{_INDENT})")
     lines.append(")")
     return "\n".join(lines) + "\n"

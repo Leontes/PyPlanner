@@ -74,8 +74,8 @@ def test_solve_prints_ipc_plan(task: tuple[Path, Path], capsys: pytest.CaptureFi
     captured = capsys.readouterr()
     assert captured.out.endswith("; cost = 2 (unit cost)\n")
     assert "(move home kitchen)" in captured.out
-    assert "Núcleos: 1 → 1 búsqueda(s): lazy-ff-pref" in captured.err
-    assert "Resultado: solved (lazy-ff-pref)" in captured.err
+    assert "Núcleos: 1 → 1 búsqueda(s): gbfs-ff-pref-tb" in captured.err
+    assert "Resultado: solved (gbfs-ff-pref-tb)" in captured.err
 
 
 @pytest.mark.parametrize(("cores", "expected"), [(1, 1), (2, 2), (3, 2), (4, 4), (5, 5), (9, 5)])
@@ -150,6 +150,7 @@ def test_solve_limit(task: tuple[Path, Path]) -> None:
 def test_configs_lists_presets(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["configs"]) == 0
     out = capsys.readouterr().out
-    assert "lazy-ff-pref" in out and "[núcleos 1,2,4,5]" in out
+    assert "gbfs-ff-pref-tb" in out and "[núcleos 1,2,4,5]" in out
+    assert "exploración type-based" in out
     assert "astar-hmax" in out and "óptima" in out
-    assert "1: lazy-ff-pref" in out
+    assert "1: gbfs-ff-pref-tb" in out

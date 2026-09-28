@@ -80,7 +80,7 @@ def simulate(task: GroundTask, indices: tuple[int, ...]) -> str | None:
     state = task.init
     for step, index in enumerate(indices, start=1):
         action = task.actions[index]
-        if state & action.pre != action.pre:
+        if not action.applicable(state):
             return f"paso {step}: {action} no es aplicable"
         state = task.apply(state, action)
     if not task.is_goal(state):

@@ -12,8 +12,9 @@ from pyplanner.heuristics import (
     TENSOR_HEURISTICS,
     HeuristicError,
     create_heuristic,
+    numba_available,
 )
-from tests.tasks import chain, dead_end, fork, token, unreachable
+from tests.tasks import chain, dead_end, fork, goal_state, token, unreachable
 from tests.tiers import Instance, discover_instances
 
 try:
@@ -24,6 +25,12 @@ except ImportError:  # pragma: no cover - depende del entorno
     TORCH_DEVICES = []
 
 requires_torch = pytest.mark.skipif(not TORCH_DEVICES, reason="PyTorch no está instalado")
+
+#: Dispositivos acelerados disponibles: todos tienen que dar lo mismo que la referencia.
+ACCELERATED_DEVICES = (["numba"] if numba_available() else []) + TORCH_DEVICES
+requires_accelerated = pytest.mark.skipif(
+    not ACCELERATED_DEVICES, reason="ni Numba ni PyTorch están instalados"
+)
 
 
 def values(task: GroundTask, name: str, device: str = "python") -> float:
@@ -45,9 +52,8 @@ def test_reference_values(task: GroundTask, expected: dict[str, float]) -> None:
 
 def test_goal_states_are_zero() -> None:
     task = chain()
-    goal_state = task.goal
     for name in HEURISTICS:
-        assert create_heuristic(name, task).evaluate(goal_state).value == 0
+        assert create_heuristic(name, task).evaluate(goal_state(task)).value == 0
 
 
 def test_unreachable_goal_is_a_dead_end() -> None:
@@ -70,7 +76,7 @@ def test_ff_preferred_operators() -> None:
 def test_batch_and_single_evaluation_agree() -> None:
     task = chain()
     heuristic = create_heuristic("ff", task)
-    states = [task.init, task.apply(task.init, task.actions[0]), task.goal]
+    states = [task.init, task.apply(task.init, task.actions[0]), goal_state(task)]
     assert heuristic.evaluate_batch(states) == [heuristic.evaluate(s) for s in states]
 
 
@@ -98,29 +104,30 @@ def random_walk_states(task: GroundTask, count: int, seed: int = 0) -> list[Stat
     return states
 
 
-TIER1 = [i for i in discover_instances() if i.tier == 1]
+TIER1_AND_2 = [i for i in discover_instances() if i.tier <= 2]
 
 
-@requires_torch
-@pytest.mark.parametrize("device", TORCH_DEVICES)
+@requires_accelerated
+@pytest.mark.parametrize("device", ACCELERATED_DEVICES)
 @pytest.mark.parametrize("name", TENSOR_HEURISTICS)
-@pytest.mark.parametrize("instance", TIER1, ids=lambda i: i.id)
-def test_tensor_matches_reference(instance: Instance, name: str, device: str) -> None:
+@pytest.mark.parametrize("instance", TIER1_AND_2, ids=lambda i: i.id)
+def test_accelerated_matches_reference(instance: Instance, name: str, device: str) -> None:
     domain = read_domain(instance.domain)
     task = ground(domain, read_problem(instance.problem, domain))
     states = random_walk_states(task, 200)
-    reference = create_heuristic(name, task).evaluate_batch(states)
-    tensor = create_heuristic(name, task, device).evaluate_batch(states)
-    assert tensor == reference
+    reference = create_heuristic(name, task, "python").evaluate_batch(states)
+    accelerated = create_heuristic(name, task, device).evaluate_batch(states)
+    assert accelerated == reference
 
 
-@requires_torch
-@pytest.mark.parametrize("device", TORCH_DEVICES)
-def test_tensor_handmade_tasks(device: str) -> None:
+@requires_accelerated
+@pytest.mark.parametrize("device", ACCELERATED_DEVICES)
+def test_accelerated_handmade_tasks(device: str) -> None:
     for task in (chain(), fork(), token(), unreachable()):
         for name in TENSOR_HEURISTICS:
-            reference = create_heuristic(name, task).evaluate_batch([task.init, task.goal])
-            tensor = create_heuristic(name, task, device).evaluate_batch([task.init, task.goal])
+            states = [task.init, goal_state(task) if task.goal else task.init]
+            reference = create_heuristic(name, task, "python").evaluate_batch(states)
+            tensor = create_heuristic(name, task, device).evaluate_batch(states)
             assert tensor == reference, (name, device)
 
 
@@ -138,7 +145,7 @@ def all_states(task: GroundTask) -> list[State]:
     return sorted(seen)
 
 
-@pytest.mark.parametrize("device", ["python", *TORCH_DEVICES])
+@pytest.mark.parametrize("device", ["python", *ACCELERATED_DEVICES])
 def test_batch_mixing_dead_ends_and_live_states(device: str) -> None:
     task = dead_end()
     states = all_states(task)
@@ -150,3 +157,20 @@ def test_batch_mixing_dead_ends_and_live_states(device: str) -> None:
     assert by_position["s"].value == 2 and by_position["a"].value == 1
     assert by_position["t"].value == 0
     assert [str(task.actions[i]) for i in by_position["s"].preferred] == ["(move s a)"]
+
+
+def test_auto_device_prefers_numba() -> None:
+    task = chain()
+    heuristic = create_heuristic("ff", task)
+    assert heuristic.device == ("numba" if numba_available() else "python")
+    # Las triviales no se compilan: no hay nada que acelerar.
+    assert create_heuristic("goalcount", task, "numba").device == "python"
+
+
+def test_auto_device_without_numba(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pyplanner.heuristics as heuristics
+
+    monkeypatch.setattr(heuristics, "numba_available", lambda: False)
+    assert heuristics.create_heuristic("ff", chain()).device == "python"
+    with pytest.raises(HeuristicError, match="necesita Numba"):
+        heuristics.create_heuristic("ff", chain(), "numba")

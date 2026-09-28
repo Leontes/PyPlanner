@@ -1,8 +1,13 @@
 """Tareas pequeñas hechas a mano para probar el grounding, las heurísticas y la búsqueda."""
 
-from pyplanner.grounding import GroundTask, ground
+from pyplanner.grounding import GroundTask, State, ground, mask_of
 from pyplanner.loader import load_domain, load_problem
 from pyplanner.pddl import parse_domain, parse_problem
+
+
+def goal_state(task: GroundTask) -> State:
+    """El estado con exactamente los hechos positivos de la primera cláusula del objetivo."""
+    return mask_of(task.goal[0].pos_facts)
 
 
 def build(domain: str, problem: str) -> GroundTask:

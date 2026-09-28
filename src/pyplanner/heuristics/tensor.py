@@ -14,8 +14,10 @@ Las relaciones acción-hecho se guardan como **listas de aristas** (pares de ín
 como matrices densas, y se procesan con ``index_add_`` y ``scatter_reduce``. Así la memoria
 crece con el número de relaciones que existen y no con acciones × hechos.
 
-El punto fijo es el mismo que calcula el Dijkstra de la implementación de referencia, así
-que los valores coinciden. Los costes son enteros pequeños y se representan sin error en
+Se usa la misma tarea relajada que la referencia (acciones relajadas por efecto, hechos
+complementarios para las negaciones y objetivo por cláusulas). El punto fijo es el mismo
+que calcula el Dijkstra de la implementación de referencia, así que los valores
+coinciden. Los costes son enteros pequeños y se representan sin error en
 ``float32``.
 
 h_FF también se extrae con tensores, para todo el lote a la vez
@@ -57,17 +59,26 @@ def resolve_device(device: str) -> torch.device:
 
 
 class TensorRelaxation:
-    """La relajación sin borrados de una tarea, compilada a tensores en un dispositivo."""
+    """La relajación sin borrados de una tarea, compilada a tensores en un dispositivo.
+
+    Usa la misma :class:`~pyplanner.heuristics.relaxation.RelaxedTask` que la referencia:
+    acciones relajadas (una por efecto), hechos complementarios y cláusulas del objetivo.
+    """
 
     def __init__(self, relaxed: RelaxedTask, device: torch.device) -> None:
         self.relaxed = relaxed
         self.device = device
         self.num_facts = relaxed.num_facts
-        self.num_bytes = (relaxed.num_facts + 7) // 8
+        self.num_base_facts = len(relaxed.task.facts)
+        self.num_bytes = (self.num_base_facts + 7) // 8
+        self.num_operators = len(relaxed.task.actions)
 
         def edges(pairs: list[tuple[int, int]]) -> tuple[torch.Tensor, torch.Tensor]:
             tensor = torch.tensor(pairs, dtype=torch.long).reshape(-1, 2)
             return tensor[:, 0].to(device), tensor[:, 1].to(device)
+
+        def longs(values: Sequence[int]) -> torch.Tensor:
+            return torch.tensor(list(values), dtype=torch.long, device=device)
 
         self.pre_action, self.pre_fact = edges(
             [(a, f) for a, facts in enumerate(relaxed.pre) for f in facts]
@@ -75,19 +86,32 @@ class TensorRelaxation:
         self.add_action, self.add_fact = edges(
             [(a, f) for a, facts in enumerate(relaxed.add) for f in facts]
         )
+        self.goal_clause, self.goal_fact = edges(
+            [(c, f) for c, facts in enumerate(relaxed.goal) for f in facts]
+        )
+        self.num_clauses = len(relaxed.goal)
         self.cost = torch.tensor(relaxed.cost, dtype=torch.float32, device=device)
-        self.goal = torch.tensor(relaxed.goal, dtype=torch.long, device=device)
+        self.operator = longs(relaxed.operator)
+        self.operator_cost = torch.tensor(relaxed.operator_cost, dtype=torch.float32, device=device)
+        self.negated = longs(relaxed.negated)
         self._bit_shifts = torch.arange(8, dtype=torch.uint8, device=device)
 
     def states_to_tensor(self, states: Sequence[State]) -> torch.Tensor:
-        """Convierte un lote de bitsets en una matriz booleana lote × hechos."""
+        """Convierte un lote de bitsets en una matriz booleana lote × hechos relajados.
+
+        Las columnas de los hechos complementarios son la negación de las de sus hechos.
+        """
+        batch = len(states)
         if self.num_bytes == 0:
-            return torch.zeros(len(states), 0, dtype=torch.bool, device=self.device)
-        raw = b"".join(s.to_bytes(self.num_bytes, "little") for s in states)
-        packed = torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(self.device)
-        packed = packed.view(len(states), self.num_bytes)
-        unpacked = (packed.unsqueeze(-1) >> self._bit_shifts) & 1
-        return unpacked.view(len(states), -1)[:, : self.num_facts].bool()
+            base = torch.zeros(batch, 0, dtype=torch.bool, device=self.device)
+        else:
+            raw = b"".join(s.to_bytes(self.num_bytes, "little") for s in states)
+            packed = torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(self.device)
+            unpacked = (packed.view(batch, self.num_bytes).unsqueeze(-1) >> self._bit_shifts) & 1
+            base = unpacked.view(batch, -1)[:, : self.num_base_facts].bool()
+        if self.negated.numel() == 0:
+            return base
+        return torch.cat([base, ~base[:, self.negated]], dim=1)
 
     def fact_costs(self, states: Sequence[State], combine_max: bool) -> torch.Tensor:
         """Matriz lote × hechos con los costes h_max o h_add (``inf`` si inalcanzable)."""
@@ -99,13 +123,12 @@ class TensorRelaxation:
         num_actions = self.cost.shape[0]
         for _ in range(self.num_facts + 1):
             pre_values = h[:, self.pre_fact]
+            accumulated = torch.zeros(batch, num_actions, device=self.device)
             if combine_max:
-                accumulated = torch.zeros(batch, num_actions, device=self.device)
                 accumulated = accumulated.scatter_reduce(
                     1, pre_index, pre_values, reduce="amax", include_self=True
                 )
             else:
-                accumulated = torch.zeros(batch, num_actions, device=self.device)
                 accumulated.index_add_(1, self.pre_action, pre_values)
             action_cost = self.cost + accumulated
             updated = h.scatter_reduce(
@@ -116,23 +139,35 @@ class TensorRelaxation:
             h = updated
         return h
 
+    def clause_values(self, costs: torch.Tensor, combine_max: bool) -> torch.Tensor:
+        """Matriz lote × cláusulas con el valor h_max o h_add de cada cláusula."""
+        batch = costs.shape[0]
+        values = torch.zeros(batch, self.num_clauses, device=self.device)
+        goal_costs = costs[:, self.goal_fact]
+        if combine_max:
+            return values.scatter_reduce(
+                1, self.goal_clause.expand(batch, -1), goal_costs, reduce="amax", include_self=True
+            )
+        return values.index_add_(1, self.goal_clause, goal_costs)
+
     def goal_values(self, costs: torch.Tensor, combine_max: bool) -> list[float]:
-        """Valor h_max o h_add del objetivo para cada estado del lote."""
-        if self.goal.numel() == 0:
-            return [0.0] * costs.shape[0]
-        goal_costs = costs[:, self.goal]
-        values = goal_costs.amax(dim=1) if combine_max else goal_costs.sum(dim=1)
+        """Valor h_max o h_add del objetivo (mínimo entre cláusulas) de cada estado."""
+        if self.num_clauses == 0:
+            return [DEAD_END] * costs.shape[0]
+        values = self.clause_values(costs, combine_max).amin(dim=1)
         return [DEAD_END if v == float("inf") else v for v in values.tolist()]
 
     def relaxed_plans(self, states: Sequence[State]) -> list[Evaluation]:
         """h_FF (valor y acciones útiles) de cada estado del lote, extraído con tensores."""
         batch = len(states)
+        if self.num_clauses == 0:
+            return [Evaluation(DEAD_END) for _ in states]
         num_actions = self.cost.shape[0]
         device = self.device
         h = self.fact_costs(states, combine_max=False)
-        pending = h > 0  # hechos que no son ciertos en el estado
+        pending = h > 0  # hechos relajados que no son ciertos en el estado
 
-        # Coste de cada acción con los costes definitivos de los hechos.
+        # Coste de cada acción relajada con los costes definitivos de los hechos.
         action_cost = self.cost.expand(batch, -1).clone()
         action_cost.index_add_(1, self.pre_action, h[:, self.pre_fact])
 
@@ -145,25 +180,27 @@ class TensorRelaxation:
             1, self.add_fact.expand(batch, -1), candidates, reduce="amin", include_self=True
         )
 
-        # Estados en los que algún objetivo es inalcanzable: callejones sin salida.
-        dead = torch.zeros(batch, dtype=torch.bool, device=device)
-        frontier = torch.zeros(batch, self.num_facts, dtype=torch.bool, device=device)
-        if self.goal.numel():
-            goal_costs = h[:, self.goal]
-            dead = torch.isinf(goal_costs).any(dim=1)
-            frontier[:, self.goal] = goal_costs > 0
-            frontier &= ~dead.unsqueeze(1)
+        # Cláusula del objetivo: la de menor valor h_add (la primera si hay empate).
+        clause_values = self.clause_values(h, combine_max=False)
+        chosen = clause_values.argmin(dim=1)
+        dead = torch.isinf(clause_values.gather(1, chosen.unsqueeze(1)).squeeze(1))
+        in_clause = (self.goal_clause.unsqueeze(0) == chosen.unsqueeze(1)) & ~dead.unsqueeze(1)
+        start = in_clause & pending[:, self.goal_fact]
+        frontier = torch.zeros(batch, self.num_facts, dtype=torch.uint8, device=device)
+        frontier = frontier.scatter_reduce(
+            1, self.goal_fact.expand(batch, -1), start.to(torch.uint8), "amax"
+        ).bool()
         needed = frontier.clone()
         selected = torch.zeros(batch, num_actions + 1, dtype=torch.bool, device=device)
         pre_pending = pending[:, self.pre_fact]
 
         while frontier.any():
             # Soportadores de los hechos de la frontera.
-            chosen = torch.zeros(batch, num_actions + 1, dtype=torch.uint8, device=device)
-            chosen = chosen.scatter_reduce(
+            chosen_actions = torch.zeros(batch, num_actions + 1, dtype=torch.uint8, device=device)
+            chosen_actions = chosen_actions.scatter_reduce(
                 1, best, frontier.to(torch.uint8), reduce="amax", include_self=True
             ).bool()
-            new_actions = chosen & ~selected
+            new_actions = chosen_actions & ~selected
             selected |= new_actions
             # Sus precondiciones pendientes son los nuevos hechos necesarios.
             required = new_actions[:, self.pre_action] & pre_pending
@@ -175,20 +212,32 @@ class TensorRelaxation:
             needed |= frontier
 
         plan = selected[:, :num_actions]
-        values = (plan * self.cost).sum(dim=1)
+        # Cada operador cuenta una vez, aunque se usen varios de sus efectos.
+        operators = self._to_operators(plan)
+        values = (operators * self.operator_cost).sum(dim=1)
         unsatisfied = torch.zeros(batch, num_actions, device=device)
         unsatisfied.index_add_(1, self.pre_action, pre_pending.float())
-        preferred = torch.nonzero(plan & (unsatisfied == 0)).tolist()
+        preferred = torch.nonzero(self._to_operators(plan & (unsatisfied == 0))).tolist()
 
         per_state: list[list[int]] = [[] for _ in range(batch)]
-        for row, action in preferred:
-            per_state[row].append(action)
+        for row, operator in preferred:
+            per_state[row].append(operator)
         return [
             Evaluation(DEAD_END) if is_dead else Evaluation(value, tuple(actions))
             for is_dead, value, actions in zip(
                 dead.tolist(), values.tolist(), per_state, strict=True
             )
         ]
+
+    def _to_operators(self, relaxed_mask: torch.Tensor) -> torch.Tensor:
+        """Proyecta una máscara lote × acciones relajadas sobre lote × operadores."""
+        batch = relaxed_mask.shape[0]
+        result = torch.zeros(batch, self.num_operators, dtype=torch.uint8, device=self.device)
+        if self.operator.numel() == 0:
+            return result.bool()
+        return result.scatter_reduce(
+            1, self.operator.expand(batch, -1), relaxed_mask.to(torch.uint8), "amax"
+        ).bool()
 
 
 class _TensorHeuristic(Heuristic):

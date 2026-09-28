@@ -148,6 +148,9 @@ El portfolio se monta encima de todo eso.
 | h_max, h_add, h_FF | heurísticas de relajación | iteración 1 |
 | Acciones útiles, evaluación perezosa | menos evaluaciones de la heurística | iteración 1 |
 | Portfolio paralelo | robustez y aprovechamiento de varios núcleos | final de la iteración 1 |
+| Exploración por tipos (Xie et al., 2014) | salir de mesetas y zonas con callejones sin salida | iteración 2 |
+| Heurísticas compiladas con Numba | h_max, h_add y h_FF 12–19 veces más rápidas | iteración 2 |
+| Generación de sucesores compilada con Numba | mismo orden que la referencia; del 46% al 5% del tiempo de búsqueda | iteración 2 |
 | Enforced hill-climbing (FF) | búsqueda local rápida | opcional |
 | Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional |
 | Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional |
@@ -217,14 +220,23 @@ máximo soportado es una constante que se sube al cerrar cada iteración.
   - fórmulas arbitrarias con `not`, `or`, `imply`, `exists`, `forall` y `=`;
   - efectos `forall` y `when`;
   - expansión de los metarrequisitos (`:adl` y `:quantified-preconditions`).
-- **Motor:**
-  - normalización: forma negada normal, eliminación de cuantificadores sobre universos
-    finitos y división de las disyunciones en varias acciones (al estilo del traductor de
-    Fast Downward);
-  - precondiciones negativas;
-  - efectos condicionales en la aplicación de acciones y en la heurística relajada.
-- **Tests:** tier 2 (rubiks-cube y slitherlink) y casos límite de tipos y
-  cuantificadores.
+- **Motor:** ✅ hecho (ver [motor-busqueda.md](motor-busqueda.md)):
+  - normalización instanciada: cuantificadores expandidos sobre los objetos de su tipo,
+    fórmulas a DNF con simplificación (igualdad, hechos estáticos, contradicciones,
+    subsunción) y una acción por disyunto;
+  - precondiciones y objetivos negativos exactos en el estado; en las heurísticas, hechos
+    complementarios solo dentro de la relajación;
+  - efectos condicionales evaluados sobre el estado anterior e indexados por disparador;
+    en la relajación, una acción relajada por efecto, y h_FF cuenta cada operador una vez;
+  - objetivos disyuntivos (mínimo entre cláusulas);
+  - implementación en PyTorch adaptada, con equivalencia exacta con la referencia;
+  - **exploración por tipos** en la búsqueda y portfolios rehechos a partir de ella;
+  - **heurísticas compiladas con Numba** (dispositivo `numba`, por defecto con `auto`),
+    idénticas a la referencia, y generación de sucesores compilada con el mismo orden
+    canónico que la referencia: slitherlink p02 pasa de 22 s a 2,4 s.
+- **Tests:** ✅ tier 2 (rubiks-cube y slitherlink) resuelto y validado con VAL con los 4
+  portfolios; tareas ADL hechas a mano para cada construcción, con sus planes validados
+  con VAL.
 
 **Fuera de alcance (propuesta):** los requisitos obsoletos o casi sin uso de PDDL 1.2:
 `:action-expansions`, `:foreach-expansions`, `:dag-expansions`, `:domain-axioms`,

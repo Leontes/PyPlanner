@@ -33,7 +33,9 @@ def test_only_reachable_actions_are_instantiated() -> None:
 def test_initial_state_and_goal() -> None:
     task = chain()
     assert task.atoms(task.init) == [atom("at", "p0")]
-    assert [task.facts[i] for i in task.goal_facts] == [atom("at", "p3")]
+    [clause] = task.goal
+    assert [task.facts[i] for i in clause.pos_facts] == [atom("at", "p3")]
+    assert clause.neg_facts == ()
     assert not task.is_goal(task.init)
 
 
@@ -62,11 +64,10 @@ def test_add_wins_over_delete() -> None:
     assert task.apply(task.init, action) == task.init
 
 
-def test_unreachable_goal_is_kept() -> None:
+def test_unreachable_goal_is_impossible() -> None:
     task = unreachable()
-    [goal] = task.goal_facts
-    assert task.facts[goal] == atom("at", "p2")
-    assert not any(goal in a.add_facts for a in task.actions)
+    assert task.goal == ()  # ninguna cláusula alcanzable: objetivo imposible
+    assert not task.is_goal(task.init)
 
 
 def test_grounding_is_deterministic() -> None:

@@ -250,7 +250,7 @@ def test_round_trip_adl_domain() -> None:
         "  :precondition (and (not (= ?x ?y)) (imply (q) (exists (?z - u) (p ?z))))"
         "  :effect (and (forall (?z - t) (when (or (p ?z) (q)) (and (not (p ?z)) (q))))))"
     )
-    assert parse_pddl(write_pddl(document), locations=False) == document
+    assert parse_pddl(write_pddl(document), locations=False) == document  # tiene ambos
 
 
 def test_untyped_item_before_typed_ones_is_written_as_object() -> None:

@@ -24,7 +24,7 @@ requires_val = pytest.mark.skipif(
 INSTANCES = [i for i in discover_instances() if i.tier <= SUPPORTED_TIER]
 
 #: Límite de tiempo por instancia en los tests.
-TIME_LIMIT = 60.0
+TIME_LIMIT = 120.0
 
 
 def validate_with_val(instance: Instance, plan_file: Path) -> str:

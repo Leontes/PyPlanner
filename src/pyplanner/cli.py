@@ -24,6 +24,7 @@ from pathlib import Path
 from pyplanner import __version__
 from pyplanner.errors import PDDLError
 from pyplanner.frontend import read_domain, read_problem
+from pyplanner.heuristics import DEVICES
 from pyplanner.pddl import parse_file
 from pyplanner.planner import PlanningResult, available_cores, solve
 from pyplanner.search import (
@@ -83,7 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     solve_cmd.add_argument("-t", "--time-limit", type=float, help="límite de tiempo en segundos")
     solve_cmd.add_argument("--batch-size", type=int, help="tamaño de lote de evaluación")
     solve_cmd.add_argument(
-        "--device", choices=("python", "cpu", "cuda"), help="dónde se evalúa la heurística"
+        "--device",
+        choices=DEVICES,
+        help="dónde se evalúa la heurística (por defecto auto: Numba si está instalado)",
     )
     solve_cmd.add_argument(
         "-o", "--output", type=Path, help="fichero del plan (por defecto, stdout)"
@@ -236,6 +239,8 @@ def _configs() -> int:
             extras.append(f"peso {config.weight:g}")
         if config.tie_breaking != "fifo":
             extras.append(f"desempate {config.tie_breaking}")
+        if config.exploration != "none":
+            extras.append(f"exploración {config.exploration}")
         tags = []
         if name in membership:
             tags.append("núcleos " + ",".join(map(str, membership[name])))

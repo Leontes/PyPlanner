@@ -6,6 +6,7 @@ import threading
 import pytest
 
 from pyplanner import portfolio
+from pyplanner.heuristics import numba_available
 from pyplanner.plan import simulate
 from pyplanner.portfolio import run_portfolio
 from pyplanner.search import DEFAULT_PORTFOLIO, PRESETS, SearchConfig, SearchStatus
@@ -85,3 +86,21 @@ def test_fork_is_only_used_when_safe(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not portfolio._fork_is_safe([PRESETS["gbfs-ff"].with_changes(device="cuda")])
     monkeypatch.setattr(threading, "active_count", lambda: 3)
     assert not portfolio._fork_is_safe(cpu)
+
+
+@pytest.mark.skipif(not numba_available(), reason="Numba no está instalado")
+def test_numba_kernels_are_warmed_up_in_the_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pyplanner.heuristics import compiled
+
+    calls: list[int] = []
+    original = compiled.warm_up
+
+    def counting_warm_up() -> None:
+        calls.append(1)
+        original()
+
+    monkeypatch.setattr(compiled, "warm_up", counting_warm_up)
+    run_portfolio(chain(), [PRESETS["gbfs-ff"]])
+    assert calls == [1]
+    run_portfolio(chain(), [PRESETS["gbfs-ff"].with_changes(device="python")])  # sin Numba
+    assert calls == [1]

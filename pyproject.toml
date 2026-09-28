@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyplanner"
-version = "0.1.0"
+version = "0.2.0"
 description = "Planificador PDDL en Python"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,6 +22,10 @@ dev = [
     "types-jsonschema",
 ]
 
+# Numba para compilar las heurísticas (dispositivo "numba"; "auto" lo usa si está instalado).
+fast = [
+    "numba>=0.60",
+]
 # PyTorch para evaluar heurísticas por lotes en CPU o GPU. Para GPUs antiguas (p. ej.
 # Maxwell) hay que instalarlo desde el índice cu126; ver README.
 gpu = [
@@ -53,3 +57,15 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# Los núcleos de Numba no llevan anotaciones: Numba infiere sus propios tipos.
+module = ["pyplanner.heuristics.compiled", "pyplanner.search.compiled_successors"]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+# Numba trae tipos parciales que no entienden las funciones compiladas: se trata como Any.
+module = ["numba", "numba.*"]
+ignore_missing_imports = true
+follow_imports = "skip"

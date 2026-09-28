@@ -33,6 +33,7 @@ from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from typing import Any
 
 from pyplanner.grounding import GroundTask
+from pyplanner.heuristics import numba_available
 from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
 
 #: Segundos que se espera a que un proceso cancelado termine antes de forzarlo.
@@ -81,6 +82,7 @@ def run_portfolio(
             c if c.max_time is not None else c.with_changes(max_time=time_limit) for c in configs
         ]
 
+    _warm_up_compiled(configs)
     context = _context(configs, start_method)
     stop = context.Event()
     results_queue = context.Queue()
@@ -160,6 +162,22 @@ def _context(
     if start_method == "forkserver":
         return mp.get_context("forkserver")
     raise ValueError(f"método de arranque desconocido: '{start_method}'")
+
+
+def _warm_up_compiled(configs: Sequence[SearchConfig]) -> None:
+    """Precompila las heurísticas de Numba en el padre si algún miembro las va a usar.
+
+    Si no, un hijo cancelado a mitad de compilar dejaría la caché incompleta, y todas las
+    ejecuciones pagarían la compilación y la espera del cierre.
+    """
+    if all(c.device == "python" for c in configs):
+        return  # nadie usa código compilado (ni heurística ni sucesores)
+    if numba_available():
+        from pyplanner.heuristics import compiled
+        from pyplanner.search import compiled_successors
+
+        compiled.warm_up()
+        compiled_successors.warm_up()
 
 
 def _fork_is_safe(configs: Sequence[SearchConfig]) -> bool:

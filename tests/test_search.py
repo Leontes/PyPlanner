@@ -20,7 +20,7 @@ from pyplanner.search import (
     portfolio_for_cores,
     search,
 )
-from tests.tasks import build, chain, fork, token, unreachable
+from tests.tasks import build, chain, fork, goal_state, token, unreachable
 from tests.tiers import DOMINIOS_DIR
 
 
@@ -71,7 +71,7 @@ def test_dead_end_initial_state() -> None:
 def test_initial_state_already_goal() -> None:
     task = chain()
     solved = GroundTask(
-        task.domain_name, task.problem_name, task.facts, task.actions, task.goal, task.goal_facts
+        task.domain_name, task.problem_name, task.facts, task.actions, goal_state(task), task.goal
     )
     for name in ("gbfs-ff", "lazy-ff-pref"):
         result = search(solved, PRESETS[name])
