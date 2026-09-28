@@ -13,9 +13,13 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 |---------|-----------|----------|--------|
 | v0.1 | 1 | STRIPS | ✅ |
 | v0.2 | 2 | PDDL 1.2, subconjunto ADL: tipos, precondiciones negativas y disyuntivas, cuantificadores, igualdad y efectos condicionales | ✅ |
-| — | 3 | PDDL 2.1: fluentes numéricos y acciones durativas | pendiente |
-| — | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | pendiente |
-| — | 5 | PDDL+: procesos y eventos | pendiente |
+| v0.3 | 3 | PDDL 2.1: fluentes numéricos (con `:action-costs`) y acciones durativas | pendiente |
+| v0.4 | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | pendiente |
+| v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | pendiente |
+| v0.6 | 6 | PDDL+: procesos y eventos | pendiente |
+
+Tras las iteraciones, quedan como trabajo opcional técnicas de búsqueda adicionales y un
+estudio de la integración de HTN.
 
 **Modo estricto:** toda construcción tiene que tener su requisito declarado en
 `:requirements`. Una entrada que usa algo todavía no soportado se rechaza con un error

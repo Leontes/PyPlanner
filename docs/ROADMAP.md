@@ -1,11 +1,23 @@
 # Roadmap de PyPlanner
 
-Objetivo: un planificador PDDL escrito en Python que llegue hasta PDDL+. El motor es una
-**búsqueda heurística hacia delante**. El proyecto avanza en 5 iteraciones y cada una amplía
-el lenguaje que se acepta.
+Objetivo: un planificador PDDL escrito en Python que soporte **todas** las versiones de
+PDDL hasta PDDL+, incluido PDDL 3. El motor es una **búsqueda heurística hacia delante**. El
+proyecto avanza en 6 iteraciones y cada una amplía el lenguaje que se acepta:
+
+| Iteración | Lenguaje | Versión | Estado |
+|-----------|----------|---------|--------|
+| 1 | STRIPS | v0.1 | ✅ |
+| 2 | PDDL 1.2 (subconjunto ADL) | v0.2 | ✅ |
+| 3 | PDDL 2.1 (3a numérico con `:action-costs`, 3b temporal) | v0.3 | |
+| 4 | PDDL 2.2 (predicados derivados y TIL) | v0.4 | |
+| 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | |
+| 6 | PDDL+ (procesos y eventos) | v0.6 | |
+
+Después de las iteraciones: técnicas opcionales del repertorio y un estudio de la
+integración de HTN (ver "Trabajo opcional").
 
 Referencia principal del lenguaje: [planning.wiki](https://planning.wiki/ref/pddl/requirements).
-PDDL 3.0 queda fuera del alcance (`:constraints`, `:preferences`).
+PDDL 3 se incluye para no dejar ninguna versión a medias, no por una necesidad concreta.
 
 ## Reglas comunes a todas las iteraciones
 
@@ -155,6 +167,7 @@ El portfolio se monta encima de todo eso.
 | Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional |
 | Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional |
 | Landmarks (h_LM) | heurística informada más potente | opcional |
+| Búsqueda por novedad (IW, BFWS) | salir de mesetas; diversidad en el portfolio | final de la iteración 3b |
 | HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
 | Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
 | Búsqueda completa en GPU | expansión masiva en paralelo | descartado (ver abajo) |
@@ -176,7 +189,8 @@ Los benchmarks están en `dominios/tierN-*/` (detalles y procedencia en
 | 2 | PDDL 1.2 (ADL) | Iteración 2 |
 | 3 | PDDL 2.1 (numérico y temporal) | Iteración 3 |
 | 4 | PDDL 2.2 (predicados derivados y TIL) | Iteración 4 |
-| 5 | PDDL+ | Iteración 5 |
+| 5 | PDDL 3 (preferencias y restricciones de trayectoria) | Iteración 5 |
+| 6 | PDDL+ | Iteración 6 |
 
 Al terminar la iteración *N*, todos los problemas de los tiers 1…*N* tienen que resolverse
 con un plan válido según VAL. Los tiers superiores se saltan. En los tests, el tier
@@ -248,7 +262,11 @@ máximo soportado es una constante que se sube al cerrar cada iteración.
 Es la iteración más grande, así que se divide en dos.
 
 ### 3a: fluentes numéricos
-**Requisitos:** `:numeric-fluents` (y `:fluents`).
+**Requisitos:** `:numeric-fluents` (y `:fluents`), y `:action-costs` (PDDL 3.1).
+
+Solo lo necesario para PDDL 2.1, más `:action-costs`. Es una forma restringida de
+fluentes numéricos (`total-cost`, costes fijos por acción), pero la usa casi todo el
+track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
 - **Parser:**
   - `:functions`;
   - expresiones aritméticas;
@@ -258,7 +276,9 @@ Es la iteración más grande, así que se divide en dos.
 - **Motor:**
   - estado lógico más vector numérico;
   - heurística numérica relajada al estilo Metric-FF o ENHSP (h_add/h_FF sobre intervalos);
-  - A* sobre la métrica, cuando la haya.
+  - A* sobre la métrica, cuando la haya;
+  - `:action-costs`: costes por acción en el motor y las heurísticas. Admite costes 0, así
+    que hay que revisar el corte temprano del Dijkstra, que ahora supone costes positivos.
 
 ### 3b: acciones durativas
 **Requisitos:** `:durative-actions`, `:duration-inequalities` y `:continuous-effects`.
@@ -275,6 +295,9 @@ Es la iteración más grande, así que se divide en dos.
     (hay que elegir una de las dos);
   - efectos continuos lineales;
   - salida de planes temporales (`t: (acción) [d]`).
+- **Al final de la 3b (opcional, prevista):** búsqueda por **novedad** (*novelty*, IW y
+  BFWS; Lipovetzky y Geffner, 2012 y 2017), para incorporarla al portfolio a partir de ahí.
+  Es muy eficaz en dominios con mesetas, como slitherlink.
 
 ## Iteración 4: PDDL 2.2
 
@@ -286,7 +309,32 @@ Es la iteración más grande, así que se divide en dos.
   - los TIL se tratan como eventos obligatorios en el eje temporal del motor de la
     iteración 3b.
 
-## Iteración 5: PDDL+
+## Iteración 5: PDDL 3
+
+**Requisitos:** `:constraints`, `:preferences` y `:object-fluents` (PDDL 3.1; `:action-costs`
+ya está desde la 3a).
+- **Parser:**
+  - sección `:constraints` (en dominio y problema) con los operadores modales `always`,
+    `sometime`, `at-most-once`, `sometime-before`, `sometime-after`, `at end`, `within`,
+    `always-within`, `hold-during` y `hold-after`;
+  - `preference` en objetivos, precondiciones y restricciones;
+  - `is-violated` en la métrica;
+  - funciones de objetos (`:object-fluents`).
+- **Motor:**
+  - **restricciones sin tiempo** compiladas a monitores: hechos nuevos actualizados con
+    efectos condicionales en cada acción (reutiliza la normalización de la iteración 2);
+  - **restricciones con tiempo** sobre el reloj del motor temporal de la iteración 3b;
+  - **preferencias**: los objetivos blandos se compilan a objetivos duros con acciones de
+    "renuncia" con coste (Keyder y Geffner, 2009), y una **búsqueda *anytime*** sigue
+    mejorando el plan hasta agotar el tiempo. Las preferencias en precondiciones y
+    restricciones cuentan sus incumplimientos;
+  - funciones de objetos compiladas a predicados (como en Fast Downward).
+- **Tests:** tier 5 (storage con preferencias cualitativas y trucks con restricciones con
+  tiempo). Hay que comprobar hasta dónde llega el soporte de PDDL 3 en VAL.
+- **Carga estimada:** la mayor de todas. Las preferencias cambian el objetivo de la
+  búsqueda: ya no basta el primer plan, importa su calidad.
+
+## Iteración 6: PDDL+
 
 **Requisitos:** `:time`.
 - **Parser:** `:process`, `:event` y `#t` en los efectos de los procesos.
@@ -304,9 +352,15 @@ Es la iteración más grande, así que se divide en dos.
 
 ## Pendiente de decidir
 
-- `:action-costs` (PDDL 3.1) aparece en casi todo el track clásico de las IPC 2023. No
-  forma parte de las versiones que cubrimos, pero es una forma restringida de fluentes
-  numéricos (`total-cost`). Se podría soportar gratis en la iteración 3a.
+- **Motor temporal (antes de la 3b):** planificación con STN al estilo POPF, o por
+  *decision epochs* al estilo TFD.
+
+## Trabajo opcional (al final del proyecto, fuera de las iteraciones)
+
+- Técnicas opcionales del repertorio (ver la tabla de "Motor de búsqueda").
+- **Estudio de la integración de HTN** (planificación jerárquica): viabilidad de aceptar
+  dominios HTN (HDDL, el lenguaje del track HTN de las IPC) y de combinar la
+  descomposición jerárquica con nuestro motor de búsqueda.
 
 ---
 
@@ -317,6 +371,8 @@ Es la iteración más grande, así que se divide en dos.
   - Fox & Long, 2003: PDDL2.1 (JAIR 20).
   - Edelkamp & Hoffmann, 2004: PDDL2.2.
   - Fox & Long, 2006: PDDL+ (JAIR 27).
+  - Gerevini & Long, 2005: PDDL3 (restricciones de trayectoria y preferencias).
+  - Höller et al., 2020: HDDL, el lenguaje de la planificación HTN en las IPC.
 - Grounding y normalización: Helmert, 2009, *Concise finite-domain representations for
   PDDL planning tasks* (el traductor de Fast Downward).
 - Heurísticas:
@@ -329,6 +385,12 @@ Es la iteración más grande, así que se divide en dos.
   - Nakhost, Müller et al., 2011: Arvand y ArvandHerd (paseos aleatorios, portfolio paralelo);
   - Kishimoto, Fukunaga & Botea, 2009: HDA\* (búsqueda distribuida por hash);
   - Kuroiwa & Fukunaga, 2019–2020: anomalías de la GBFS paralela.
+- Búsqueda:
+  - Xie, Müller, Holte & Imai, 2014: exploración por tipos;
+  - Lipovetzky & Geffner, 2012 y 2017: novedad, IW y BFWS.
+- PDDL 3:
+  - Keyder & Geffner, 2009: compilación de objetivos blandos a costes;
+  - Baier & McIlraith, 2006: compilación de restricciones de trayectoria a autómatas.
 - Planificación temporal: Coles et al., 2010 (POPF) y Eyerich et al., 2009 (TFD).
 - PDDL+:
   - Della Penna et al., 2009: UPMurphi;

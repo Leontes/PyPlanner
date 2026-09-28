@@ -2,7 +2,7 @@
 
 from tests.tiers import PARSER_TIER, SUPPORTED_TIER, discover_instances
 
-EXPECTED_TIERS = {1, 2, 3, 4, 5}
+EXPECTED_TIERS = {1, 2, 3, 4, 5, 6}
 
 
 def test_every_tier_has_instances() -> None:

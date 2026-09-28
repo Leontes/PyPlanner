@@ -17,8 +17,10 @@ puede romper la anterior.
 | 3 | PDDL 2.1 temporal | `temporal/zenotravel` | `:durative-actions :typing` | IPC 2002 (zenotravel-time-simple-automatic) |
 | 4 | PDDL 2.2 | `derived-predicates/psr-middle` | `:adl :derived-predicates` | IPC 2004 (psr-middle-derived-predicates-adl) |
 | 4 | PDDL 2.2 | `timed-initial-literals/satellite` | `:strips :equality :typing :fluents :durative-actions :timed-initial-literals` | IPC 2004 (satellite-time-time-windows-strips) |
-| 5 | PDDL+ | `car` | `:typing :durative-actions :fluents :time :negative-preconditions :timed-initial-literals` | SMTPlan (car_nodrag) |
-| 5 | PDDL+ | `generator` | `:fluents :durative-actions :duration-inequalities :adl :typing :time` | SMTPlan (generator_events) |
+| 5 | PDDL 3 | `preferences/storage` | `:typing :adl :preferences :constraints` | IPC 2006 (storage-preferences-qualitative) |
+| 5 | PDDL 3 | `constraints/trucks` | `:typing :adl :durative-actions :fluents :constraints` | IPC 2006 (trucks-time-constraints) |
+| 6 | PDDL+ | `car` | `:typing :durative-actions :fluents :time :negative-preconditions :timed-initial-literals` | SMTPlan (car_nodrag) |
+| 6 | PDDL+ | `generator` | `:fluents :durative-actions :duration-inequalities :adl :typing :time` | SMTPlan (generator_events) |
 
 Cada dominio tiene `domain.pddl` y dos problemas, `p01.pddl` y `p02.pddl`. Son las dos primeras
 instancias de la colección original, que suelen ser las más sencillas.
@@ -38,19 +40,23 @@ instancias de la colección original, que suelen ser las más sencillas.
 
 | Colección | Repositorio | Commit |
 |-----------|-------------|--------|
-| IPC 1998–2004 | [potassco/pddl-instances](https://github.com/potassco/pddl-instances) | `cf19edf` |
+| IPC 1998–2006 | [potassco/pddl-instances](https://github.com/potassco/pddl-instances) | `cf19edf` |
 | IPC 2023 classical | [ipc2023-classical/ipc2023-dataset](https://github.com/ipc2023-classical/ipc2023-dataset) | `1e29a0e` |
 | IPC 2023 numeric | [ipc2023-numeric/ipc2023-dataset](https://github.com/ipc2023-numeric/ipc2023-dataset) | `0799944` |
 | PDDL+ | [KCL-Planning/SMTPlan](https://github.com/KCL-Planning/SMTPlan) (`benchmarks/`) | `b085bd7` |
 
 Notas:
-- Las IPC 2023 no tienen track temporal ni de PDDL+. Por eso los tiers 1, 3 (temporal),
-  4 y 5 salen del archivo histórico de las IPC y de los benchmarks de SMTPlan.
+- Las IPC 2023 no tienen track temporal, de PDDL 3 ni de PDDL+. Por eso los tiers 1,
+  3 (temporal), 4, 5 y 6 salen del archivo histórico de las IPC y de los benchmarks de
+  SMTPlan. Los de PDDL 3 son de las IPC 2006: storage combina preferencias con
+  restricciones sin tiempo (`sometime`, `at-most-once`) y una métrica con `is-violated`;
+  trucks, restricciones con tiempo (`within`) sobre acciones durativas.
 - Los benchmarks PDDL+ de ENHSP se han descartado porque usan `:constraint`, una
   extensión propia de ese planificador que no forma parte del estándar.
 - (*) En los dominios numéricos de las IPC 2023 la línea `:requirements` venía comentada,
   aunque usan tipos y fluentes numéricos. Se trata como una errata y se ha descomentado
   sin tocar el resto del dominio. En `counters` la línea original tampoco incluía los
   fluentes numéricos, así que además se le ha añadido `:numeric-fluents`.
-- Varios dominios usan funcionalidad de tiers anteriores (por ejemplo, `car` usa
-  `:timed-initial-literals`). Es lo esperado, porque cada tier incluye a los anteriores.
+- Varios dominios usan funcionalidad de tiers anteriores: por ejemplo, `car` usa
+  `:timed-initial-literals` y trucks necesita el motor temporal. Es lo esperado, porque
+  cada tier incluye a los anteriores.

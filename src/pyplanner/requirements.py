@@ -62,7 +62,7 @@ KNOWN_REQUIREMENTS: frozenset[str] = frozenset(
         ":timed-initial-literals",
         # PDDL+
         ":time",
-        # PDDL 3.x (fuera del alcance del proyecto)
+        # PDDL 3.x (:action-costs en la iteración 3; el resto en la iteración 5)
         ":constraints",
         ":preferences",
         ":action-costs",
