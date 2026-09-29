@@ -33,38 +33,64 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from itertools import product
 
-from pyplanner.grounding.normalize import Clause, Fact, Normalizer, SimpleEffect
+from pyplanner.grounding.normalize import (
+    TRUE,
+    Clause,
+    Fact,
+    Normalizer,
+    SimpleEffect,
+    UndefinedEffect,
+)
+from pyplanner.grounding.numeric import (
+    Const,
+    NumericAssignment,
+    NumericCondition,
+    NumExpr,
+    Var,
+    linear,
+    make,
+    variables_of,
+)
 from pyplanner.grounding.task import (
     Condition,
     ConditionalEffect,
     GroundAction,
     GroundTask,
+    State,
     mask_of,
 )
 from pyplanner.loader.ast import (
     OBJECT,
     Action,
     And,
+    Arithmetic,
     Atom,
+    Comparison,
     Constant,
     Domain,
     Effect,
+    Exists,
+    Expression,
+    FluentTerm,
+    Forall,
     ForallEffect,
     Formula,
+    Imply,
     Not,
+    NumericEffect,
+    Or,
     Problem,
+    TotalTime,
     Variable,
     When,
 )
-
-Binding = dict[str, str]
 
 
 def ground(domain: Domain, problem: Problem) -> GroundTask:
     """Instancia y normaliza un dominio y un problema.
 
     Returns:
-        La tarea instanciada, con hechos y acciones en un orden determinista.
+        La tarea instanciada, con hechos, variables y acciones en un orden determinista.
 
     Raises:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
@@ -77,10 +103,20 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
     )
     static_predicates = frozenset(p.name for p in domain.predicates) - fluent_predicates
     init_facts = {(a.predicate, _args(a)) for a in problem.init}
+    targeted = frozenset(
+        effect.fluent.function
+        for action in domain.actions
+        for effect in _numeric_effects(action.effect)
+    )
+    static_functions = frozenset(f.name for f in domain.functions) - targeted
+    relevant = _relevant_functions(domain, problem, targeted)
+    initial_values = {(t.function, _args(t)): v for t, v in problem.values}
     normalizer = Normalizer(
         universe.objects_of,
         static_predicates,
         frozenset(f for f in init_facts if f[0] in static_predicates),
+        static_functions,
+        {k: v for k, v in initial_values.items() if k[0] in static_functions},
     )
     schemas = [_Schema(action) for action in domain.actions]
 
@@ -100,10 +136,7 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
                 key = (schema.name, tuple(binding[p] for p in schema.parameters))
                 instance = instances.get(key)
                 if instance is None:
-                    instance = _Instance(
-                        normalizer.dnf(schema.action.precondition, binding),
-                        normalizer.effects(schema.action.effect, binding),
-                    )
+                    instance = _normalize(normalizer, schema, binding)
                     instances[key] = instance
                 for fact in list(instance.newly_reachable(reached)):
                     reached.add(fact)
@@ -112,26 +145,70 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
 
     facts = sorted(f for f in reached if f[0] in fluent_predicates)
     index = {fact: i for i, fact in enumerate(facts)}
+    goal_dnf = _sorted_clauses(normalizer.dnf(problem.goal, {}))
+    live = {key: inst for key, inst in instances.items() if inst.reachable_clauses(reached)}
+
+    # Variables numéricas: los términos de funciones relevantes que aparecen en las acciones
+    # alcanzables o en el objetivo.
+    keys: set[Fact] = set()
+    for instance in live.values():
+        keys |= instance.numeric_keys()
+    for clause in goal_dnf:
+        for condition in clause.numeric:
+            keys |= variables_of(condition.expression)
+    variables = sorted(k for k in keys if k[0] in relevant)
+    var_index = {key: i for i, key in enumerate(variables)}
+
+    metric = _MetricModel(problem, normalizer, initial_values)
+    costs = {key: metric.cost(instance.effects) for key, instance in live.items()}
+    metric_is_cost = metric.active and all(c is not None and c >= 0 for c in costs.values())
+    notes = list(metric.notes)
+    if metric.active and not metric_is_cost:
+        notes.append(
+            "la contribución de alguna acción a la métrica no es una constante no negativa: "
+            "se busca con coste unitario"
+        )
+
     actions: list[GroundAction] = []
-    for (name, args), instance in sorted(instances.items()):
+    for key, instance in sorted(live.items()):
+        name, args = key
+        instance_cost = costs[key]
+        cost = instance_cost if metric_is_cost and instance_cost is not None else 1.0
         for clause in instance.reachable_clauses(reached):
-            action = _build_action(len(actions), name, args, clause, instance.effects, index)
+            action = _build_action(
+                len(actions), name, args, clause, instance.effects, index, var_index, cost
+            )
             if action is not None:
                 actions.append(action)
 
-    goal = [
-        _condition(clause, index)
-        for clause in _sorted_clauses(normalizer.dnf(problem.goal, {}))
-        if clause.pos <= reached
-    ]
+    goal = [_condition(clause, index, var_index) for clause in goal_dnf if clause.pos <= reached]
+    init_values = tuple(initial_values.get(key) for key in variables)
     return GroundTask(
         domain_name=domain.name,
         problem_name=problem.name,
         facts=tuple(Atom(pred, tuple(Constant(a) for a in args)) for pred, args in facts),
         actions=tuple(actions),
-        init=mask_of([index[f] for f in init_facts if f in index]),
+        init=State(mask_of([index[f] for f in init_facts if f in index]), init_values),
         goal=tuple(dict.fromkeys(goal)),
+        variables=tuple(FluentTerm(f, tuple(Constant(a) for a in args)) for f, args in variables),
+        metric_is_cost=metric_is_cost,
+        metric_offset=metric.offset if metric_is_cost else None,
+        notes=tuple(notes),
     )
+
+
+Binding = dict[str, str]
+
+
+def _normalize(normalizer: Normalizer, schema: "_Schema", binding: Binding) -> "_Instance":
+    clauses = normalizer.dnf(schema.action.precondition, binding)
+    if not clauses:
+        return _Instance([], [])
+    try:
+        effects = normalizer.effects(schema.action.effect, binding)
+    except UndefinedEffect:
+        return _Instance([], [])  # usa una función estática sin valor: nunca aplicable
+    return _Instance(clauses, effects)
 
 
 @dataclass
@@ -158,6 +235,21 @@ class _Instance:
             if new and any(c.pos <= reached for c in effect.condition):
                 yield from new
 
+    def numeric_keys(self) -> set[Fact]:
+        """Términos de función que usan sus condiciones y efectos numéricos."""
+        keys: set[Fact] = set()
+        for clause in self.clauses:
+            for condition in clause.numeric:
+                keys |= variables_of(condition.expression)
+        for effect in self.effects:
+            for clause in effect.condition:
+                for condition in clause.numeric:
+                    keys |= variables_of(condition.expression)
+            for assignment in effect.numeric:
+                keys.add(assignment.variable)
+                keys |= variables_of(assignment.value)
+        return keys
+
 
 def _build_action(
     index_in_task: int,
@@ -166,16 +258,25 @@ def _build_action(
     clause: Clause,
     effects: list[SimpleEffect],
     index: Mapping[Fact, int],
+    var_index: Mapping[Fact, int],
+    cost: float,
 ) -> GroundAction | None:
     pre = {index[f] for f in clause.pos if f in index}
     neg = {index[f] for f in clause.neg if f in index}
+    numeric_pre = {c.remap(var_index.__getitem__) for c in clause.numeric}
     adds: set[int] = set()
     deletes: set[int] = set()
+    numeric: list[NumericAssignment] = []
     conditional: list[ConditionalEffect] = []
     for effect in effects:
         effect_adds = {index[f] for f in effect.adds if f in index}
         effect_deletes = {index[f] for f in effect.deletes if f in index}
-        if not effect_adds and not effect_deletes:
+        # Solo cuentan los efectos numéricos sobre variables del estado; los demás (p. ej.
+        # sobre funciones que solo usa la métrica) ya se han tenido en cuenta en el coste.
+        effect_numeric = tuple(
+            a.remap(var_index.__getitem__) for a in effect.numeric if a.variable in var_index
+        )
+        if not effect_adds and not effect_deletes and not effect_numeric:
             continue
         for condition in effect.condition:
             if any(f not in index for f in condition.pos):
@@ -186,19 +287,27 @@ def _build_action(
                 continue  # contradice la precondición: nunca se cumple
             cond_pos -= pre
             cond_neg -= neg
-            if not cond_pos and not cond_neg:
+            cond_numeric = {c.remap(var_index.__getitem__) for c in condition.numeric}
+            cond_numeric -= numeric_pre
+            if not cond_pos and not cond_neg and not cond_numeric:
                 adds |= effect_adds
                 deletes |= effect_deletes
+                numeric.extend(effect_numeric)
             else:
                 conditional.append(
                     ConditionalEffect(
-                        Condition(tuple(sorted(cond_pos)), tuple(sorted(cond_neg))),
+                        Condition(
+                            tuple(sorted(cond_pos)),
+                            tuple(sorted(cond_neg)),
+                            _sorted_numeric(cond_numeric),
+                        ),
                         tuple(sorted(effect_adds)),
                         tuple(sorted(effect_deletes)),
+                        effect_numeric,
                     )
                 )
-    if not adds and not deletes and not conditional:
-        return None  # no cambia nada: no sirve en ningún plan
+    if not adds and not deletes and not numeric and not conditional:
+        return None  # no cambia nada del estado: no sirve en ningún plan
     return GroundAction(
         index=index_in_task,
         name=name,
@@ -206,20 +315,32 @@ def _build_action(
         pre_facts=tuple(sorted(pre)),
         add_facts=tuple(sorted(adds)),
         del_facts=tuple(sorted(deletes - adds)),
+        cost=cost,
         neg_facts=tuple(sorted(neg)),
         conditional=tuple(dict.fromkeys(conditional)),
+        numeric_pre=_sorted_numeric(numeric_pre),
+        numeric=tuple(numeric),
     )
 
 
-def _condition(clause: Clause, index: Mapping[Fact, int]) -> Condition:
+def _condition(
+    clause: Clause, index: Mapping[Fact, int], var_index: Mapping[Fact, int]
+) -> Condition:
     return Condition(
         tuple(sorted(index[f] for f in clause.pos)),
         tuple(sorted(index[f] for f in clause.neg if f in index)),
+        _sorted_numeric({c.remap(var_index.__getitem__) for c in clause.numeric}),
     )
 
 
+def _sorted_numeric(conditions: set[NumericCondition]) -> tuple[NumericCondition, ...]:
+    return tuple(sorted(conditions, key=str))
+
+
 def _sorted_clauses(clauses: list[Clause]) -> list[Clause]:
-    return sorted(clauses, key=lambda c: (sorted(c.pos), sorted(c.neg)))
+    return sorted(
+        clauses, key=lambda c: (sorted(c.pos), sorted(c.neg), sorted(map(str, c.numeric)))
+    )
 
 
 class _Schema:
@@ -330,5 +451,160 @@ def _unify(atom: Atom, args: tuple[str, ...], binding: Binding) -> Binding | Non
     return extended
 
 
-def _args(atom: Atom) -> tuple[str, ...]:
+def _args(atom: Atom | FluentTerm) -> tuple[str, ...]:
     return tuple(t.name for t in atom.args)
+
+
+# --- Funciones numéricas ---------------------------------------------------------------
+
+
+def _numeric_effects(effect: Effect) -> Iterator[NumericEffect]:
+    """Efectos numéricos de un efecto (incluidos los condicionales y universales)."""
+    if isinstance(effect, NumericEffect):
+        yield effect
+    elif isinstance(effect, And):
+        for part in effect.args:
+            yield from _numeric_effects(part)  # type: ignore[arg-type]
+    elif isinstance(effect, ForallEffect | When):
+        yield from _numeric_effects(effect.arg)
+
+
+def _functions_in(node: object) -> Iterator[str]:
+    """Funciones que aparecen en una fórmula, una expresión o un efecto."""
+    if isinstance(node, FluentTerm):
+        yield node.function
+    elif isinstance(node, Comparison):
+        yield from _functions_in(node.left)
+        yield from _functions_in(node.right)
+    elif isinstance(node, Arithmetic | And | Or):
+        for arg in node.args:
+            yield from _functions_in(arg)
+    elif isinstance(node, Not):
+        yield from _functions_in(node.arg)
+    elif isinstance(node, Imply):
+        yield from _functions_in(node.left)
+        yield from _functions_in(node.right)
+    elif isinstance(node, Exists | Forall | ForallEffect):
+        yield from _functions_in(node.arg)
+    elif isinstance(node, When):
+        yield from _functions_in(node.condition)
+
+
+def _conditions_of(effect: Effect) -> Iterator[Formula]:
+    """Condiciones de los efectos condicionales de un efecto."""
+    if isinstance(effect, When):
+        yield effect.condition
+    elif isinstance(effect, And):
+        for part in effect.args:
+            yield from _conditions_of(part)  # type: ignore[arg-type]
+    elif isinstance(effect, ForallEffect):
+        yield from _conditions_of(effect.arg)
+
+
+def _relevant_functions(
+    domain: Domain, problem: Problem, targeted: frozenset[str]
+) -> frozenset[str]:
+    """Funciones que modifica alguna acción y que importan para decidir qué es aplicable
+    u objetivo.
+
+    Una función es relevante si la lee una condición (precondición, condición de un efecto
+    condicional u objetivo), o si la lee el valor de un efecto sobre una función relevante.
+    Las que solo aparecen en efectos y en la métrica (``total-cost``, ``total-fuel-used``…)
+    no forman parte del estado: si lo hicieran, dos caminos al mismo estado con distinto
+    coste serían estados distintos y no se detectarían los repetidos.
+    """
+    read: set[str] = set(_functions_in(problem.goal))
+    for action in domain.actions:
+        read |= set(_functions_in(action.precondition))
+        for condition in _conditions_of(action.effect):
+            read |= set(_functions_in(condition))
+    relevant = read & targeted
+    changed = True
+    while changed:
+        changed = False
+        for action in domain.actions:
+            for effect in _numeric_effects(action.effect):
+                if effect.fluent.function in relevant:
+                    new = set(_functions_in(effect.value)) & targeted - relevant
+                    if new:
+                        relevant |= new
+                        changed = True
+    return frozenset(relevant)
+
+
+#: Variable especial que representa ``total-time`` en la forma lineal de la métrica.
+_TOTAL_TIME = ("total-time", ())
+
+
+class _MetricModel:
+    """La métrica como coste de acción.
+
+    Si la métrica minimiza una expresión lineal de ``total-time`` y de funciones que las
+    acciones solo cambian con ``increase``/``decrease`` de valor constante, cada acción
+    contribuye con una cantidad fija: esa es su coste, y minimizar el coste del plan
+    minimiza la métrica. Es el caso de ``:action-costs`` (``total-cost``) y de métricas como
+    la de zenotravel. Si no, el grounder usa coste unitario y deja una nota.
+    """
+
+    def __init__(
+        self, problem: Problem, normalizer: Normalizer, values: Mapping[Fact, float]
+    ) -> None:
+        self.active = False
+        self.offset: float | None = None
+        self.notes: list[str] = []
+        self.weights: dict[Fact, float] = {}
+        self.time_weight = 0.0
+        metric = problem.metric
+        if metric is None:
+            return
+        if metric.direction != "minimize":
+            self.notes.append("la métrica se maximiza: se busca con coste unitario")
+            return
+        expression = self._expression(metric.expression, normalizer)
+        form = linear(expression) if expression is not None else None
+        if form is None:
+            self.notes.append("la métrica no es lineal: se busca con coste unitario")
+            return
+        self.weights = dict(form.terms)
+        self.time_weight = self.weights.pop(_TOTAL_TIME, 0.0)
+        self.active = True
+        offset: float | None = form.constant
+        for key, weight in self.weights.items():
+            value = values.get(key)
+            offset = None if offset is None or value is None else offset + weight * value
+        self.offset = offset
+
+    def _expression(self, expression: Expression, normalizer: Normalizer) -> NumExpr | None:
+        if isinstance(expression, TotalTime):
+            return Var(_TOTAL_TIME)
+        if isinstance(expression, Arithmetic):
+            args = [self._expression(arg, normalizer) for arg in expression.args]
+            if any(arg is None for arg in args):
+                return None
+            return make(expression.op, args)  # type: ignore[arg-type]
+        return normalizer.expression(expression, {})
+
+    def cost(self, effects: list[SimpleEffect]) -> float | None:
+        """Contribución de una acción a la métrica, o ``None`` si no es constante."""
+        if not self.active:
+            return 1.0
+        total = self.time_weight
+        for effect in effects:
+            for assignment in effect.numeric:
+                weight = self.weights.get(assignment.variable)
+                if weight is None:
+                    continue
+                constant = isinstance(assignment.value, Const)
+                if (
+                    effect.condition != tuple(TRUE)
+                    or not constant
+                    or assignment.op
+                    not in (
+                        "increase",
+                        "decrease",
+                    )
+                ):
+                    return None
+                amount = assignment.value.value  # type: ignore[union-attr]
+                total += weight * (amount if assignment.op == "increase" else -amount)
+        return total

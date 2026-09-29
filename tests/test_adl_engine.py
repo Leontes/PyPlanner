@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from pyplanner.errors import UnsupportedFeatureError
-from pyplanner.grounding import GroundTask, mask_of
+from pyplanner.grounding import GroundTask, State, mask_of
 from pyplanner.grounding import normalize as normalize_module
 from pyplanner.grounding.normalize import TRUE, Clause, Normalizer
 from pyplanner.heuristics import TENSOR_HEURISTICS, create_heuristic
@@ -204,8 +204,8 @@ def test_goal_with_negative_literals() -> None:
     task = task_of("lights")
     on_l1 = mask_of([task.fact_index[Atom("on", (Constant("l1"),))]])
     on_l2 = mask_of([task.fact_index[Atom("on", (Constant("l2"),))]])
-    assert task.is_goal(on_l1)
-    assert not task.is_goal(on_l1 | on_l2)
+    assert task.is_goal(State(on_l1))
+    assert not task.is_goal(State(on_l1 | on_l2))
 
 
 # --- Heurísticas --------------------------------------------------------------------

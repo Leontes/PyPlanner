@@ -7,7 +7,7 @@ from pyplanner.pddl import parse_domain, parse_problem
 
 def goal_state(task: GroundTask) -> State:
     """El estado con exactamente los hechos positivos de la primera cláusula del objetivo."""
-    return mask_of(task.goal[0].pos_facts)
+    return State(mask_of(task.goal[0].pos_facts), task.init.values)
 
 
 def build(domain: str, problem: str) -> GroundTask:

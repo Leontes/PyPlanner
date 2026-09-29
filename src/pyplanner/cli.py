@@ -200,10 +200,13 @@ def _report(result: PlanningResult) -> None:
     def err(line: str) -> None:
         print(line, file=sys.stderr)
 
+    variables = f", {len(task.variables)} variables numéricas" if task.variables else ""
     err(
-        f"Tarea: {len(task.facts)} hechos, {len(task.actions)} acciones "
+        f"Tarea: {len(task.facts)} hechos{variables}, {len(task.actions)} acciones "
         f"(grounding {result.grounding_time:.3f} s)"
     )
+    for note in task.notes:
+        err(f"Nota: {note}")
     if result.portfolio is not None:
         for name, member in result.portfolio.results.items():
             mark = "*" if name == search.config_name else " "
@@ -218,7 +221,9 @@ def _report(result: PlanningResult) -> None:
         f"callejones {stats.dead_ends}, tiempo {stats.time:.3f} s"
     )
     if result.plan is not None:
-        err(f"Plan: {len(result.plan)} acciones, coste {result.plan.cost:g}")
+        metric = result.plan.metric
+        suffix = f", métrica {metric:g}" if metric is not None else ""
+        err(f"Plan: {len(result.plan)} acciones, coste {result.plan.cost:g}{suffix}")
     if search.message:
         err(f"Detalle: {search.message}")
 

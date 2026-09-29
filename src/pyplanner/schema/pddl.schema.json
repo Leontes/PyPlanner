@@ -876,6 +876,10 @@
           "type": "number",
           "minimum": 0
         },
+        "metric": {
+          "description": "Valor de la métrica del problema, si los costes de acción la representan.",
+          "type": "number"
+        },
         "steps": {
           "type": "array",
           "items": {

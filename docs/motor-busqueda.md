@@ -1,4 +1,4 @@
-# Motor de búsqueda (iteraciones 1 y 2)
+# Motor de búsqueda (iteraciones 1 a 3a)
 
 Cómo está construido el motor y cómo se usa. Las decisiones de fondo (portfolio, lotes,
 GPU, técnicas descartadas) están en el [roadmap](ROADMAP.md#motor-de-búsqueda-diseño-y-repertorio).
@@ -42,8 +42,13 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
 
 ## Tarea instanciada y estados
 
-- Un **estado** es un `int` usado como bitset sobre `GroundTask.facts`. Una acción es
-  aplicable si `state & pre == pre` y `state & neg == 0` (precondiciones negativas).
+- Un **estado** es un `State(facts, values)`: `facts` es un `int` usado como bitset sobre
+  `GroundTask.facts`, y `values` la tupla de valores de las variables numéricas
+  (`GroundTask.variables`; vacía en tareas proposicionales, `None` si el valor está
+  indefinido). Es una `NamedTuple`: se compara y se usa como clave de diccionario igual
+  que antes, con un coste medido de unos 0,3 µs por sucesor. Una acción es aplicable si
+  `facts & pre == pre`, `facts & neg == 0` (precondiciones negativas) y se cumplen sus
+  condiciones numéricas.
 - **Efectos condicionales:** las condiciones se evalúan sobre el estado **anterior**;
   después se borra y se añade (un hecho borrado y añadido a la vez queda cierto). Los
   efectos condicionales de cada acción se indexan por su primer hecho de condición, así
@@ -65,6 +70,48 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
 - Hechos y acciones tienen un orden determinista, así que dos ejecuciones iguales dan el
   mismo plan.
 
+## Motor numérico (iteración 3a)
+
+- **Grounding.**
+  - Las funciones que ninguna acción modifica son **estáticas**: se sustituyen por su
+    valor al instanciar. Una comparación con un valor estático indefinido es falsa.
+  - Solo son **variables** del estado las funciones **relevantes**: las que se leen en
+    alguna condición o en el objetivo, o en el valor de un efecto sobre otra variable
+    relevante (punto fijo). Las que solo aparecen en la métrica, como `total-cost` o
+    `total-fuel-used`, no están en el estado: si estuvieran, dos estados iguales con
+    distinto coste acumulado serían distintos y la detección de duplicados dejaría de
+    funcionar.
+  - Las condiciones numéricas se normalizan a `expresión ⋈ 0` con `⋈` ∈ {`>=`, `>`, `=`};
+    `(not (= a b))` da dos cláusulas con `>`. Las expresiones lineales se guardan también
+    como forma lineal (términos ordenados y constante), que es la que usan los núcleos
+    compilados.
+- **Semántica de los efectos** (`GroundAction.apply`):
+  - los efectos numéricos se evalúan con los valores del estado anterior;
+  - varios `increase`/`decrease` sobre la misma variable se suman;
+  - cualquier otro conflicto, una división por cero o un valor indefinido hacen que la
+    acción no sea aplicable (`apply` devuelve `None` y la búsqueda descarta el sucesor);
+  - un valor indefinido hace falsa cualquier comparación.
+- **La métrica como coste.** Si la métrica minimiza una expresión lineal de `total-time`
+  y de funciones que las acciones solo cambian con `increase`/`decrease` de valor
+  constante (tras sustituir los estáticos), cada acción contribuye con una cantidad fija:
+  ese es su **coste**, y minimizar el coste del plan minimiza la métrica. Es el caso de
+  `:action-costs` y de métricas como la de zenotravel (`total-time` cuenta como la
+  longitud del plan). Si no (métricas que se maximizan, no lineales o con costes
+  negativos), se busca con coste unitario y el grounder deja una **nota**, que la CLI
+  muestra.
+- **Salida.** El plan lleva el coste y, cuando los costes representan la métrica, su
+  valor (`; metric = …` en IPC, `"metric"` en JSON), que coincide con el `Final value` de
+  VAL. Sin métrica utilizable, el comentario IPC dice `(unit cost)`.
+- **Heurística numérica: *h^hbd*** (Scala, Haslum, Thiébaux y Ramírez, 2020). Cada
+  condición numérica distinta es un nodo más de la relajación. Una acción relajada cuyo
+  efecto aumenta una condición lineal en una cantidad constante Δ la logra repitiéndose
+  ⌈déficit/Δ⌉ veces (para `=`, avanzando hacia 0), y la arista cuesta repeticiones × coste.
+  Las repeticiones dependen del estado. Los efectos que no son incrementos constantes y
+  las condiciones no lineales son **optimistas** (una repetición basta), así que la
+  heurística nunca declara un callejón sin salida falso. Los efectos que empeoran una
+  condición se ignoran, como los borrados. h_FF cuenta cada operador por su coste por el
+  máximo número de repeticiones que necesita.
+
 ## Heurísticas
 
 | Nombre | Admisible | Acciones útiles | Numba | PyTorch |
@@ -85,7 +132,8 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
 | `cpu`, `cuda` | PyTorch por lotes (`pip install -e ".[gpu]"`) | solo con lotes grandes; en GPU, 4 veces más rápido que Python con lotes de 256 |
 
 Los tres dan **exactamente los mismos valores y acciones útiles** que la referencia; los
-tests lo comprueban en los tiers 1 y 2 y en las tareas hechas a mano.
+tests lo comprueban en los tiers 1 a 3 (numérico), en tareas hechas a mano y, durante el
+desarrollo, en tareas aleatorias con muchos empates y costes 0.
 
 - **Interfaz:** `evaluate_batch(states) -> list[Evaluation]`. Cada `Evaluation` lleva el
   valor (`inf` si es un callejón sin salida) y las acciones útiles.
@@ -96,6 +144,8 @@ tests lo comprueban en los tiers 1 y 2 y en las tareas hechas a mano.
   - **Acciones relajadas:** una por los efectos incondicionales de cada operador y otra
     por cada efecto condicional (con la condición añadida a la precondición), como en
     Fast Downward.
+  - **Condiciones numéricas:** un nodo por condición, con aristas cuyas repeticiones
+    dependen del estado (*h^hbd*, ver arriba).
   - **Objetivo:** el valor es el mínimo entre cláusulas.
 - **Referencia en Python:** Dijkstra generalizado sobre la relajación sin borrados. Se
   detiene al extraer todos los hechos del objetivo, y anota el mejor soportador durante el
@@ -105,12 +155,20 @@ tests lo comprueban en los tiers 1 y 2 y en las tareas hechas a mano.
   llamada y los estados se decodifican dentro del código compilado. La primera ejecución
   tras instalar compila los núcleos (unos segundos) y los guarda en la caché de disco.
 - **PyTorch:** punto fijo sobre todo el lote con `index_add_` y `scatter_reduce`, usando
-  listas de aristas acción-hecho y no matrices densas.
-- **h_FF:** el mejor soportador es la acción relajada de menor índice con coste mínimo, y
-  se usa la cláusula del objetivo de menor valor (la primera si hay empate). Son reglas
-  deterministas y compartidas, así que las dos implementaciones dan exactamente el mismo
-  valor y las mismas acciones útiles; los tests lo comprueban. El valor cuenta cada
-  **operador** una sola vez, aunque el plan relajado use varios de sus efectos.
+  listas de aristas acción-hecho y no matrices densas. Calcula en `float64`: con costes
+  enteros es exacto; con costes no enteros, el orden de las sumas puede cambiar el último
+  bit de algún valor.
+- **Desempate (coste, nivel).** Con costes 0 (`:action-costs` los admite), el coste solo
+  no basta para elegir soportadores sin ciclos. Los hechos se ordenan por (coste, nivel):
+  el nivel de una acción es 1 + el máximo nivel de sus precondiciones, y el de un hecho
+  cierto es 0. El mejor soportador es la acción relajada de **menor índice** entre las que
+  dan al hecho su (coste, nivel) mínimo. No depende del orden de extracción, así que
+  PyTorch lo reproduce sin Dijkstra: el nivel de un hecho es la última iteración del punto
+  fijo en que baja su coste (demostración en `TensorRelaxation._fact_costs`).
+- **h_FF:** se usa la cláusula del objetivo de menor valor (la primera si hay empate). El
+  valor cuenta cada **operador** una sola vez (por su máximo de repeticiones), aunque el
+  plan relajado use varios de sus efectos, y se suma en orden de operador en las tres
+  implementaciones.
 - **h_FF en tensores:** la extracción del plan relajado también se hace para todo el lote
   a la vez, por capas hacia atrás desde los objetivos (ver `heuristics/tensor.py`).
 
@@ -352,3 +410,35 @@ Con la CLI (tiempo total del proceso), slitherlink p02 queda en **2,4 s con 1 n�
 generación de sucesores es el 5% del tiempo y la heurística compilada unos 35 µs por
 estado (unas tres cuartas partes del total). Bajar más exigiría cambios de algoritmo
 (heurísticas incrementales, menos evaluaciones), no de implementación.
+
+### Iteración 3a: motor numérico
+
+**Llamar a funciones de Numba con muchos arrays es caro.** La primera versión compilada
+del Dijkstra numérico era 4 veces más lenta que la de la iteración 2 (157 µs por estado
+frente a 41 en slitherlink p02). La causa era una función auxiliar (`_offer`) que recibía
+14 argumentos, 9 de ellos arrays, y se llamaba por cada efecto de cada acción disparada.
+El generador de sucesores tenía el mismo problema con la comprobación de precondiciones.
+Escribiendo ese código dentro del bucle (y unificando añadidos y aristas numéricas en una
+sola lista CSR), el Dijkstra bajó a 50 µs y los sucesores volvieron a su coste anterior.
+Las funciones pequeñas con pocos argumentos (las del montículo) no tienen ese problema.
+
+**El desempate (coste, nivel) cuesta un 17% en el núcleo de Numba** (un nivel más por
+hecho y por acción). Se probó un montículo indexado con *decrease-key* en lugar de
+entradas obsoletas: es igual de rápido, pero su memoria está acotada por el número de
+hechos, así que se queda. Las reservas de memoria por estado cuestan menos de 1 µs y no
+merece la pena reutilizarlas.
+
+**PyTorch:** calcular los niveles en un segundo punto fijo duplicaba el tiempo. Se
+obtienen gratis del punto fijo de costes (la última iteración en que baja cada coste). Las
+aristas de añadido ya no multiplican por 1: solo las numéricas llevan multiplicador.
+
+Búsqueda en slitherlink p02 (`gbfs-ff-pref-tb`, tiempo de búsqueda, mismas expansiones):
+
+| Dispositivo | Iteración 2 | Iteración 3a |
+|-------------|-------------|--------------|
+| Numba | 1,55 s | 1,83 s |
+| PyTorch CPU, lote 64 | 6,9 s | 9,5 s |
+| PyTorch GPU, lote 64 | 2,3 s | 2,9 s |
+
+En PyTorch, el resto de la diferencia es `float64`, que mueve el doble de memoria en cada
+`scatter` y `gather`: es el precio de la exactitud.

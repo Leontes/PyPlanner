@@ -171,6 +171,7 @@ El portfolio se monta encima de todo eso.
 | HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
 | Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
 | Búsqueda completa en GPU | expansión masiva en paralelo | descartado (ver abajo) |
+| Lotes adaptativos y evaluación híbrida (Numba en CPU / PyTorch en GPU) | lotes grandes solo cuando compensan, en el dispositivo que más rinde | final de la iteración 3b |
 
 **Sobre la búsqueda completa en GPU.** Hay trabajos que hacen toda la búsqueda en GPU
 (expansión, detección de estados repetidos y cola de prioridad). Pero la búsqueda es
@@ -265,6 +266,10 @@ Es la iteración más grande, así que se divide en dos.
 **Requisitos:** `:numeric-fluents` (y `:fluents`), y `:action-costs` (PDDL 3.1).
 
 - **Parser:** ✅ hecho (esquema JSON v3; ver [formato-json.md](formato-json.md)).
+- **Motor:** ✅ hecho (ver [motor-busqueda.md](motor-busqueda.md#motor-numérico-iteración-3a)):
+  estado `State(facts, values)`, funciones estáticas y relevancia, métrica como coste de
+  acción, *h^hbd* en Python, Numba y PyTorch con resultados idénticos, y desempate
+  (coste, nivel) para los costes 0. Resuelve el tier 3 numérico, validado con VAL.
 
 Solo lo necesario para PDDL 2.1, más `:action-costs`. Es una forma restringida de
 fluentes numéricos (`total-cost`, costes fijos por acción), pero la usa casi todo el
@@ -293,13 +298,19 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
   - acciones divididas en *snap actions* (inicio y fin);
   - búsqueda hacia delante sobre estados temporales (acciones en ejecución y comprobación
     de invariantes `over all`);
-  - planificación temporal con STN al estilo POPF, o por *decision epochs* al estilo TFD
-    (hay que elegir una de las dos);
+  - planificación temporal con **STN al estilo POPF** (decidido; ver "Decisiones
+    tomadas"): la consistencia de cada estado se comprueba con la red temporal, y la
+    programación lineal (al estilo COLIN) solo entra con efectos continuos o duraciones
+    que dependen del estado;
   - efectos continuos lineales;
   - salida de planes temporales (`t: (acción) [d]`).
 - **Al final de la 3b (opcional, prevista):** búsqueda por **novedad** (*novelty*, IW y
   BFWS; Lipovetzky y Geffner, 2012 y 2017), para incorporarla al portfolio a partir de ahí.
   Es muy eficaz en dominios con mesetas, como slitherlink.
+- **Al final de la 3b (opcional, prevista):** **lotes adaptativos y evaluación híbrida**
+  (Numba en CPU / PyTorch en GPU); ver "Trabajo opcional" para las preguntas que hay que
+  estudiar y el punto de partida medido. Se compara con la búsqueda por novedad, que
+  ataca el mismo problema de las mesetas.
 
 ## Iteración 4: PDDL 2.2
 
@@ -354,12 +365,42 @@ ya está desde la 3a).
 
 ## Pendiente de decidir
 
-- **Motor temporal (antes de la 3b):** planificación con STN al estilo POPF, o por
-  *decision epochs* al estilo TFD.
+Nada por ahora.
+
+## Decisiones tomadas
+
+- **Motor temporal: STN al estilo POPF** (2026-09-29), frente a *decision epochs* al estilo
+  TFD. Los *decision epochs* son más sencillos y rápidos, pero incompletos con
+  concurrencia obligatoria (`generator`, en el tier 6, y ventanas de TIL en la iteración
+  4). Además obligan a fijar la duración al empezar una acción y apenas admiten efectos
+  continuos, que forman parte de la 3b. Con STN, las desigualdades de duración con
+  límites constantes son intervalos de la red, y la programación lineal solo hace falta
+  con efectos continuos o duraciones que dependen del estado. El estado
+  `State(facts, values)` y *h^hbd* se reutilizan: la heurística trabaja sobre las acciones
+  de inicio y fin.
 
 ## Trabajo opcional (al final del proyecto, fuera de las iteraciones)
 
 - Técnicas opcionales del repertorio (ver la tabla de "Motor de búsqueda").
+- **Lotes adaptativos y evaluación híbrida** (línea de trabajo prometedora, prevista al
+  final de la 3b). El tamaño de
+  lote deja de ser fijo: la búsqueda lo ajusta en cada momento según lo necesite, y cada
+  lote se evalúa en CPU con Numba o en GPU con PyTorch según convenga. Hay que estudiar:
+  - **Cómo decidir el tamaño en cada momento.** Candidatos: según el progreso (lote
+    pequeño mientras la h mejora y creciente en las mesetas, donde la guía de la
+    heurística aporta poco), según el coste medido de cada dispositivo (amortizar el coste
+    fijo de cada llamada) o una combinación de ambos.
+  - **Qué política usa para mandar cada lote a un dispositivo.** Por ejemplo, un umbral
+    de tamaño calibrado al empezar (lotes pequeños a Numba y grandes a PyTorch en GPU), o
+    un modelo de coste que se ajuste durante la búsqueda.
+  - **Cómo encaja con el portfolio:** qué miembros la usan y cómo se reparte la GPU (cada
+    proceso con CUDA reserva su propio contexto).
+
+  Punto de partida medido (iteraciones 2 y 3a): Numba cuesta lo mismo por estado sea cual
+  sea el lote (unos 50 µs en slitherlink p02); PyTorch solo compensa con lotes grandes
+  (en GPU, de 256 en adelante); y expandir *k* nodos antes de volver a la heurística guía
+  peor, con resultados muy variables según el tamaño de lote. Conviene compararlo con la
+  búsqueda por novedad, que ataca el mismo problema de las mesetas.
 - **Estudio de la integración de HTN** (planificación jerárquica): viabilidad de aceptar
   dominios HTN (HDDL, el lenguaje del track HTN de las IPC) y de combinar la
   descomposición jerárquica con nuestro motor de búsqueda.

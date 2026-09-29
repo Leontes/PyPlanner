@@ -296,6 +296,8 @@ class EagerSearch(_BestFirstSearch):
                 for action in self.successors(state):
                     self.stats.generated += 1
                     successor = self.task.apply(state, action)
+                    if successor is None:
+                        continue  # efecto numérico indefinido: la acción no se puede aplicar
                     new_g = g + action.cost
                     is_preferred = action.index in useful
                     known = self.index.get(successor)
@@ -387,7 +389,7 @@ class LazySearch(_BestFirstSearch):
                 parent, action_index = item
                 action = self.task.actions[action_index]
                 successor = self.task.apply(self.states[parent], action)
-                if successor in self.index:
+                if successor is None or successor in self.index:
                     continue
                 children.append(
                     self.new_node(successor, self.g[parent] + action.cost, parent, action_index)

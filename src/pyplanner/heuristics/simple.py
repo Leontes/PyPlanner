@@ -23,7 +23,8 @@ class BlindHeuristic(Heuristic):
 
 
 class GoalCountHeuristic(Heuristic):
-    """Número de literales del objetivo que todavía no se cumplen. No es admisible.
+    """Número de literales del objetivo que todavía no se cumplen (incluidas las
+    condiciones numéricas). No es admisible.
 
     Con un objetivo disyuntivo se toma la cláusula con menos literales pendientes.
     """
@@ -31,13 +32,15 @@ class GoalCountHeuristic(Heuristic):
     name = "goalcount"
 
     def evaluate_batch(self, states: Sequence[State]) -> list[Evaluation]:
-        clauses = [(c.pos, c.neg) for c in self.task.goal]
-        return [
-            Evaluation(
-                min(
-                    ((pos & ~s).bit_count() + (neg & s).bit_count() for pos, neg in clauses),
-                    default=DEAD_END,
-                )
+        clauses = [(c.pos, c.neg, c.numeric) for c in self.task.goal]
+        results = []
+        for state in states:
+            facts, values = state.facts, state.values
+            pending = (
+                (pos & ~facts).bit_count()
+                + (neg & facts).bit_count()
+                + sum(not c.holds(values) for c in numeric)
+                for pos, neg, numeric in clauses
             )
-            for s in states
-        ]
+            results.append(Evaluation(min(pending, default=DEAD_END)))
+        return results

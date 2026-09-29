@@ -183,7 +183,7 @@ El planificador devuelve los planes con `"kind": "plan"` (`pyplanner solve -f js
 
 ```json
 {
-  "version": 1,
+  "version": 3,
   "kind": "plan",
   "domain": "blocks",
   "problem": "blocks-4-0",
@@ -194,6 +194,12 @@ El planificador devuelve los planes con `"kind": "plan"` (`pyplanner solve -f js
   ]
 }
 ```
+
+- `cost`: suma de los costes de las acciones. Sin una métrica que se pueda usar como
+  coste, es el número de acciones.
+- `metric` (opcional, v3): valor de la métrica del problema, cuando los costes de las
+  acciones la representan (ver [motor-busqueda.md](motor-busqueda.md#motor-numérico-iteración-3a)).
+  Es el valor inicial de la métrica más `cost`, y coincide con el que calcula VAL.
 
 ## Errores
 

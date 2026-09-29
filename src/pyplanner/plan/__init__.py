@@ -32,37 +32,50 @@ class Plan:
     problem: str
     steps: tuple[PlanStep, ...]
     cost: float
+    #: Valor de la métrica del problema (``None`` si no la hay o los costes no la representan).
+    metric: float | None = None
+    #: ``True`` si el coste es el número de acciones (sin métrica que sirva de coste).
+    unit_cost: bool = True
 
     @classmethod
     def from_indices(cls, task: GroundTask, indices: tuple[int, ...]) -> "Plan":
         """Construye el plan a partir de índices de acciones de ``task``."""
         actions = [task.actions[i] for i in indices]
+        cost = sum(a.cost for a in actions)
+        offset = task.metric_offset
         return cls(
             domain=task.domain_name,
             problem=task.problem_name,
             steps=tuple(PlanStep(a.name, a.args) for a in actions),
-            cost=sum(a.cost for a in actions),
+            cost=cost,
+            metric=offset + cost if task.metric_is_cost and offset is not None else None,
+            unit_cost=not task.metric_is_cost,
         )
 
     def __len__(self) -> int:
         return len(self.steps)
 
     def to_ipc(self) -> str:
-        """El plan en formato IPC, con el coste en un comentario final."""
+        """El plan en formato IPC, con el coste (y la métrica) en comentarios finales."""
         lines = [str(step) for step in self.steps]
-        lines.append(f"; cost = {_number(self.cost)} (unit cost)")
+        lines.append(f"; cost = {_number(self.cost)}" + (" (unit cost)" if self.unit_cost else ""))
+        if self.metric is not None:
+            lines.append(f"; metric = {_number(self.metric)}")
         return "\n".join(lines) + "\n"
 
     def to_dict(self) -> dict[str, Any]:
         """El plan como documento JSON (``"kind": "plan"``)."""
-        return {
+        document: dict[str, Any] = {
             "version": SCHEMA_VERSION,
             "kind": "plan",
             "domain": self.domain,
             "problem": self.problem,
             "cost": _number(self.cost),
-            "steps": [{"name": s.name, "args": list(s.args)} for s in self.steps],
         }
+        if self.metric is not None:
+            document["metric"] = _number(self.metric)
+        document["steps"] = [{"name": s.name, "args": list(s.args)} for s in self.steps]
+        return document
 
     def to_json(self, indent: int | None = 2) -> str:
         """El plan como texto JSON."""
@@ -82,7 +95,10 @@ def simulate(task: GroundTask, indices: tuple[int, ...]) -> str | None:
         action = task.actions[index]
         if not action.applicable(state):
             return f"paso {step}: {action} no es aplicable"
-        state = task.apply(state, action)
+        successor = task.apply(state, action)
+        if successor is None:
+            return f"paso {step}: {action} tiene un efecto numérico indefinido"
+        state = successor
     if not task.is_goal(state):
         return "el plan no alcanza el objetivo"
     return None

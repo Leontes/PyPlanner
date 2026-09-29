@@ -13,7 +13,7 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 |---------|-----------|----------|--------|
 | v0.1 | 1 | STRIPS | ✅ |
 | v0.2 | 2 | PDDL 1.2, subconjunto ADL: tipos, precondiciones negativas y disyuntivas, cuantificadores, igualdad y efectos condicionales | ✅ |
-| v0.3 | 3 | PDDL 2.1: fluentes numéricos (con `:action-costs`) y acciones durativas | pendiente |
+| v0.3 | 3 | PDDL 2.1: fluentes numéricos (con `:action-costs`) y acciones durativas | 3a (numérico) ✅, 3b (temporal) pendiente |
 | v0.4 | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | pendiente |
 | v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | pendiente |
 | v0.6 | 6 | PDDL+: procesos y eventos | pendiente |
@@ -32,6 +32,9 @@ claro.
   ([formato](docs/formato-json.md)).
 - **Grounding** con análisis de alcanzabilidad relajada y normalización ADL (DNF,
   cuantificadores expandidos, efectos condicionales).
+- **Fluentes numéricos y costes de acción:** estado con valores numéricos, funciones
+  estáticas sustituidas, métrica como coste de acción cuando es posible y heurísticas
+  numéricas (*h^hbd*).
 - **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles.
 - **Búsquedas:** GBFS, A* y WA*, con evaluación inmediata o perezosa, acciones útiles,
   exploración por tipos y evaluación por lotes.

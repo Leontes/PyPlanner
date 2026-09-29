@@ -5,11 +5,11 @@ y los cuantificadores se expanden sobre los objetos de su tipo (``exists`` → d
 ``forall`` → conjunción). El resultado es siempre conjuntivo por partes:
 
 * una fórmula se convierte en una **disyunción de cláusulas**, y cada cláusula es una
-  conjunción de hechos ciertos y hechos falsos (forma normal disyuntiva, DNF). Las
-  negaciones se empujan hasta los literales durante el propio recorrido (forma normal
-  negativa), e ``imply`` se trata como ``(or (not a) b)``;
+  conjunción de hechos ciertos, hechos falsos y condiciones numéricas (forma normal
+  disyuntiva, DNF). Las negaciones se empujan hasta los literales durante el propio
+  recorrido (forma normal negativa), e ``imply`` se trata como ``(or (not a) b)``;
 * un efecto se convierte en una lista de efectos simples, cada uno con su condición (vacía
-  si es incondicional) y sus añadidos y borrados.
+  si es incondicional), sus añadidos, sus borrados y sus efectos numéricos.
 
 Simplificaciones que se aplican sobre la marcha, para que la DNF no crezca sin necesidad:
 
@@ -20,6 +20,14 @@ Simplificaciones que se aplican sobre la marcha, para que la DNF no crezca sin n
 
 Si la DNF supera :data:`MAX_CLAUSES` cláusulas se aborta con un error claro: esas fórmulas
 necesitan otra técnica (axiomas, iteración 4).
+
+**Numérico (iteración 3).** Las comparaciones pasan a condiciones canónicas (ver
+:mod:`pyplanner.grounding.numeric`) y se guardan en la parte numérica de la cláusula. Las
+funciones estáticas se sustituyen por su valor, y las comparaciones sin variables se
+evalúan en el momento. Una comparación que usa una función estática sin valor es falsa, y
+un efecto que la usa hace que la instancia no sea aplicable (:class:`UndefinedEffect`).
+Mientras se normaliza, las variables numéricas se identifican por su término
+(``("fuel", ("plane1",))``).
 """
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -27,27 +35,42 @@ from dataclasses import dataclass
 from itertools import product
 
 from pyplanner.errors import UnsupportedFeatureError
+from pyplanner.grounding.numeric import (
+    Const,
+    NumericAssignment,
+    NumericCondition,
+    NumExpr,
+    Var,
+    comparison,
+    constant_truth,
+    make,
+)
 from pyplanner.loader.ast import (
     And,
+    Arithmetic,
     Atom,
     Comparison,
     Constant,
     Effect,
     Equals,
     Exists,
+    Expression,
+    FluentTerm,
     Forall,
     ForallEffect,
     Formula,
     Imply,
     Not,
+    Number,
     NumericEffect,
     Or,
     Parameter,
     Term,
+    TotalTime,
     When,
 )
 
-#: Un hecho instanciado: (predicado, argumentos).
+#: Un hecho instanciado: (predicado, argumentos). También identifica un término de función.
 Fact = tuple[str, tuple[str, ...]]
 
 #: Asignación de variables a objetos.
@@ -62,10 +85,12 @@ SUBSUMPTION_LIMIT = 256
 
 @dataclass(frozen=True)
 class Clause:
-    """Conjunción de literales: hechos ciertos (``pos``) y hechos falsos (``neg``)."""
+    """Conjunción de literales: hechos ciertos (``pos``), hechos falsos (``neg``) y
+    condiciones numéricas (``numeric``)."""
 
     pos: frozenset[Fact] = frozenset()
     neg: frozenset[Fact] = frozenset()
+    numeric: frozenset[NumericCondition] = frozenset()
 
     def conjoin(self, other: "Clause") -> "Clause | None":
         """Conjunción de dos cláusulas, o ``None`` si es contradictoria."""
@@ -73,11 +98,15 @@ class Clause:
         neg = self.neg | other.neg
         if pos & neg:
             return None
-        return Clause(pos, neg)
+        return Clause(pos, neg, self.numeric | other.numeric)
 
     def subsumes(self, other: "Clause") -> bool:
         """``True`` si esta cláusula es más débil o igual (sus literales están en ``other``)."""
-        return self.pos <= other.pos and self.neg <= other.neg
+        return self.pos <= other.pos and self.neg <= other.neg and self.numeric <= other.numeric
+
+    @property
+    def size(self) -> int:
+        return len(self.pos) + len(self.neg) + len(self.numeric)
 
 
 #: DNF: lista de cláusulas. ``TRUE`` es una cláusula vacía; ``FALSE``, ninguna.
@@ -88,11 +117,17 @@ FALSE: DNF = []
 
 @dataclass(frozen=True)
 class SimpleEffect:
-    """Efecto normalizado: bajo ``condition`` (DNF), añade ``adds`` y borra ``deletes``."""
+    """Efecto normalizado: bajo ``condition`` (DNF), añade ``adds``, borra ``deletes`` y
+    aplica los efectos numéricos ``numeric``."""
 
     condition: tuple[Clause, ...]
     adds: frozenset[Fact]
     deletes: frozenset[Fact]
+    numeric: tuple[NumericAssignment, ...] = ()
+
+
+class UndefinedEffect(Exception):
+    """Un efecto usa una función estática sin valor: la instancia no se puede aplicar."""
 
 
 class Normalizer:
@@ -102,6 +137,8 @@ class Normalizer:
         objects_of: objetos (y constantes) de unos tipos dados, ordenados.
         static_predicates: predicados que ninguna acción modifica.
         static_facts: hechos estáticos ciertos (los del estado inicial).
+        static_functions: funciones que ninguna acción modifica.
+        static_values: valores iniciales de los términos de las funciones estáticas.
     """
 
     def __init__(
@@ -109,10 +146,14 @@ class Normalizer:
         objects_of: Callable[[tuple[str, ...]], Sequence[str]],
         static_predicates: frozenset[str],
         static_facts: frozenset[Fact],
+        static_functions: frozenset[str] = frozenset(),
+        static_values: Mapping[Fact, float] | None = None,
     ) -> None:
         self.objects_of = objects_of
         self.static_predicates = static_predicates
         self.static_facts = static_facts
+        self.static_functions = static_functions
+        self.static_values: Mapping[Fact, float] = static_values or {}
 
     # --- Fórmulas ---------------------------------------------------------------------
 
@@ -126,6 +167,8 @@ class Normalizer:
         if isinstance(formula, Equals):
             left, right = self._args((formula.left, formula.right), binding)
             return TRUE if (left == right) != negated else FALSE
+        if isinstance(formula, Comparison):
+            return self._comparison(formula, binding, negated)
         if isinstance(formula, Not):
             return self.dnf(formula.arg, binding, not negated)
         if isinstance(formula, And | Or):
@@ -148,11 +191,43 @@ class Normalizer:
             ]
             conjunctive = isinstance(formula, Forall) != negated
             return _conjunction(parts) if conjunctive else _disjunction(parts)
-        if isinstance(formula, Comparison):
-            raise UnsupportedFeatureError(
-                f"el motor todavía no admite condiciones numéricas como {formula}"
-            )
         raise TypeError(f"fórmula desconocida: {formula!r}")
+
+    def _comparison(self, formula: Comparison, binding: Binding, negated: bool) -> DNF:
+        left = self.expression(formula.left, binding)
+        right = self.expression(formula.right, binding)
+        if left is None or right is None:
+            return FALSE  # usa una función estática sin valor
+        clauses: DNF = []
+        for condition in comparison(formula.comparator, left, right, negated):
+            truth = constant_truth(condition)
+            if truth is True:
+                return TRUE
+            if truth is None:
+                clauses.append(Clause(numeric=frozenset([condition])))
+        return _simplify(clauses)
+
+    def expression(self, expression: Expression, binding: Binding) -> NumExpr | None:
+        """Expresión instanciada, con las funciones estáticas sustituidas por su valor.
+
+        Devuelve ``None`` si usa una función estática sin valor.
+        """
+        if isinstance(expression, Number):
+            return Const(expression.value)
+        if isinstance(expression, FluentTerm):
+            key = (expression.function, self._args(expression.args, binding))
+            if expression.function in self.static_functions:
+                value = self.static_values.get(key)
+                return None if value is None else Const(value)
+            return Var(key)
+        if isinstance(expression, Arithmetic):
+            args = [self.expression(arg, binding) for arg in expression.args]
+            if any(arg is None for arg in args):
+                return None
+            return make(expression.op, args)  # type: ignore[arg-type]
+        if isinstance(expression, TotalTime):
+            raise UnsupportedFeatureError("'total-time' solo puede aparecer en la métrica")
+        raise TypeError(f"expresión desconocida: {expression!r}")
 
     # --- Efectos ----------------------------------------------------------------------
 
@@ -161,12 +236,16 @@ class Normalizer:
 
         Los efectos incondicionales se agrupan en un solo :class:`SimpleEffect` con la
         condición ``TRUE``. Los condicionales cuya condición es falsa se descartan.
+
+        Raises:
+            UndefinedEffect: si un efecto numérico usa una función estática sin valor.
         """
         adds: set[Fact] = set()
         deletes: set[Fact] = set()
+        numeric: list[NumericAssignment] = []
         conditional: list[SimpleEffect] = []
-        self._collect(effect, binding, adds, deletes, conditional)
-        result = [SimpleEffect(tuple(TRUE), frozenset(adds), frozenset(deletes))]
+        self._collect(effect, binding, adds, deletes, numeric, conditional)
+        result = [SimpleEffect(tuple(TRUE), frozenset(adds), frozenset(deletes), tuple(numeric))]
         return result + conditional
 
     def _collect(
@@ -175,38 +254,50 @@ class Normalizer:
         binding: Binding,
         adds: set[Fact],
         deletes: set[Fact],
+        numeric: list[NumericAssignment],
         conditional: list[SimpleEffect],
     ) -> None:
         if isinstance(effect, And):
             for part in effect.args:
-                self._collect(part, binding, adds, deletes, conditional)  # type: ignore[arg-type]
+                self._collect(part, binding, adds, deletes, numeric, conditional)  # type: ignore[arg-type]
         elif isinstance(effect, Atom):
             adds.add((effect.predicate, self._args(effect.args, binding)))
         elif isinstance(effect, Not):
             assert isinstance(effect.arg, Atom)
             deletes.add((effect.arg.predicate, self._args(effect.arg.args, binding)))
+        elif isinstance(effect, NumericEffect):
+            value = self.expression(effect.value, binding)
+            if value is None:
+                raise UndefinedEffect(str(effect))
+            key = (effect.fluent.function, self._args(effect.fluent.args, binding))
+            numeric.append(NumericAssignment(key, effect.op, value))
         elif isinstance(effect, ForallEffect):
             for extended in self.expand(effect.parameters, binding):
-                self._collect(effect.arg, extended, adds, deletes, conditional)
+                self._collect(effect.arg, extended, adds, deletes, numeric, conditional)
         elif isinstance(effect, When):
             condition = self.dnf(effect.condition, binding)
             if not condition:
                 return
             inner_adds: set[Fact] = set()
             inner_deletes: set[Fact] = set()
-            self._collect(effect.arg, binding, inner_adds, inner_deletes, conditional)
+            inner_numeric: list[NumericAssignment] = []
+            self._collect(
+                effect.arg, binding, inner_adds, inner_deletes, inner_numeric, conditional
+            )
             if condition == TRUE:
                 adds |= inner_adds
                 deletes |= inner_deletes
-            elif inner_adds or inner_deletes:
+                numeric.extend(inner_numeric)
+            elif inner_adds or inner_deletes or inner_numeric:
                 conditional.append(
-                    SimpleEffect(tuple(condition), frozenset(inner_adds), frozenset(inner_deletes))
+                    SimpleEffect(
+                        tuple(condition),
+                        frozenset(inner_adds),
+                        frozenset(inner_deletes),
+                        tuple(inner_numeric),
+                    )
                 )
         else:
-            if isinstance(effect, NumericEffect):
-                raise UnsupportedFeatureError(
-                    f"el motor todavía no admite efectos numéricos como {effect}"
-                )
             raise TypeError(f"efecto desconocido: {effect!r}")
 
     # --- Utilidades -------------------------------------------------------------------
@@ -262,7 +353,7 @@ def _simplify(clauses: list[Clause]) -> DNF:
         )
     if len(unique) <= 1 or len(unique) > SUBSUMPTION_LIMIT:
         return unique
-    unique.sort(key=lambda c: len(c.pos) + len(c.neg))
+    unique.sort(key=lambda c: c.size)
     kept: list[Clause] = []
     for clause in unique:
         if not any(smaller.subsumes(clause) for smaller in kept):

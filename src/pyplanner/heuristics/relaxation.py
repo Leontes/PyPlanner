@@ -12,170 +12,248 @@ orden de coste, y una acción se "dispara" cuando se han extraído todas sus pre
 
 h_FF (Hoffmann y Nebel, 2001) extrae un **plan relajado** a partir de los costes de h_add:
 para cada objetivo pendiente elige su mejor *soportador* y repite con sus precondiciones.
-El valor es el coste de los operadores del plan relajado, y las acciones útiles son las del
-plan que son aplicables en el estado.
 
-**Tarea relajada** (:class:`RelaxedTask`), a partir de la tarea ADL normalizada:
+**Tarea relajada** (:class:`RelaxedTask`), a partir de la tarea normalizada:
 
-* **Hechos complementarios.** Cada hecho *p* que aparece negado en alguna condición tiene
-  un hecho "no-*p*". Es cierto si *p* es falso en el estado, y lo hacen cierto las acciones
-  que borran *p*. Así las precondiciones negativas pasan a ser positivas dentro de la
-  relajación, como hace FF. El estado de la búsqueda no cambia.
+* **Hechos complementarios.** Cada hecho *p* que aparece negado tiene un hecho "no-*p*",
+  cierto si *p* es falso y que hacen cierto las acciones que borran *p* (como en FF).
 * **Acciones relajadas.** Cada operador da una acción relajada para sus efectos
-  incondicionales y otra por cada efecto condicional, cuya precondición incluye la
-  condición del efecto (como en Fast Downward). Cada una recuerda su operador: h_FF cuenta
-  el coste de cada operador **una sola vez**, aunque use varios de sus efectos.
-* **Objetivo disyuntivo.** El valor es el mínimo entre las cláusulas. h_FF extrae el plan
-  relajado de la mejor cláusula; si hay empate, de la de menor índice. Sin cláusulas, el
-  objetivo es imposible.
+  incondicionales y otra por cada efecto condicional (como en Fast Downward). Cada una
+  recuerda su operador.
+* **Condiciones numéricas** (iteración 3): cada condición numérica distinta es un nodo más
+  de la relajación, con el enfoque de *h^hbd* (Scala, Haslum, Thiébaux y Ramírez, 2020).
+  Una acción relajada cuyo efecto aumenta una expresión lineal en una cantidad constante Δ
+  "logra" la condición repitiéndose ⌈déficit / Δ⌉ veces, así que la arista cuesta
+  repeticiones × coste. El número de repeticiones depende del estado. Los efectos que no
+  son incrementos constantes (``assign``, ``scale-*``, valores variables) y las condiciones
+  no lineales se tratan de forma **optimista**: una sola repetición basta. Así la
+  heurística nunca declara un callejón sin salida que no lo es. Los efectos que empeoran una
+  condición se ignoran, como los borrados.
+* **Objetivo disyuntivo.** El valor es el mínimo entre las cláusulas.
 
-Todos los costes de acción son positivos. Por eso, cuando se han extraído todos los hechos
-del objetivo, los costes que necesita la extracción del plan relajado ya son definitivos, y
-el cálculo puede terminar antes.
+**Desempates deterministas e independientes del orden.** El Dijkstra ordena los hechos
+por (coste, nivel), donde el nivel de una acción es 1 + el máximo nivel de sus
+precondiciones, y un hecho cierto tiene nivel 0. El mejor soportador de un hecho es la
+acción relajada de menor índice entre las que le dan su (coste, nivel) mínimo. El nivel
+crece en cada paso aunque haya acciones de coste 0, así que el plan relajado no tiene
+ciclos. La implementación en PyTorch, que no tiene orden de extracción, calcula lo mismo
+con dos puntos fijos (costes y después niveles), así que las tres implementaciones dan
+exactamente el mismo resultado.
+
+h_FF suma, por cada operador del plan relajado, su coste por el **máximo** número de
+repeticiones que necesita alguna de sus acciones relajadas elegidas. Las acciones útiles
+son los operadores de las acciones relajadas elegidas que tienen todas sus precondiciones
+ciertas.
+
+Todos los costes son no negativos. Cuando se han extraído todos los hechos del objetivo,
+los costes, niveles y soportadores que necesita la extracción ya son definitivos, y el
+cálculo termina.
 """
 
 import heapq
+import math
 from collections.abc import Sequence
 
-from pyplanner.grounding import GroundTask, State, bits, mask_of
+from pyplanner.grounding import GroundAction, GroundTask, State, bits, mask_of
+from pyplanner.grounding.numeric import Const, NumericAssignment, NumericCondition, variables_of
 from pyplanner.heuristics.base import DEAD_END, Evaluation, Heuristic
+
+#: Tipos de arista numérica: repeticiones para ``>=``, para ``>``, para ``=`` y optimista.
+REPEAT_GE, REPEAT_GT, REPEAT_EQ, ONCE = 0, 1, 2, 3
 
 
 class RelaxedTask:
     """Estructuras de la relajación, precalculadas una vez por tarea.
 
-    Las comparten la implementación de referencia y la de PyTorch.
+    Las comparten las tres implementaciones (Python, Numba y PyTorch).
 
     Attributes:
-        num_facts: hechos de la tarea más hechos complementarios.
-        negated: hechos de la tarea que tienen complementario; el complementario de
-            ``negated[i]`` es el hecho ``len(task.facts) + i``.
-        pre, add, cost, operator: precondiciones, añadidos, coste y operador de cada acción
-            relajada, en orden determinista (el índice decide los empates de h_FF).
-        operator_cost: coste de cada operador de la tarea.
-        goal: hechos de cada cláusula del objetivo, ya con complementarios.
+        num_facts: hechos de la tarea + complementarios + condiciones numéricas.
+        negated: hechos con complementario; el de ``negated[i]`` es ``num_base + i``.
+        numeric: condiciones numéricas; la ``j`` es el hecho ``numeric_offset + j``.
+        pre, add, cost, operator: precondiciones, añadidos proposicionales, coste y
+            operador de cada acción relajada.
+        edges: aristas numéricas ``(acción relajada, hecho numérico, tipo, Δ)``.
+        edges_of: índices de las aristas numéricas de cada acción relajada.
+        goal: hechos de cada cláusula del objetivo.
     """
 
     def __init__(self, task: GroundTask) -> None:
         self.task = task
-        base_facts = len(task.facts)
+        self.num_base = len(task.facts)
         negated = sorted(
             {f for a in task.actions for f in a.neg_facts}
             | {f for a in task.actions for e in a.conditional for f in e.condition.neg_facts}
             | {f for clause in task.goal for f in clause.neg_facts}
         )
-        complement = {f: base_facts + i for i, f in enumerate(negated)}
-        self.num_facts = base_facts + len(negated)
         self.negated = tuple(negated)
         self.negated_mask = mask_of(negated)
-        self._complement = complement
+        self._complement = {f: self.num_base + i for i, f in enumerate(negated)}
+        self.numeric_offset = self.num_base + len(negated)
+        numeric: dict[NumericCondition, int] = {}
 
-        def literals(pos: Sequence[int], neg: Sequence[int]) -> tuple[int, ...]:
-            return tuple(sorted({*pos, *(complement[f] for f in neg)}))
+        def node(condition: NumericCondition) -> int:
+            if condition not in numeric:
+                numeric[condition] = self.numeric_offset + len(numeric)
+            return numeric[condition]
 
-        def effects(adds: Sequence[int], deletes: Sequence[int]) -> tuple[int, ...]:
-            return tuple(sorted({*adds, *(complement[f] for f in deletes if f in complement)}))
+        def literals(
+            pos: Sequence[int], neg: Sequence[int], nums: Sequence[NumericCondition]
+        ) -> tuple[int, ...]:
+            return tuple(sorted({*pos, *(self._complement[f] for f in neg), *map(node, nums)}))
+
+        def adds(add: Sequence[int], deletes: Sequence[int]) -> tuple[int, ...]:
+            complement = self._complement
+            return tuple(sorted({*add, *(complement[f] for f in deletes if f in complement)}))
 
         self.pre: list[tuple[int, ...]] = []
         self.add: list[tuple[int, ...]] = []
-        self.cost: list[int] = []
+        self.cost: list[float] = []
         self.operator: list[int] = []
+        self._numeric_effects: list[tuple[NumericAssignment, ...]] = []
         for action in task.actions:
-            base_pre = literals(action.pre_facts, action.neg_facts)
-            base_add = effects(action.add_facts, action.del_facts)
-            if base_add:
-                self._append(base_pre, base_add, action.cost, action.index)
+            base_pre = literals(action.pre_facts, action.neg_facts, action.numeric_pre)
+            self._append(base_pre, adds(action.add_facts, action.del_facts), action, action.numeric)
             for effect in action.conditional:
-                condition = literals(effect.condition.pos_facts, effect.condition.neg_facts)
-                effect_add = effects(effect.add_facts, effect.del_facts)
-                if effect_add:
-                    pre = tuple(sorted({*base_pre, *condition}))
-                    self._append(pre, effect_add, action.cost, action.index)
+                condition = literals(
+                    effect.condition.pos_facts, effect.condition.neg_facts, effect.condition.numeric
+                )
+                pre = tuple(sorted({*base_pre, *condition}))
+                self._append(pre, adds(effect.add_facts, effect.del_facts), action, effect.numeric)
+        self.goal = [literals(c.pos_facts, c.neg_facts, c.numeric) for c in task.goal]
+        self.numeric = list(numeric)
+        self.num_facts = self.numeric_offset + len(self.numeric)
         self.num_actions = len(self.pre)
         self.operator_cost = [a.cost for a in task.actions]
-        self.goal = [literals(c.pos_facts, c.neg_facts) for c in task.goal]
         self.goal_facts = frozenset(f for clause in self.goal for f in clause)
 
+        # Aristas numéricas.
+        self.edges: list[tuple[int, int, int, float]] = []
+        for r, effects in enumerate(self._numeric_effects):
+            if not effects:
+                continue
+            for j, numeric_condition in enumerate(self.numeric):
+                edge = _numeric_edge(numeric_condition, effects)
+                if edge is not None:
+                    kind, delta = edge
+                    self.edges.append((r, self.numeric_offset + j, kind, delta))
+        self.edges_of: list[list[int]] = [[] for _ in range(self.num_actions)]
+        for e, (r, _, _, _) in enumerate(self.edges):
+            self.edges_of[r].append(e)
+
         self.pre_of: list[list[int]] = [[] for _ in range(self.num_facts)]
-        self.achievers: list[list[int]] = [[] for _ in range(self.num_facts)]
         for a in range(self.num_actions):
             for f in self.pre[a]:
                 self.pre_of[f].append(a)
-            for f in self.add[a]:
-                self.achievers[f].append(a)
         self.no_pre = [a for a in range(self.num_actions) if not self.pre[a]]
         self._pre_len = [len(p) for p in self.pre]
 
-    def _append(self, pre: tuple[int, ...], add: tuple[int, ...], cost: int, operator: int) -> None:
+    def _append(
+        self,
+        pre: tuple[int, ...],
+        add: tuple[int, ...],
+        action: GroundAction,
+        numeric: tuple[NumericAssignment, ...],
+    ) -> None:
+        if not add and not numeric:
+            return
         self.pre.append(pre)
         self.add.append(add)
-        self.cost.append(cost)
-        self.operator.append(operator)
+        self.cost.append(action.cost)
+        self.operator.append(action.index)
+        self._numeric_effects.append(numeric)
+
+    # --- Por estado -------------------------------------------------------------------
 
     def true_facts(self, state: State) -> list[int]:
-        """Hechos relajados ciertos en ``state``: los del estado y los complementarios de
-        los hechos negables que son falsos."""
+        """Hechos relajados ciertos en ``state``: los del estado, los complementarios de los
+        hechos negables falsos y las condiciones numéricas que se cumplen."""
         complement = self._complement
-        return [*bits(state), *(complement[f] for f in bits(~state & self.negated_mask))]
+        facts = state.facts
+        result = [*bits(facts), *(complement[f] for f in bits(~facts & self.negated_mask))]
+        values = state.values
+        offset = self.numeric_offset
+        result.extend(offset + j for j, c in enumerate(self.numeric) if c.holds(values))
+        return result
+
+    def multipliers(self, state: State) -> list[float]:
+        """Repeticiones de cada arista numérica en ``state`` (``inf`` si no sirve)."""
+        values = state.values
+        offset = self.numeric_offset
+        return [
+            repetitions(kind, delta, self.numeric[fact - offset].value(values))
+            for _, fact, kind, delta in self.edges
+        ]
 
     def fact_costs(self, state: State, combine_max: bool) -> list[float]:
         """Costes h_max (``combine_max``) o h_add de cada hecho relajado desde ``state``.
 
-        Se detiene cuando se han extraído todos los hechos del objetivo. Los hechos no
-        extraídos pueden quedar con un coste provisional o infinito; la extracción del
-        plan relajado no los necesita.
+        Se detiene cuando se han extraído todos los hechos del objetivo; los hechos no
+        extraídos pueden quedar con un coste provisional o infinito.
         """
-        return self._dijkstra(state, combine_max, None)
+        return self._dijkstra(state, combine_max, None)[0]
 
-    def fact_costs_and_supporters(self, state: State) -> tuple[list[float], list[int]]:
-        """Costes h_add y mejor soportador de cada hecho extraído (para h_FF).
-
-        El soportador se anota durante el propio Dijkstra: la acción de menor índice entre
-        las que alcanzan el coste mínimo. Como los costes son positivos, todas esas
-        acciones se disparan antes de extraer el hecho, así que la regla coincide con la de
-        la implementación en PyTorch.
-        """
+    def fact_costs_and_supporters(self, state: State) -> tuple[list[float], list[int], list[float]]:
+        """Costes h_add, mejor soportador y repeticiones de cada hecho extraído (para h_FF)."""
         supporters = [-1] * self.num_facts
-        return self._dijkstra(state, False, supporters), supporters
+        cost, multiplier = self._dijkstra(state, False, supporters)
+        return cost, supporters, multiplier
 
     def _dijkstra(
         self, state: State, combine_max: bool, supporters: list[int] | None
-    ) -> list[float]:
-        # Bucle crítico para el rendimiento: variables locales y sin llamadas a funciones
-        # auxiliares dentro del bucle interior.
-        cost: list[float] = [DEAD_END] * self.num_facts
-        heap: list[tuple[float, int]] = []
-        for f in self.true_facts(state):
-            cost[f] = 0
-            heap.append((0, f))
-        heapq.heapify(heap)
-        push, pop = heapq.heappush, heapq.heappop
-        unsatisfied = self._pre_len.copy()
-        accumulated = [0.0] * self.num_actions
-        action_cost, adds, pre_of = self.cost, self.add, self.pre_of
-        goal_facts = self.goal_facts
+    ) -> tuple[list[float], list[float]]:
+        # Bucle crítico: variables locales. Clave de cada hecho: (coste, nivel).
+        num_facts = self.num_facts
+        cost: list[float] = [DEAD_END] * num_facts
+        level: list[int] = [0] * num_facts
+        multiplier: list[float] = [1.0] * num_facts
         track = supporters is not None
         support: list[int] = supporters if supporters is not None else []
+        heap: list[tuple[float, int, int]] = []
+        for f in self.true_facts(state):
+            cost[f] = 0.0
+            heap.append((0.0, 0, f))
+        heapq.heapify(heap)
+        push, pop = heapq.heappush, heapq.heappop
+        mult = self.multipliers(state) if self.edges else []
+        unsatisfied = self._pre_len.copy()
+        accumulated = [0.0] * self.num_actions
+        action_level = [0] * self.num_actions
+        action_cost, adds, pre_of = self.cost, self.add, self.pre_of
+        edges, edges_of = self.edges, self.edges_of
+        goal_facts = self.goal_facts
 
-        def relax(a: int, value: float) -> None:
-            for q in adds[a]:
-                current = cost[q]
-                if value < current:
-                    cost[q] = value
-                    push(heap, (value, q))
-                    if track:
-                        support[q] = a
-                elif track and value == current and a < support[q]:
+        def offer(q: int, value: float, lev: int, a: int, m: float) -> None:
+            current, current_level = cost[q], level[q]
+            if value < current or (value == current and lev < current_level):
+                cost[q], level[q] = value, lev
+                multiplier[q] = m
+                push(heap, (value, lev, q))
+                if track:
                     support[q] = a
+            elif track and value == current and lev == current_level and a < support[q]:
+                support[q] = a
+                multiplier[q] = m
+
+        def trigger(a: int) -> None:
+            acc = accumulated[a]
+            lev = action_level[a] + 1
+            base = action_cost[a]
+            for q in adds[a]:
+                offer(q, base + acc, lev, a, 1.0)
+            for e in edges_of[a]:
+                m = mult[e]
+                if m != DEAD_END:
+                    offer(edges[e][1], m * base + acc, lev, a, m)
 
         for a in self.no_pre:
-            relax(a, action_cost[a])
+            trigger(a)
         pending_goals = sum(1 for g in goal_facts if cost[g] != 0)
-        done = [False] * self.num_facts
+        done = [False] * num_facts
         while heap and pending_goals:
-            c, f = pop(heap)
-            if done[f]:
-                continue  # entrada obsoleta: el hecho ya se extrajo con su coste mínimo
+            c, lev, f = pop(heap)
+            if done[f] or c != cost[f] or lev != level[f]:
+                continue  # entrada obsoleta
             done[f] = True
             if c != 0 and f in goal_facts:
                 pending_goals -= 1
@@ -187,45 +265,33 @@ class RelaxedTask:
                         accumulated[a] = c
                 else:
                     accumulated[a] += c
+                if lev > action_level[a]:
+                    action_level[a] = lev
                 if remaining == 0:
-                    value = action_cost[a] + accumulated[a]
-                    for q in adds[a]:
-                        current = cost[q]
-                        if value < current:
-                            cost[q] = value
-                            push(heap, (value, q))
-                            if track:
-                                support[q] = a
-                        elif track and value == current and a < support[q]:
-                            support[q] = a
-        return cost
+                    trigger(a)
+        return cost, multiplier
 
     def clause_values(self, cost: Sequence[float], combine_max: bool) -> list[float]:
         """Valor h_max o h_add de cada cláusula del objetivo."""
         values: list[float] = []
         for clause in self.goal:
             costs = [cost[f] for f in clause]
-            values.append((max(costs) if combine_max else sum(costs)) if costs else 0)
+            values.append((max(costs) if combine_max else sum(costs)) if costs else 0.0)
         return values
 
     def goal_value(self, cost: Sequence[float], combine_max: bool) -> float:
         """Valor h_max o h_add del objetivo: el mínimo entre sus cláusulas."""
         return min(self.clause_values(cost, combine_max), default=DEAD_END)
 
-    def relaxed_plan(self, cost: Sequence[float], supporters: Sequence[int]) -> Evaluation:
-        """Extrae el plan relajado de h_FF a partir de los costes h_add de los hechos.
-
-        Se usa la cláusula del objetivo de menor valor (la de menor índice si hay empate).
-        El mejor soportador de un hecho es la acción relajada de **menor índice** entre las
-        que lo añaden con coste mínimo. La regla es determinista, y así las dos
-        implementaciones dan el mismo plan relajado. Los ``supporters`` son los que
-        calcula :meth:`fact_costs_and_supporters`.
-        """
+    def relaxed_plan(
+        self, cost: Sequence[float], supporters: Sequence[int], multiplier: Sequence[float]
+    ) -> Evaluation:
+        """Extrae el plan relajado de h_FF (ver la documentación del módulo)."""
         values = self.clause_values(cost, False)
         if not values or min(values) == DEAD_END:
             return Evaluation(DEAD_END)
         clause = self.goal[values.index(min(values))]
-        plan: set[int] = set()
+        repeats: dict[int, float] = {}  # acción relajada → repeticiones necesarias
         marked: set[int] = set()
         stack = [g for g in clause if cost[g] != 0]
         while stack:
@@ -234,13 +300,69 @@ class RelaxedTask:
                 continue
             marked.add(f)
             best = supporters[f]
-            if best not in plan:
-                plan.add(best)
+            if best not in repeats:
+                repeats[best] = multiplier[f]
                 stack.extend(p for p in self.pre[best] if cost[p] != 0)
-        operators = {self.operator[a] for a in plan}
-        value = sum(self.operator_cost[o] for o in operators)
-        preferred = {self.operator[a] for a in plan if all(cost[p] == 0 for p in self.pre[a])}
+            elif multiplier[f] > repeats[best]:
+                repeats[best] = multiplier[f]
+        per_operator: dict[int, float] = {}
+        preferred: set[int] = set()
+        for a, times in repeats.items():
+            operator = self.operator[a]
+            if times > per_operator.get(operator, 0.0):
+                per_operator[operator] = times
+            if all(cost[p] == 0 for p in self.pre[a]):
+                preferred.add(operator)
+        # Suma en orden de operador: el mismo orden de sumas que en Numba.
+        value = sum(self.operator_cost[o] * times for o, times in sorted(per_operator.items()))
         return Evaluation(value, tuple(sorted(preferred)))
+
+
+def repetitions(kind: int, delta: float, value: float | None) -> float:
+    """Repeticiones de una arista numérica cuando la condición vale ``value`` (``inf`` si la
+    arista no sirve). Ver la documentación del módulo."""
+    if kind == ONCE:
+        return 1.0
+    if value is None:
+        return DEAD_END
+    if kind == REPEAT_GE:
+        return max(1.0, float(math.ceil(-value / delta))) if value < 0 else 1.0
+    if kind == REPEAT_GT:
+        return float(math.floor(-value / delta)) + 1.0 if value <= 0 else 1.0
+    # REPEAT_EQ: hay que moverse hacia 0 en la dirección de delta.
+    if value == 0:
+        return 1.0
+    if (value < 0) == (delta > 0):
+        return max(1.0, float(math.ceil(abs(value) / abs(delta))))
+    return DEAD_END
+
+
+def _numeric_edge(
+    condition: NumericCondition, effects: Sequence[NumericAssignment]
+) -> tuple[int, float] | None:
+    """Tipo y Δ de la arista de una acción relajada a una condición, o ``None`` si no la
+    mejora."""
+    form = condition.linear
+    touched = {a.variable for a in effects}
+    if form is None:
+        return (ONCE, 0.0) if touched & variables_of(condition.expression) else None
+    weights = dict(form.terms)
+    if not touched & weights.keys():
+        return None
+    delta = 0.0
+    for effect in effects:
+        weight = weights.get(effect.variable)
+        if weight is None:
+            continue
+        if effect.op not in ("increase", "decrease") or not isinstance(effect.value, Const):
+            return (ONCE, 0.0)  # no es un incremento constante: optimista
+        amount = effect.value.value
+        delta += weight * (amount if effect.op == "increase" else -amount)
+    if condition.comparator == "=":
+        return (REPEAT_EQ, delta) if delta != 0 else None
+    if delta <= 0:
+        return None  # empeora o no cambia la condición: se ignora, como un borrado
+    return (REPEAT_GE if condition.comparator == ">=" else REPEAT_GT, delta)
 
 
 class _RelaxationHeuristic(Heuristic):
@@ -252,7 +374,7 @@ class _RelaxationHeuristic(Heuristic):
 
 
 class HMaxHeuristic(_RelaxationHeuristic):
-    """h_max: admisible, poco informada."""
+    """h_max (con *h^hbd* para las condiciones numéricas)."""
 
     name = "hmax"
     combine_max = True
@@ -263,7 +385,7 @@ class HMaxHeuristic(_RelaxationHeuristic):
 
 
 class HAddHeuristic(_RelaxationHeuristic):
-    """h_add: no admisible, bien informada."""
+    """h_add (con *h^hbd* para las condiciones numéricas)."""
 
     name = "hadd"
 
@@ -282,6 +404,6 @@ class FFHeuristic(_RelaxationHeuristic):
         r = self.relaxed
         results = []
         for state in states:
-            cost, supporters = r.fact_costs_and_supporters(state)
-            results.append(r.relaxed_plan(cost, supporters))
+            cost, supporters, multiplier = r.fact_costs_and_supporters(state)
+            results.append(r.relaxed_plan(cost, supporters, multiplier))
         return results
