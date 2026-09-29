@@ -21,7 +21,7 @@ PARSER_TIER = 2
 #: Partes (*subtiers*) de tiers superiores que ya están soportadas, para las iteraciones que
 #: se dividen en partes (la 3 en numérica y temporal). Al cerrar la iteración se sube el
 #: tier y se vacía su entrada.
-PARSER_PARTIAL: dict[int, frozenset[str]] = {3: frozenset({"numeric"})}
+PARSER_PARTIAL: dict[int, frozenset[str]] = {3: frozenset({"numeric", "temporal"})}
 SUPPORTED_PARTIAL: dict[int, frozenset[str]] = {3: frozenset({"numeric"})}
 
 _TIER_DIR = re.compile(r"^tier(\d+)-")

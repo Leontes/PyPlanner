@@ -1,5 +1,5 @@
 (define (domain driverlog)
-  (:requirements :typing :durative-actions) 
+  (:requirements :typing :durative-actions :numeric-fluents) 
   (:types           location locatable - object
 		driver truck obj - locatable)
 

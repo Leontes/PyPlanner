@@ -1,3 +1,8 @@
+import pytest
+
+from pyplanner.errors import PDDLSyntaxError, SemanticError
+from pyplanner.loader import load_domain
+from pyplanner.pddl import parse_domain
 from pyplanner.requirements import (
     KNOWN_REQUIREMENTS,
     REQUIREMENT_EXPANSIONS,
@@ -5,6 +10,7 @@ from pyplanner.requirements import (
     expand_requirements,
     first_undeclared,
     requirement_uses,
+    unknown_requirement_message,
     unsupported_requirements,
 )
 
@@ -26,8 +32,9 @@ def test_strips_is_supported() -> None:
 
 
 def test_unsupported_requirements_are_reported_expanded() -> None:
-    assert unsupported_requirements([":durative-actions"]) == [":durative-actions"]
+    assert unsupported_requirements([":derived-predicates"]) == [":derived-predicates"]
     assert unsupported_requirements([":fluents"]) == []  # numérico: iteración 3a
+    assert unsupported_requirements([":durative-actions"]) == []  # temporal: iteración 3b
     assert unsupported_requirements([":adl", ":time"]) == [":time"]
 
 
@@ -84,3 +91,27 @@ def test_requirement_uses_lists_every_construct() -> None:
     assert first_undeclared(document, [":adl"]) is None
     missing = first_undeclared(document, [":typing", ":negative-preconditions"])
     assert missing is not None and missing.requirement == ":equality"
+
+
+@pytest.mark.parametrize(
+    ("written", "suggestion"),
+    [
+        (":durative-inequalities", ":duration-inequalities"),  # errata de planning.wiki
+        (":durative-action", ":durative-actions"),
+        (":numeric-fluent", ":numeric-fluents"),
+        (":typeing", ":typing"),
+    ],
+)
+def test_unknown_requirements_suggest_the_closest(written: str, suggestion: str) -> None:
+    assert unknown_requirement_message(written).endswith(f"¿quería decir '{suggestion}'?")
+    # Las dos fases dan la sugerencia, y sigue siendo un error.
+    text = f"(define (domain d) (:requirements {written}))"
+    with pytest.raises(PDDLSyntaxError, match=suggestion):
+        parse_domain(text)
+    document = {"version": 4, "kind": "domain", "name": "d", "requirements": [written]}
+    with pytest.raises(SemanticError, match=suggestion):
+        load_domain(document)
+
+
+def test_unknown_requirements_without_a_close_match() -> None:
+    assert unknown_requirement_message(":magic") == "requisito desconocido ':magic'"

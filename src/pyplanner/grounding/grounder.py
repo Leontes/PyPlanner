@@ -33,6 +33,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from itertools import product
 
+from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding.normalize import (
     TRUE,
     Clause,
@@ -94,8 +95,14 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
 
     Raises:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
-            disyuntiva.
+            disyuntiva, o si el dominio tiene acciones durativas (el motor temporal está en
+            desarrollo; iteración 3b).
     """
+    if domain.durative_actions:
+        raise UnsupportedFeatureError(
+            "el motor de búsqueda todavía no admite acciones durativas "
+            "(motor temporal: iteración 3b)"
+        )
     declarations = {o.name: o.types for o in (*domain.constants, *problem.objects)}
     universe = _TypedUniverse(domain, declarations)
     fluent_predicates = frozenset(

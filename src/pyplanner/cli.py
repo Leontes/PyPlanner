@@ -132,9 +132,12 @@ def _parse(args: argparse.Namespace) -> int:
 def _check(args: argparse.Namespace) -> int:
     domain = read_domain(args.domain)
     problem = read_problem(args.problem, domain)
+    durative = (
+        f", {len(domain.durative_actions)} acciones durativas" if domain.durative_actions else ""
+    )
     print(
         f"Dominio '{domain.name}': {len(domain.predicates)} predicados, "
-        f"{len(domain.actions)} acciones, {len(domain.constants)} constantes"
+        f"{len(domain.actions)} acciones{durative}, {len(domain.constants)} constantes"
     )
     print(
         f"Problema '{problem.name}': {len(problem.objects)} objetos, "

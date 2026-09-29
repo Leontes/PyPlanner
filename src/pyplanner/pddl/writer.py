@@ -7,11 +7,12 @@ Sirve para dos cosas:
 * pasarle a herramientas externas como VAL una tarea que llegó directamente en JSON.
 
 El documento se supone válido según el esquema; no se vuelve a comprobar aquí. Una
-precondición o un efecto ausentes se escriben como ``(and)``, porque VAL no acepta
-acciones sin ``:precondition``. Es equivalente: una precondición ausente es la vacía.
+precondición, una condición o un efecto ausentes se escriben como ``(and)``, porque VAL no
+acepta acciones sin ``:precondition`` ni ``:condition ()`` en las acciones durativas. Es
+equivalente: una precondición ausente es la vacía.
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 _INDENT = "  "
@@ -53,6 +54,14 @@ def _write_domain(document: Mapping[str, Any]) -> str:
         precondition = action.get("precondition", _EMPTY)
         lines.append(f"{_INDENT * 2}:precondition {_formula(precondition)}")
         lines.append(f"{_INDENT * 2}:effect {_effect(action.get('effect', _EMPTY))}")
+        lines.append(f"{_INDENT})")
+    for action in document.get("durative_actions", []):
+        lines.append(f"{_INDENT}(:durative-action {action['name']}")
+        lines.append(f"{_INDENT * 2}:parameters ({_typed_list(action.get('parameters', []))})")
+        lines.append(f"{_INDENT * 2}:duration {_duration(action['duration'])}")
+        condition = action.get("condition", _EMPTY)
+        lines.append(f"{_INDENT * 2}:condition {_timed(condition, _formula)}")
+        lines.append(f"{_INDENT * 2}:effect {_timed(action.get('effect', _EMPTY), _effect)}")
         lines.append(f"{_INDENT})")
     lines.append(")")
     return "\n".join(lines) + "\n"
@@ -147,6 +156,10 @@ def _expression(node: Mapping[str, Any]) -> str:
         return f"({' '.join([node['function'], *node['args']])})"
     if op == "total-time":
         return "(total-time)"
+    if op == "duration":
+        return "?duration"
+    if op == "#t":
+        return "#t"
     return f"({' '.join([op, *(_expression(arg) for arg in node['args'])])})"
 
 
@@ -170,3 +183,32 @@ def _effect(node: Mapping[str, Any]) -> str:
     if op in ("increase", "decrease", "assign", "scale-up", "scale-down"):
         return f"({op} {_expression(node['fluent'])} {_expression(node['value'])})"
     raise ValueError(f"operador de efecto desconocido: {op}")
+
+
+def _duration(constraints: list[Mapping[str, Any]]) -> str:
+    """Escribe la duración: ``()``, una restricción o ``(and ...)`` de varias."""
+    parts = []
+    for constraint in constraints:
+        text = f"({constraint['comparator']} ?duration {_expression(constraint['value'])})"
+        parts.append(f"(at {constraint['time']} {text})" if "time" in constraint else text)
+    if not parts:
+        return "()"
+    return parts[0] if len(parts) == 1 else f"(and {' '.join(parts)})"
+
+
+_TIMED = {"at-start": "at start", "at-end": "at end", "over-all": "over all"}
+
+
+def _timed(node: Mapping[str, Any], inner: Callable[[Mapping[str, Any]], str]) -> str:
+    """Escribe una condición o un efecto de una acción durativa; ``inner`` escribe lo que va
+    dentro de ``at start``, ``at end`` y ``over all``."""
+    op = node["op"]
+    if op in _TIMED:
+        return f"({_TIMED[op]} {inner(node['arg'])})"
+    if op == "and":
+        return f"({' '.join(['and', *(_timed(arg, inner) for arg in node['args'])])})"
+    if op == "forall":
+        return f"(forall ({_typed_list(node['parameters'])}) {_timed(node['arg'], inner)})"
+    if op == "when":
+        return f"(when {_timed(node['condition'], _formula)} {_timed(node['arg'], inner)})"
+    return _effect(node)  # efecto continuo

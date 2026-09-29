@@ -178,9 +178,6 @@ def test_bad_metric_direction() -> None:
     ("text", "requirement"),
     [
         ("(:functions (f) - object)", ":object-fluents"),
-        (f"{BASE} (:action a :precondition (> ?duration 1))", ":durative-actions"),
-        (f"{BASE} (:action a :effect (increase (g) #t))", ":continuous-effects"),
-        (f"{BASE} (:action a :effect (increase (g) (#t)))", ":continuous-effects"),
         (f"{BASE} (:action a :precondition (preference p (g)))", ":preferences"),
     ],
 )

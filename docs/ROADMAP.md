@@ -289,6 +289,10 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
 
 ### 3b: acciones durativas
 **Requisitos:** `:durative-actions`, `:duration-inequalities` y `:continuous-effects`.
+
+- **Parser:** ✅ hecho (esquema JSON v4; ver [formato-json.md](formato-json.md#acciones-durativas-v4)).
+  Hasta que esté el motor temporal, el grounding rechaza las acciones durativas con un
+  error claro.
 - **Parser:**
   - `:durative-action` y `:duration`;
   - condiciones `at start`, `at end` y `over all`;

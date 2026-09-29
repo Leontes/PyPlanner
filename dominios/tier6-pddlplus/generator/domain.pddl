@@ -1,5 +1,5 @@
 (define (domain generatorplus)
-(:requirements :fluents :durative-actions :duration-inequalities :adl :typing :time)
+(:requirements :fluents :durative-actions :duration-inequalities :adl :typing :time :continuous-effects)
 (:types generator tank)
 (:predicates (generator-ran) (available ?t - tank) (using ?t - tank ?g - generator) (safe ?g - generator))
 (:functions (fuelLevel ?g - generator) (capacity ?g - generator) (fuelInTank ?t - tank) (ptime ?t - tank))

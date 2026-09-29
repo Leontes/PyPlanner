@@ -15,6 +15,10 @@ eso hace cuatro comprobaciones, en este orden:
    * variables ligadas a un parámetro o a un cuantificador, sin ocultar otra variable;
    * funciones declaradas y con la aridad correcta; valores iniciales sin variables y sin
      repetir; ``total-time`` solo en la métrica;
+   * acciones durativas: nombres distintos de los de las acciones, ``?duration`` solo dentro
+     de ellas (y no en su propia duración), ``#t`` solo en efectos continuos con la forma
+     ``(increase|decrease f (* #t e))``, y efectos ``at start`` que no dependen de
+     condiciones posteriores (``at end`` u ``over all``);
    * objetos declarados y con un tipo compatible con el del predicado;
    * problema asociado a su dominio.
 
@@ -33,14 +37,27 @@ from pyplanner.errors import (
     UnsupportedFeatureError,
 )
 from pyplanner.loader.ast import (
+    ALL,
+    END,
     OBJECT,
+    START,
     Action,
     And,
     Arithmetic,
     Atom,
     Comparison,
     Constant,
+    ContinuousEffect,
     Domain,
+    DurationConstraint,
+    DurationVar,
+    DurativeAction,
+    DurativeAnd,
+    DurativeCondition,
+    DurativeEffect,
+    DurativeForall,
+    DurativeForallEffect,
+    DurativeWhen,
     Effect,
     Equals,
     Exists,
@@ -61,6 +78,8 @@ from pyplanner.loader.ast import (
     Predicate,
     Problem,
     Term,
+    TimedCondition,
+    TimedEffect,
     TotalTime,
     Variable,
     When,
@@ -70,6 +89,7 @@ from pyplanner.requirements import (
     NUMERIC_EFFECTS,
     expand_requirements,
     first_undeclared,
+    unknown_requirement_message,
     unsupported_requirements,
 )
 from pyplanner.schema import validate_document
@@ -129,6 +149,13 @@ def load_domain(document: JSON) -> Domain:
         if "effect" in node:
             effect = ctx.effect(node["effect"], f"{path}.effect", action_scope)
         actions[name] = Action(name, parameters, precondition, effect)
+    durative_actions: dict[str, DurativeAction] = {}
+    for i, node in enumerate(document.get("durative_actions", [])):
+        path = f"durative_actions[{i}]"
+        name = node["name"].lower()
+        if name in actions or name in durative_actions:
+            ctx.fail(f"acción '{name}' declarada dos veces", node, path)
+        durative_actions[name] = ctx.durative_action(node, path, scope)
 
     return Domain(
         name=document["name"].lower(),
@@ -138,6 +165,7 @@ def load_domain(document: JSON) -> Domain:
         predicates=tuple(predicates.values()),
         actions=tuple(actions.values()),
         functions=tuple(functions.values()),
+        durative_actions=tuple(durative_actions.values()),
     )
 
 
@@ -220,16 +248,20 @@ class _Scope:
         objects: Mapping[str, tuple[str, ...]],
         variables: Mapping[str, tuple[str, ...]] | None = None,
         functions: Mapping[str, Function] | None = None,
+        durative: bool = False,
     ) -> None:
         self.predicates = predicates
         self.objects = objects
         self.variables: Mapping[str, tuple[str, ...]] = variables or {}
         self.functions: Mapping[str, Function] = functions or {}
+        #: ``True`` dentro de una acción durativa, donde se puede usar ``?duration``.
+        self.durative = durative
 
-    def bind(self, parameters: Iterable[Parameter]) -> "_Scope":
+    def bind(self, parameters: Iterable[Parameter], *, durative: bool | None = None) -> "_Scope":
         variables = dict(self.variables)
         variables.update((p.name, p.types) for p in parameters)
-        return _Scope(self.predicates, self.objects, variables, self.functions)
+        inside = self.durative if durative is None else durative
+        return _Scope(self.predicates, self.objects, variables, self.functions, inside)
 
 
 class _Context:
@@ -259,7 +291,7 @@ class _Context:
         declared = [r.lower() for r in document.get("requirements", [])]
         for i, requirement in enumerate(declared):
             if requirement not in KNOWN_REQUIREMENTS:
-                self.fail(f"requisito desconocido '{requirement}'", document, f"requirements[{i}]")
+                self.fail(unknown_requirement_message(requirement), document, f"requirements[{i}]")
         unsupported = unsupported_requirements(declared)
         if unsupported:
             self.fail(
@@ -404,6 +436,17 @@ class _Context:
             if not metric:
                 self.fail("'total-time' solo puede aparecer en la métrica", node, path)
             return TotalTime()
+        if op == "duration":
+            if not scope.durative:
+                self.fail("'?duration' solo puede aparecer en una acción durativa", node, path)
+            return DurationVar()
+        if op == "#t":
+            self.fail(
+                "'#t' solo puede aparecer en un efecto continuo: "
+                "(increase|decrease <función> (* #t <expresión>))",
+                node,
+                path,
+            )
         args = tuple(
             self.expression(arg, f"{path}.args[{i}]", scope, metric=metric)
             for i, arg in enumerate(node["args"])
@@ -425,6 +468,93 @@ class _Context:
         terms = tuple(self.term(arg.lower(), node, path, scope) for arg in args)
         self.check_argument_types(name, terms, function.parameters, scope, node, path)
         return FluentTerm(name, terms)
+
+    # --- Acciones durativas (iteración 3b) -------------------------------------------
+
+    def durative_action(self, node: JSON, path: str, scope: _Scope) -> DurativeAction:
+        parameters = self.parameters(node.get("parameters", []), path)
+        inner = scope.bind(parameters, durative=True)
+        duration = tuple(
+            self.duration_constraint(c, f"{path}.duration[{i}]", inner)
+            for i, c in enumerate(node["duration"])
+        )
+        condition: DurativeCondition = DurativeAnd()
+        effect: DurativeEffect = DurativeAnd()
+        if "condition" in node:
+            condition = self.timed_condition(node["condition"], f"{path}.condition", inner)
+        if "effect" in node:
+            effect = self.timed_effect(node["effect"], f"{path}.effect", inner)
+        return DurativeAction(node["name"].lower(), parameters, duration, condition, effect)
+
+    def duration_constraint(self, node: JSON, path: str, scope: _Scope) -> DurationConstraint:
+        value = self.expression(node["value"], f"{path}.value", scope)
+        if _uses_duration(value):
+            self.fail("la duración no puede depender de '?duration'", node, f"{path}.value")
+        return DurationConstraint(node["comparator"], value, node.get("time"))
+
+    def timed_condition(self, node: JSON, path: str, scope: _Scope) -> DurativeCondition:
+        op = node["op"]
+        if op == "and":
+            return DurativeAnd(
+                tuple(
+                    self.timed_condition(arg, f"{path}.args[{i}]", scope)
+                    for i, arg in enumerate(node["args"])
+                )
+            )
+        if op == "forall":
+            parameters, inner = self.quantified(node, path, scope)
+            return DurativeForall(
+                parameters, self.timed_condition(node["arg"], f"{path}.arg", inner)
+            )
+        time = _TIMES[op]
+        return TimedCondition(time, self.formula(node["arg"], f"{path}.arg", scope))
+
+    def timed_effect(self, node: JSON, path: str, scope: _Scope) -> DurativeEffect:
+        op = node["op"]
+        if op == "and":
+            return DurativeAnd(
+                tuple(
+                    self.timed_effect(arg, f"{path}.args[{i}]", scope)
+                    for i, arg in enumerate(node["args"])
+                )
+            )
+        if op == "forall":
+            parameters, inner = self.quantified(node, path, scope)
+            return DurativeForallEffect(
+                parameters, self.timed_effect(node["arg"], f"{path}.arg", inner)
+            )
+        if op == "when":
+            condition = self.timed_condition(node["condition"], f"{path}.condition", scope)
+            arg = self.timed_effect(node["arg"], f"{path}.arg", scope)
+            if START in _effect_times(arg) and _condition_times(condition) - {START}:
+                self.fail(
+                    "un efecto 'at start' solo puede depender de condiciones 'at start'",
+                    node,
+                    path,
+                )
+            return DurativeWhen(condition, arg)
+        if op in ("at-start", "at-end"):
+            return TimedEffect(_TIMES[op], self.effect(node["arg"], f"{path}.arg", scope))
+        return self.continuous_effect(node, path, scope)
+
+    def continuous_effect(self, node: JSON, path: str, scope: _Scope) -> ContinuousEffect:
+        """``(increase|decrease f #t)`` o ``(increase|decrease f (* ... #t ...))``: el ritmo es
+        1 o el producto del resto de factores."""
+        value = node["value"]
+        form = "(increase|decrease <función> (* #t <expresión>))"
+        if value["op"] == "#t":
+            rate: Expression = Number(1.0)
+        elif value["op"] == "*" and sum(arg["op"] == "#t" for arg in value["args"]) == 1:
+            factors = tuple(
+                self.expression(arg, f"{path}.value.args[{i}]", scope)
+                for i, arg in enumerate(value["args"])
+                if arg["op"] != "#t"
+            )
+            rate = factors[0] if len(factors) == 1 else Arithmetic("*", factors)
+        else:
+            self.fail(f"un efecto continuo tiene la forma {form}", node, f"{path}.value")
+        fluent = self.fluent(node["fluent"], f"{path}.fluent", scope)
+        return ContinuousEffect(node["op"], fluent, rate)
 
     def quantified(
         self, node: JSON, path: str, scope: _Scope
@@ -489,3 +619,35 @@ class _Context:
         if name not in scope.objects:
             self.fail(f"objeto o constante '{name}' no declarado", node, path)
         return Constant(name)
+
+
+#: Momento de cada operador temporal del JSON.
+_TIMES = {"at-start": START, "at-end": END, "over-all": ALL}
+
+
+def _uses_duration(expression: Expression) -> bool:
+    if isinstance(expression, DurationVar):
+        return True
+    if isinstance(expression, Arithmetic):
+        return any(_uses_duration(arg) for arg in expression.args)
+    return False
+
+
+def _condition_times(condition: DurativeCondition) -> set[str]:
+    """Momentos en que se comprueba alguna parte de la condición."""
+    if isinstance(condition, TimedCondition):
+        return {condition.time}
+    if isinstance(condition, DurativeForall):
+        return _condition_times(condition.arg)
+    return set().union(*(_condition_times(arg) for arg in condition.args))  # type: ignore[arg-type]
+
+
+def _effect_times(effect: DurativeEffect) -> set[str]:
+    """Momentos en que actúa alguna parte del efecto (``all`` para los continuos)."""
+    if isinstance(effect, TimedEffect):
+        return {effect.time}
+    if isinstance(effect, ContinuousEffect):
+        return {ALL}
+    if isinstance(effect, DurativeForallEffect | DurativeWhen):
+        return _effect_times(effect.arg)
+    return set().union(*(_effect_times(arg) for arg in effect.args))  # type: ignore[arg-type]

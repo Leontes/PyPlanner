@@ -20,13 +20,19 @@ PDDL 2.1:
 * funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica →
   ``:numeric-fluents``. Lo que encaja en el perfil de ``:action-costs`` (PDDL 3.1) también
   se acepta con ese requisito: declarar funciones y darles valor inicial, ``(increase
-  (total-cost) <número o función>)`` y ``(:metric minimize (total-cost))``.
+  (total-cost) <número o función>)`` y ``(:metric minimize (total-cost))``;
+* acciones durativas → ``:durative-actions``;
+* restricciones de duración con ``<=`` o ``>=``, varias restricciones o una evaluada en
+  ``(at start|end ...)`` → ``:duration-inequalities``;
+* efectos continuos (``increase``/``decrease`` con ``#t``, fuera de ``at start/end``) →
+  ``:continuous-effects``.
 
 ``(not <átomo>)`` en un efecto es un borrado STRIPS y no necesita nada.
 """
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from difflib import get_close_matches
 from typing import Any
 
 #: Todos los requisitos que existen en las versiones de PDDL, soportados o no.
@@ -111,11 +117,23 @@ SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
         # Iteración 3a (PDDL 2.1 numérico y costes de acción de PDDL 3.1)
         ":numeric-fluents",
         ":action-costs",
+        # Iteración 3b (PDDL 2.1 temporal)
+        ":durative-actions",
+        ":duration-inequalities",
+        ":continuous-effects",
     }
 )
 
 #: Requisito que se supone cuando un dominio no declara ``:requirements``.
 DEFAULT_REQUIREMENT = ":strips"
+
+
+def unknown_requirement_message(requirement: str) -> str:
+    """Mensaje de error para un requisito que no existe, con el más parecido si lo hay
+    (``:durative-inequalities`` → ``:duration-inequalities``)."""
+    message = f"requisito desconocido '{requirement}'"
+    close = get_close_matches(requirement, sorted(KNOWN_REQUIREMENTS), n=1, cutoff=0.8)
+    return f"{message}; ¿quería decir '{close[0]}'?" if close else message
 
 
 def expand_requirements(requirements: Iterable[str]) -> frozenset[str]:
@@ -193,6 +211,15 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
             yield from _formula_uses(action["precondition"], f"{path}.precondition")
         if "effect" in action:
             yield from _effect_uses(action["effect"], f"{path}.effect")
+    for i, action in enumerate(document.get("durative_actions", [])):
+        path = f"durative_actions[{i}]"
+        yield RequirementUse(":durative-actions", "una acción durativa", path, _loc(action))
+        yield from _typed_items(action.get("parameters", []), f"{path}.parameters")
+        yield from _duration_uses(action["duration"], f"{path}.duration")
+        if "condition" in action:
+            yield from _timed_condition_uses(action["condition"], f"{path}.condition")
+        if "effect" in action:
+            yield from _timed_effect_uses(action["effect"], f"{path}.effect")
     for i, element in enumerate(document.get("init", [])):
         if element["op"] == "=":
             yield RequirementUse(
@@ -202,10 +229,11 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
         yield from _formula_uses(document["goal"], "goal")
     if "metric" in document:
         metric = document["metric"]
-        cost_only = metric["direction"] == "minimize" and _is_total_cost(metric["expression"])
-        yield RequirementUse(
-            ":numeric-fluents", "la métrica", "metric", _loc(metric), _COSTS if cost_only else ()
-        )
+        expression = metric["expression"]
+        alternatives: tuple[str, ...] = ()
+        if metric["direction"] == "minimize" and _is_total_cost(expression):
+            alternatives = _COSTS
+        yield RequirementUse(":numeric-fluents", "la métrica", "metric", _loc(metric), alternatives)
 
 
 def first_undeclared(document: Mapping[str, Any], declared: Iterable[str]) -> RequirementUse | None:
@@ -298,3 +326,63 @@ def _effect_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]
 
 #: Operadores de los efectos numéricos.
 NUMERIC_EFFECTS = ("increase", "decrease", "assign", "scale-up", "scale-down")
+
+
+def _duration_uses(constraints: list[Mapping[str, Any]], path: str) -> Iterator[RequirementUse]:
+    for i, constraint in enumerate(constraints):
+        where = f"{path}[{i}]"
+        if i == 1:
+            yield RequirementUse(
+                ":duration-inequalities",
+                "varias restricciones de duración",
+                where,
+                _loc(constraint),
+            )
+        if constraint["comparator"] != "=":
+            yield RequirementUse(
+                ":duration-inequalities",
+                f"'{constraint['comparator']}' en la duración",
+                where,
+                _loc(constraint),
+            )
+        if "time" in constraint:
+            yield RequirementUse(
+                ":duration-inequalities",
+                f"una duración evaluada en (at {constraint['time']} ...)",
+                where,
+                _loc(constraint),
+            )
+
+
+def _timed_condition_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+    op = node["op"]
+    if op == "and":
+        for i, arg in enumerate(node["args"]):
+            yield from _timed_condition_uses(arg, f"{path}.args[{i}]")
+    elif op == "forall":
+        yield RequirementUse(
+            ":universal-preconditions", "'forall' en una condición", path, _loc(node)
+        )
+        yield from _typed_items(node["parameters"], f"{path}.parameters")
+        yield from _timed_condition_uses(node["arg"], f"{path}.arg")
+    else:  # at-start, at-end, over-all
+        yield from _formula_uses(node["arg"], f"{path}.arg")
+
+
+def _timed_effect_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+    op = node["op"]
+    if op == "and":
+        for i, arg in enumerate(node["args"]):
+            yield from _timed_effect_uses(arg, f"{path}.args[{i}]")
+    elif op == "forall":
+        yield RequirementUse(":conditional-effects", "'forall' en un efecto", path, _loc(node))
+        yield from _typed_items(node["parameters"], f"{path}.parameters")
+        yield from _timed_effect_uses(node["arg"], f"{path}.arg")
+    elif op == "when":
+        yield RequirementUse(":conditional-effects", "'when' en un efecto", path, _loc(node))
+        yield from _timed_condition_uses(node["condition"], f"{path}.condition")
+        yield from _timed_effect_uses(node["arg"], f"{path}.arg")
+    elif op in ("at-start", "at-end"):
+        yield from _effect_uses(node["arg"], f"{path}.arg")
+    else:  # increase o decrease continuo
+        yield RequirementUse(":continuous-effects", "un efecto continuo", path, _loc(node))

@@ -1,4 +1,4 @@
-# Formato JSON de entrada (versión 3)
+# Formato JSON de entrada (versión 4)
 
 El planificador recibe los dominios y problemas en JSON. Este documento es el contrato para
 cualquier componente que quiera generar ese JSON sin pasar por PDDL. El esquema formal
@@ -26,7 +26,8 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 - `version` es la versión del formato:
   - v1: STRIPS;
   - v2: PDDL 1.2, subconjunto ADL;
-  - v3 (actual): PDDL 2.1 numérico y costes de acción (`:action-costs`).
+  - v3: PDDL 2.1 numérico y costes de acción (`:action-costs`);
+  - v4 (actual): PDDL 2.1 temporal (acciones durativas).
 
   Cada versión solo **añade** construcciones, así que un documento v1 sigue siendo
   válido.
@@ -51,9 +52,11 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 | `predicates` | no | `[{"name": "at", "parameters": [{"name": "?x", "type": "truck"}, ...]}, ...]` |
 | `functions` | no | funciones numéricas, con la misma forma que `predicates` (v3) |
 | `actions` | no | ver abajo |
+| `durative_actions` | no | acciones durativas (v4); ver [Acciones durativas](#acciones-durativas-v4) |
 
 Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fórmula) y
-`effect` (un efecto). Si falta alguno de los dos, se toma como vacío.
+`effect` (un efecto). Si falta alguno de los dos, se toma como vacío. Las acciones y las
+acciones durativas comparten espacio de nombres.
 
 ## Problema
 
@@ -91,9 +94,11 @@ Las reglas están en `pyplanner/requirements.py`:
 | `forall` en una fórmula | `:universal-preconditions` |
 | `=` | `:equality` |
 | `forall` o `when` en un efecto | `:conditional-effects` |
-
 | `functions`, valores iniciales, `compare`, efectos numéricos, `metric` | `:numeric-fluents` |
 | perfil de costes de acción: `functions` y sus valores iniciales, `increase` de `(total-cost)` con un número o una función, `minimize (total-cost)` | `:numeric-fluents` o `:action-costs` |
+| `durative_actions` | `:durative-actions` |
+| duración con `<=` o `>=`, varias restricciones o `time` | `:duration-inequalities` |
+| efecto continuo | `:continuous-effects` |
 
 - `not` en un efecto es un borrado STRIPS y no necesita nada.
 - `:adl` y `:quantified-preconditions` equivalen a sus requisitos componentes, y
@@ -126,6 +131,8 @@ Las reglas están en `pyplanner/requirements.py`:
 | `-` | `args` (uno o dos) | con uno, cambio de signo |
 | `/` | `args` (dos) | |
 | `total-time` | — | duración del plan; **solo en la métrica**. En un plan secuencial, cada acción dura una unidad |
+| `duration` | — | `?duration`, la duración de la acción (v4); **solo dentro de una acción durativa**, y no en su propia duración |
+| `#t` | — | tiempo transcurrido (v4); **solo en un efecto continuo** |
 
 - `=` entre dos objetos o variables es la igualdad de `:equality` (`{"op": "=", "args": […]}`);
   entre expresiones es una comparación (`{"op": "compare", "comparator": "=", …}`).
@@ -146,6 +153,59 @@ Otras restricciones:
 | `atom` | `predicate`, `args` | fórmulas, efectos, `init` |
 | `and` | `args` (lista de nodos) | fórmulas, efectos |
 | `not` | `arg` (un átomo) | solo efectos (borrado) |
+
+## Acciones durativas (v4)
+
+Una acción durativa tiene `name`, `parameters`, `duration` y, opcionalmente, `condition` y
+`effect` (si faltan, son vacíos):
+
+```json
+{
+  "name": "drive",
+  "parameters": [{"name": "?t", "type": "truck"}, {"name": "?from", "type": "place"}, {"name": "?to", "type": "place"}],
+  "duration": [{"comparator": "=", "value": {"op": "fluent", "function": "time-to-drive", "args": ["?from", "?to"]}}],
+  "condition": {"op": "and", "args": [
+    {"op": "at-start", "arg": {"op": "atom", "predicate": "at", "args": ["?t", "?from"]}},
+    {"op": "over-all", "arg": {"op": "atom", "predicate": "road", "args": ["?from", "?to"]}}
+  ]},
+  "effect": {"op": "and", "args": [
+    {"op": "at-start", "arg": {"op": "not", "arg": {"op": "atom", "predicate": "at", "args": ["?t", "?from"]}}},
+    {"op": "at-end", "arg": {"op": "atom", "predicate": "at", "args": ["?t", "?to"]}},
+    {"op": "decrease", "fluent": {"op": "fluent", "function": "fuel", "args": ["?t"]},
+     "value": {"op": "*", "args": [{"op": "#t"}, {"op": "num", "value": 2}]}}
+  ]}
+}
+```
+
+- **`duration`** es la conjunción de las restricciones de duración, cada una
+  `{"comparator": "=" | "<=" | ">=", "value": <expresión>}`. Con `"time": "start" | "end"`,
+  la expresión se evalúa al empezar o al terminar la acción (`(at end (<= ?duration …))`);
+  sin `time`, al empezar. Vacía si la acción no tiene restricciones (`:duration ()`).
+- **Condiciones** (`condition`):
+
+  | `op` | Campos | Significado |
+  |------|--------|-------------|
+  | `at-start`, `at-end` | `arg` (fórmula) | cierta al empezar / al terminar |
+  | `over-all` | `arg` (fórmula) | cierta durante toda la acción (sin incluir los extremos) |
+  | `and` | `args` (condiciones) | |
+  | `forall` | `parameters`, `arg` (una condición) | |
+
+- **Efectos** (`effect`):
+
+  | `op` | Campos | Significado |
+  |------|--------|-------------|
+  | `at-start`, `at-end` | `arg` (`atom`, `not`, `and` o efecto numérico) | al empezar / al terminar |
+  | `increase`, `decrease` | `fluent`, `value` con `#t` | **efecto continuo**: `value` es `#t` o un producto con `#t` como factor (`(* #t 2)`); la función cambia a ese ritmo mientras dura la acción |
+  | `and` | `args` (efectos) | |
+  | `forall` | `parameters`, `arg` (un efecto) | |
+  | `when` | `condition` (una condición con momentos), `arg` (efectos con momento o continuos) | un efecto `at start` solo puede depender de condiciones `at start` |
+
+- `?duration` (`{"op": "duration"}`) puede aparecer en las condiciones y los efectos de la
+  acción, pero no en su propia duración.
+- En PDDL, `(at start X)` se distingue de un átomo del predicado `at` porque `X` es una
+  lista.
+- El conversor inverso escribe una condición o un efecto ausentes como `(and)`, porque VAL
+  no acepta `:condition ()`.
 
 ## Ejemplo
 

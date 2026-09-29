@@ -10,7 +10,7 @@ Hay dos clases de error:
 
 * :class:`~pyplanner.errors.PDDLSyntaxError` si el texto no es PDDL bien formado.
 * :class:`~pyplanner.errors.UnsupportedFeatureError` si es PDDL válido pero usa algo que el
-  planificador todavía no soporta (por ejemplo, ``:functions`` o acciones durativas).
+  planificador todavía no soporta (por ejemplo, predicados derivados o preferencias).
 * :class:`~pyplanner.errors.UndeclaredRequirementError` si un **dominio** usa una
   construcción sin declarar su requisito (modo estricto, ver :mod:`pyplanner.requirements`).
   Los problemas se comprueban en la fase 2, porque sus requisitos dependen del dominio.
@@ -31,6 +31,7 @@ from pyplanner.pddl.sexpr import SExpr, SList, Symbol, parse_sexprs
 from pyplanner.requirements import (
     KNOWN_REQUIREMENTS,
     first_undeclared,
+    unknown_requirement_message,
     unsupported_requirements,
 )
 from pyplanner.schema import SCHEMA_VERSION
@@ -44,7 +45,6 @@ _NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 # Secciones y operadores de versiones posteriores de PDDL, con el requisito que los introduce.
 # Sirven para dar un error de "no soportado" en lugar de uno de sintaxis.
 _FUTURE_DOMAIN_SECTIONS = {
-    ":durative-action": ":durative-actions",
     ":derived": ":derived-predicates",
     ":process": ":time",
     ":event": ":time",
@@ -66,11 +66,13 @@ _COMPARATORS = ("<", "<=", "=", ">=", ">")
 _ARITHMETIC = ("+", "-", "*", "/")
 #: Efectos numéricos.
 _NUMERIC_EFFECTS = ("increase", "decrease", "assign", "scale-up", "scale-down")
-#: Símbolos de expresiones temporales (iteración 3b).
-_FUTURE_EXPRESSION_SYMBOLS = {
-    "#t": ":continuous-effects",
-    "?duration": ":durative-actions",
-}
+#: Símbolos de las expresiones temporales: la duración de la acción y el tiempo transcurrido
+#: de los efectos continuos. La fase 2 comprueba que aparecen donde pueden.
+_EXPRESSION_SYMBOLS = {"?duration": "duration", "#t": "#t"}
+#: Momentos de una acción durativa: ``(at start ...)``, ``(at end ...)`` y ``(over all ...)``.
+_TIMES = {"start": "at-start", "end": "at-end"}
+#: Comparadores de las restricciones de duración.
+_DURATION_COMPARATORS = ("=", "<=", ">=")
 #: Duración total del plan: solo puede aparecer en la métrica. En un plan secuencial, cada
 #: acción dura una unidad, así que es el número de acciones.
 _TOTAL_TIME = "total-time"
@@ -185,12 +187,18 @@ class _Parser:
     def _domain(self, name: str, sections: list[tuple[Symbol, SList]]) -> JSONDict:
         document = self._header("domain", name)
         document.update(
-            requirements=[], types=[], constants=[], predicates=[], functions=[], actions=[]
+            requirements=[],
+            types=[],
+            constants=[],
+            predicates=[],
+            functions=[],
+            actions=[],
+            durative_actions=[],
         )
         seen: set[str] = set()
         for keyword, section in sections:
             key = keyword.value
-            if key != ":action":
+            if key not in (":action", ":durative-action"):
                 self._check_unique_section(key, keyword, seen)
             body = section.items[1:]
             if key == ":requirements":
@@ -205,6 +213,8 @@ class _Parser:
                 document["functions"] = self._functions(body)
             elif key == ":action":
                 document["actions"].append(self._action(section))
+            elif key == ":durative-action":
+                document["durative_actions"].append(self._durative_action(section))
             else:
                 self._unknown_section(keyword, _FUTURE_DOMAIN_SECTIONS, "dominio")
         return document
@@ -220,22 +230,8 @@ class _Parser:
         return self._with_loc(node, predicate)
 
     def _action(self, section: SList) -> JSONDict:
-        if len(section.items) < 2:
-            raise PDDLSyntaxError("falta el nombre de la acción", section.location)
-        node: JSONDict = {
-            "name": self._name(section.items[1], "el nombre de la acción"),
-            "parameters": [],
-        }
-        fields = section.items[2:]
-        seen: set[str] = set()
-        for i in range(0, len(fields), 2):
-            keyword = self._symbol(fields[i], "una clave de acción (:parameters, ...)")
-            if i + 1 >= len(fields):
-                raise PDDLSyntaxError(f"falta el valor de {keyword.value}", keyword.location)
-            if keyword.value in seen:
-                raise PDDLSyntaxError(f"{keyword.value} repetido", keyword.location)
-            seen.add(keyword.value)
-            value = fields[i + 1]
+        node: JSONDict = {"name": self._action_name(section), "parameters": []}
+        for keyword, value in self._action_fields(section):
             if keyword.value == ":parameters":
                 node["parameters"] = self._parameters(
                     self._list(value, "la lista de parámetros").items
@@ -251,6 +247,52 @@ class _Parser:
                     f"clave de acción desconocida '{keyword.value}'", keyword.location
                 )
         return self._with_loc(node, section)
+
+    def _durative_action(self, section: SList) -> JSONDict:
+        """``(:durative-action a :parameters (...) :duration ... :condition ... :effect ...)``."""
+        node: JSONDict = {"name": self._action_name(section), "parameters": [], "duration": []}
+        has_duration = False
+        for keyword, value in self._action_fields(section):
+            if keyword.value == ":parameters":
+                node["parameters"] = self._parameters(
+                    self._list(value, "la lista de parámetros").items
+                )
+            elif keyword.value == ":duration":
+                has_duration = True
+                node["duration"] = self._duration(value)
+            elif keyword.value == ":condition":
+                if not self._is_empty_list(value):
+                    node["condition"] = self._timed_condition(value)
+            elif keyword.value == ":effect":
+                if not self._is_empty_list(value):
+                    node["effect"] = self._timed_effect(value)
+            else:
+                raise PDDLSyntaxError(
+                    f"clave de acción durativa desconocida '{keyword.value}'", keyword.location
+                )
+        if not has_duration:
+            raise PDDLSyntaxError("falta :duration en la acción durativa", section.location)
+        return self._with_loc(node, section)
+
+    def _action_name(self, section: SList) -> str:
+        if len(section.items) < 2:
+            raise PDDLSyntaxError("falta el nombre de la acción", section.location)
+        return self._name(section.items[1], "el nombre de la acción")
+
+    def _action_fields(self, section: SList) -> list[tuple[Symbol, SExpr]]:
+        """Pares ``(:clave, valor)`` de una acción, sin claves repetidas."""
+        fields = section.items[2:]
+        result: list[tuple[Symbol, SExpr]] = []
+        seen: set[str] = set()
+        for i in range(0, len(fields), 2):
+            keyword = self._symbol(fields[i], "una clave de acción (:parameters, ...)")
+            if i + 1 >= len(fields):
+                raise PDDLSyntaxError(f"falta el valor de {keyword.value}", keyword.location)
+            if keyword.value in seen:
+                raise PDDLSyntaxError(f"{keyword.value} repetido", keyword.location)
+            seen.add(keyword.value)
+            result.append((keyword, fields[i + 1]))
+        return result
 
     # --- Problema ----------------------------------------------------------------------
 
@@ -349,15 +391,18 @@ class _Parser:
             return self._atom(formula)
         return self._with_loc(node, formula)
 
-    def _effect(self, expr: SExpr, *, conditional: bool = False) -> JSONDict:
-        """Un efecto. Dentro de ``when`` (``conditional``) solo se admiten literales y ``and``."""
+    def _effect(
+        self, expr: SExpr, *, conditional: bool = False, context: str = "dentro de 'when'"
+    ) -> JSONDict:
+        """Un efecto. Dentro de ``when`` o de ``(at start/end ...)`` (``conditional``) solo se
+        admiten literales, efectos numéricos y ``and``; ``context`` dice dónde, para el error."""
         effect = self._list(expr, "un efecto")
         if not effect.items:
             raise PDDLSyntaxError("efecto vacío", effect.location)
         head = self._symbol(effect.items[0], "un operador o un predicado")
         op, rest = head.value, effect.items[1:]
         if op == "and":
-            args = [self._effect(item, conditional=conditional) for item in rest]
+            args = [self._effect(item, conditional=conditional, context=context) for item in rest]
             return self._with_loc({"op": "and", "args": args}, effect)
         if op == "not":
             if len(rest) != 1:
@@ -371,7 +416,8 @@ class _Parser:
             return self._with_loc({"op": "not", "arg": atom}, effect)
         if op in ("forall", "when") and conditional:
             raise PDDLSyntaxError(
-                f"dentro de 'when' solo se admiten literales y 'and', no '{op}'", head.location
+                f"{context} solo se admiten literales, efectos numéricos y 'and', no '{op}'",
+                head.location,
             )
         if op == "forall":
             self._arity(effect, rest, 2, "(forall (<variables>) <efecto>)")
@@ -399,6 +445,145 @@ class _Parser:
             return self._with_loc(node, effect)
         return self._atom(effect)
 
+    # --- Acciones durativas (iteración 3b) ---------------------------------------------
+
+    def _duration(self, expr: SExpr) -> list[JSONDict]:
+        """``:duration``: ``()``, una restricción o ``(and <restricciones>)``."""
+        duration = self._list(expr, "una restricción de duración")
+        if not duration.items:
+            return []
+        if self._is_symbol(duration.items[0], "and"):
+            if len(duration.items) < 2:
+                raise PDDLSyntaxError("(and) sin restricciones de duración", duration.location)
+            return [self._duration_constraint(item) for item in duration.items[1:]]
+        return [self._duration_constraint(duration)]
+
+    def _duration_constraint(self, expr: SExpr, time: str | None = None) -> JSONDict:
+        """``(<op> ?duration <expresión>)`` con ``<op>`` en ``= <= >=``, o ``(at start|end ...)``
+        de una de ellas (el momento en que se evalúa la expresión)."""
+        constraint = self._list(expr, "una restricción de duración")
+        items = constraint.items
+        form = "(= ?duration <expresión>)"
+        if not items:
+            raise PDDLSyntaxError(f"se esperaba {form}", constraint.location)
+        head = self._symbol(items[0], "un comparador o 'at'")
+        if head.value == "at" and time is None:
+            self._arity(constraint, items[1:], 2, "(at start|end <restricción de duración>)")
+            moment = self._symbol(items[1], "start o end")
+            if moment.value not in _TIMES:
+                raise PDDLSyntaxError(
+                    f"se esperaba start o end, no '{moment.value}'", moment.location
+                )
+            return self._duration_constraint(items[2], moment.value)
+        if head.value not in _DURATION_COMPARATORS:
+            raise PDDLSyntaxError(
+                f"comparador de duración '{head.value}' no válido (se admiten =, <= y >=)",
+                head.location,
+            )
+        self._arity(constraint, items[1:], 2, form)
+        if not self._is_symbol(items[1], "?duration"):
+            raise PDDLSyntaxError(
+                "una restricción de duración compara ?duration con una expresión",
+                items[1].location,
+            )
+        node: JSONDict = {"comparator": head.value, "value": self._expression(items[2])}
+        if time is not None:
+            node["time"] = time
+        return self._with_loc(node, constraint)
+
+    def _timed_condition(self, expr: SExpr) -> JSONDict:
+        """Condición de una acción durativa: ``(at start <fórmula>)``, ``(at end <fórmula>)``,
+        ``(over all <fórmula>)``, o ``and`` y ``forall`` de ellas."""
+        condition = self._list(expr, "una condición temporal")
+        if not condition.items:
+            raise PDDLSyntaxError("condición vacía", condition.location)
+        head = self._symbol(condition.items[0], "un operador")
+        op, rest = head.value, condition.items[1:]
+        if op == "and":
+            node: JSONDict = {"op": "and", "args": [self._timed_condition(i) for i in rest]}
+        elif op == "forall":
+            self._arity(condition, rest, 2, "(forall (<variables>) <condición temporal>)")
+            node = {
+                "op": "forall",
+                "parameters": self._quantified(rest[0]),
+                "arg": self._timed_condition(rest[1]),
+            }
+        elif (timed := self._timed_op(condition, allow_overall=True)) is not None:
+            node = {"op": timed, "arg": self._formula(rest[1])}
+        elif op in _FUTURE_FORMULA_OPS:
+            self._unsupported(f"'{op}' en fórmulas", _FUTURE_FORMULA_OPS[op], head)
+        else:
+            raise PDDLSyntaxError(
+                "en una acción durativa, cada condición va dentro de (at start ...), "
+                "(at end ...) u (over all ...)",
+                condition.location,
+            )
+        return self._with_loc(node, condition)
+
+    def _timed_effect(self, expr: SExpr, *, conditional: bool = False) -> JSONDict:
+        """Efecto de una acción durativa: ``(at start <efecto>)``, ``(at end <efecto>)``, un
+        efecto continuo (``increase``/``decrease`` con ``#t``), o ``and``, ``forall`` y
+        ``when`` de ellos. Dentro de ``when`` (``conditional``) no se admiten ni ``forall`` ni
+        otro ``when``."""
+        effect = self._list(expr, "un efecto temporal")
+        if not effect.items:
+            raise PDDLSyntaxError("efecto vacío", effect.location)
+        head = self._symbol(effect.items[0], "un operador")
+        op, rest = head.value, effect.items[1:]
+        if op == "and":
+            args = [self._timed_effect(item, conditional=conditional) for item in rest]
+            return self._with_loc({"op": "and", "args": args}, effect)
+        if op in ("forall", "when") and conditional:
+            raise PDDLSyntaxError(
+                f"dentro de 'when' solo se admiten efectos temporales y 'and', no '{op}'",
+                head.location,
+            )
+        if op == "forall":
+            self._arity(effect, rest, 2, "(forall (<variables>) <efecto temporal>)")
+            node: JSONDict = {
+                "op": "forall",
+                "parameters": self._quantified(rest[0]),
+                "arg": self._timed_effect(rest[1]),
+            }
+        elif op == "when":
+            self._arity(effect, rest, 2, "(when <condición temporal> <efecto temporal>)")
+            node = {
+                "op": "when",
+                "condition": self._timed_condition(rest[0]),
+                "arg": self._timed_effect(rest[1], conditional=True),
+            }
+        elif (timed := self._timed_op(effect, allow_overall=False)) is not None:
+            where = f"dentro de ({timed.replace('-', ' ')} ...)"
+            node = {"op": timed, "arg": self._effect(rest[1], conditional=True, context=where)}
+        elif op in ("increase", "decrease"):
+            return self._effect(effect)  # efecto continuo; la fase 2 comprueba el #t
+        else:
+            raise PDDLSyntaxError(
+                "en una acción durativa, cada efecto va dentro de (at start ...) o "
+                "(at end ...), salvo los continuos ((increase|decrease <función> "
+                "(* #t <expresión>)))",
+                effect.location,
+            )
+        return self._with_loc(node, effect)
+
+    def _timed_op(self, expr: SList, *, allow_overall: bool) -> str | None:
+        """``at-start``, ``at-end`` u ``over-all`` si ``expr`` es ``(at start|end X)`` u
+        ``(over all X)``; ``None`` si no lo es.
+
+        ``(at start X)`` exige que ``X`` sea una lista, para no confundirlo con un átomo del
+        predicado ``at`` (muy habitual) aplicado a un objeto llamado ``start``.
+        """
+        items = expr.items
+        if len(items) != 3 or not isinstance(items[2], SList):
+            return None
+        if self._is_symbol(items[0], "at") and isinstance(items[1], Symbol):
+            if items[1].value in _TIMES:
+                return _TIMES[items[1].value]
+            return None
+        if allow_overall and self._is_symbol(items[0], "over") and self._is_symbol(items[1], "all"):
+            return "over-all"
+        return None
+
     # --- Expresiones numéricas ---------------------------------------------------------
 
     def _expression(self, expr: SExpr) -> JSONDict:
@@ -413,9 +598,8 @@ class _Parser:
         ):
             return self._with_loc({"op": "total-time"}, expr)
         if isinstance(expr, Symbol):
-            if expr.value in _FUTURE_EXPRESSION_SYMBOLS:
-                requirement = _FUTURE_EXPRESSION_SYMBOLS[expr.value]
-                self._unsupported(f"'{expr.value}' en una expresión", requirement, expr)
+            if expr.value in _EXPRESSION_SYMBOLS:
+                return self._with_loc({"op": _EXPRESSION_SYMBOLS[expr.value]}, expr)
             return self._with_loc({"op": "num", "value": self._number(expr)}, expr)
         if not expr.items:
             raise PDDLSyntaxError("expresión vacía", expr.location)
@@ -434,8 +618,8 @@ class _Parser:
                     )
                 node = {"op": op, "args": [self._expression(item) for item in rest]}
             return self._with_loc(node, expr)
-        if op in _FUTURE_EXPRESSION_SYMBOLS:
-            self._unsupported(f"'{op}' en una expresión", _FUTURE_EXPRESSION_SYMBOLS[op], head)
+        if op in _EXPRESSION_SYMBOLS:
+            raise PDDLSyntaxError(f"'{op}' va sin paréntesis", head.location)
         return self._fluent(expr)
 
     def _fluent(self, expr: SList) -> JSONDict:
@@ -457,7 +641,7 @@ class _Parser:
         return (
             isinstance(expr, Symbol)
             and bool(_NAME.match(expr.value) or _VARIABLE.match(expr.value))
-            and expr.value not in _FUTURE_EXPRESSION_SYMBOLS
+            and expr.value not in _EXPRESSION_SYMBOLS
             and expr.value != _TOTAL_TIME
         )
 
@@ -529,7 +713,7 @@ class _Parser:
         for item in items:
             symbol = self._symbol(item, "un requisito (:strips, ...)")
             if symbol.value not in KNOWN_REQUIREMENTS:
-                raise PDDLSyntaxError(f"requisito desconocido '{symbol.value}'", symbol.location)
+                raise PDDLSyntaxError(unknown_requirement_message(symbol.value), symbol.location)
             unsupported = unsupported_requirements([symbol.value])
             if unsupported:
                 raise UnsupportedFeatureError(

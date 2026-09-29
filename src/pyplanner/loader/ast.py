@@ -213,8 +213,16 @@ class TotalTime:
         return "(total-time)"
 
 
+@dataclass(frozen=True)
+class DurationVar:
+    """``?duration``: la duración de la acción durativa en la que aparece (iteración 3b)."""
+
+    def __str__(self) -> str:
+        return "?duration"
+
+
 #: Expresión numérica.
-Expression = Number | FluentTerm | Arithmetic | TotalTime
+Expression = Number | FluentTerm | Arithmetic | TotalTime | DurationVar
 
 
 @dataclass(frozen=True)
@@ -276,6 +284,139 @@ class NumericEffect:
 #: Efecto de una acción: añadidos (``Atom``), borrados (``Not(Atom)``), conjunciones; desde
 #: la iteración 2, efectos universales y condicionales; desde la 3, efectos numéricos.
 Effect = Atom | Not | And | ForallEffect | When | NumericEffect
+
+
+# --- Acciones durativas (iteración 3b) -----------------------------------------------
+
+#: Momentos de una acción durativa: al empezar, al terminar y durante toda la acción.
+START, END, ALL = "start", "end", "all"
+
+
+@dataclass(frozen=True)
+class DurationConstraint:
+    """Restricción de duración ``(<comparador> ?duration value)``, con ``<comparador>`` en
+    ``=``, ``<=`` y ``>=``.
+
+    ``time`` es el momento en que se evalúa ``value``: ``None`` si no se indicó (al empezar
+    la acción), o ``"start"`` o ``"end"`` si se escribió ``(at start|end ...)``.
+    """
+
+    comparator: str
+    value: Expression
+    time: str | None = None
+
+    def __str__(self) -> str:
+        text = f"({self.comparator} ?duration {self.value})"
+        return f"(at {self.time} {text})" if self.time else text
+
+
+@dataclass(frozen=True)
+class TimedCondition:
+    """Condición de una acción durativa en un momento: ``time`` es ``"start"`` (``at
+    start``), ``"end"`` (``at end``) o ``"all"`` (``over all``, toda la acción)."""
+
+    time: str
+    arg: Formula
+
+    def __str__(self) -> str:
+        return f"(over all {self.arg})" if self.time == ALL else f"(at {self.time} {self.arg})"
+
+
+@dataclass(frozen=True)
+class TimedEffect:
+    """Efecto de una acción durativa al empezar (``"start"``) o al terminar (``"end"``)."""
+
+    time: str
+    arg: Effect
+
+    def __str__(self) -> str:
+        return f"(at {self.time} {self.arg})"
+
+
+@dataclass(frozen=True)
+class ContinuousEffect:
+    """Efecto continuo: ``fluent`` aumenta (``increase``) o disminuye (``decrease``) a
+    ``rate`` unidades por unidad de tiempo mientras dura la acción. Es la forma
+    ``(increase fluent (* #t rate))``."""
+
+    op: str
+    fluent: FluentTerm
+    rate: Expression
+
+    def __str__(self) -> str:
+        return f"({self.op} {self.fluent} (* #t {self.rate}))"
+
+
+# Contenedores de las condiciones y los efectos de las acciones durativas. Son clases
+# propias, y no And, Forall y When, para que el motor clásico nunca reciba algo con tiempo.
+
+
+@dataclass(frozen=True)
+class DurativeAnd:
+    """Conjunción de condiciones o de efectos de una acción durativa."""
+
+    args: tuple["DurativeCondition | DurativeEffect", ...] = ()
+
+    def __str__(self) -> str:
+        return f"({' '.join(['and', *map(str, self.args)])})"
+
+
+@dataclass(frozen=True)
+class DurativeForall:
+    """Condición universal de una acción durativa."""
+
+    parameters: tuple[Parameter, ...]
+    arg: "DurativeCondition"
+
+    def __str__(self) -> str:
+        return f"(forall ({' '.join(p.name for p in self.parameters)}) {self.arg})"
+
+
+@dataclass(frozen=True)
+class DurativeForallEffect:
+    """Efecto universal de una acción durativa."""
+
+    parameters: tuple[Parameter, ...]
+    arg: "DurativeEffect"
+
+    def __str__(self) -> str:
+        return f"(forall ({' '.join(p.name for p in self.parameters)}) {self.arg})"
+
+
+@dataclass(frozen=True)
+class DurativeWhen:
+    """Efecto condicional de una acción durativa: la condición tiene momentos, y cada parte
+    se comprueba en el suyo (``at start`` al empezar, ``at end`` al terminar, ``over all``
+    durante toda la acción)."""
+
+    condition: "DurativeCondition"
+    arg: "DurativeEffect"
+
+    def __str__(self) -> str:
+        return f"(when {self.condition} {self.arg})"
+
+
+#: Condición de una acción durativa.
+DurativeCondition = TimedCondition | DurativeAnd | DurativeForall
+#: Efecto de una acción durativa.
+DurativeEffect = TimedEffect | ContinuousEffect | DurativeAnd | DurativeForallEffect | DurativeWhen
+
+
+@dataclass(frozen=True)
+class DurativeAction:
+    """Esquema de acción durativa (PDDL 2.1).
+
+    Attributes:
+        duration: conjunción de restricciones de duración (vacía si no tiene ninguna).
+        condition: condiciones; ``DurativeAnd(())`` si no tiene.
+        effect: efectos; ``DurativeAnd(())`` si no tiene.
+    """
+
+    name: str
+    parameters: tuple[Parameter, ...]
+    duration: tuple[DurationConstraint, ...]
+    condition: DurativeCondition
+    effect: DurativeEffect
 
 
 # --- Declaraciones ------------------------------------------------------------------
@@ -345,6 +486,7 @@ class Domain:
     predicates: tuple[Predicate, ...]
     actions: tuple[Action, ...]
     functions: tuple[Function, ...] = ()
+    durative_actions: tuple[DurativeAction, ...] = ()
 
     @cached_property
     def _parents(self) -> dict[str, str]:
@@ -375,6 +517,10 @@ class Domain:
     def action(self, name: str) -> Action | None:
         """Devuelve el esquema de acción ``name``, o ``None`` si no existe."""
         return next((a for a in self.actions if a.name == name), None)
+
+    def durative_action(self, name: str) -> DurativeAction | None:
+        """Devuelve el esquema de acción durativa ``name``, o ``None`` si no existe."""
+        return next((a for a in self.durative_actions if a.name == name), None)
 
 
 @dataclass(frozen=True)
