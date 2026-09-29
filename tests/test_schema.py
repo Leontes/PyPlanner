@@ -59,7 +59,7 @@ def test_minimal_documents_are_valid() -> None:
             "actions[0].precondition.args[0]",
         ),
         (minimal_domain(requirements=["strips"]), "requirements[0]"),
-        (minimal_problem(init=[{"op": "and", "args": []}]), "init[0]"),
+        (minimal_problem(init=[{"op": "and", "args": []}]), "init[0].op"),
     ],
 )
 def test_invalid_documents(document: dict[str, Any], path: str) -> None:

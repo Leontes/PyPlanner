@@ -13,7 +13,7 @@ import pytest
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.planner import solve
 from pyplanner.search import PORTFOLIOS, SearchStatus, portfolio_for_cores
-from tests.tiers import DOMINIOS_DIR, SUPPORTED_TIER, Instance, discover_instances
+from tests.tiers import DOMINIOS_DIR, Instance, discover_instances, planner_supports
 
 VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
 
@@ -21,7 +21,7 @@ requires_val = pytest.mark.skipif(
     not VALIDATE.exists(), reason="VAL no está compilado (scripts/build_val.sh)"
 )
 
-INSTANCES = [i for i in discover_instances() if i.tier <= SUPPORTED_TIER]
+INSTANCES = [i for i in discover_instances() if planner_supports(i)]
 
 #: Límite de tiempo por instancia en los tests.
 TIME_LIMIT = 120.0

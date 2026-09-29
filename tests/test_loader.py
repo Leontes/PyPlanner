@@ -117,8 +117,8 @@ def test_loading_a_problem_as_domain_fails(domain: Domain) -> None:
 
 
 def test_unsupported_requirements_in_json() -> None:
-    document = {"version": 1, "kind": "domain", "name": "d", "requirements": [":fluents"]}
-    with pytest.raises(UnsupportedFeatureError, match=":numeric-fluents"):
+    document = {"version": 1, "kind": "domain", "name": "d", "requirements": [":time"]}
+    with pytest.raises(UnsupportedFeatureError, match=":time"):
         load_domain(document)
 
 

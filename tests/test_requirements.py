@@ -26,7 +26,8 @@ def test_strips_is_supported() -> None:
 
 
 def test_unsupported_requirements_are_reported_expanded() -> None:
-    assert unsupported_requirements([":fluents"]) == [":numeric-fluents"]
+    assert unsupported_requirements([":durative-actions"]) == [":durative-actions"]
+    assert unsupported_requirements([":fluents"]) == []  # numérico: iteración 3a
     assert unsupported_requirements([":adl", ":time"]) == [":time"]
 
 

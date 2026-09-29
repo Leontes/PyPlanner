@@ -1,4 +1,4 @@
-# Formato JSON de entrada (versión 2)
+# Formato JSON de entrada (versión 3)
 
 El planificador recibe los dominios y problemas en JSON. Este documento es el contrato para
 cualquier componente que quiera generar ese JSON sin pasar por PDDL. El esquema formal
@@ -25,7 +25,8 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
   un plan (`"kind": "plan"`, la salida del planificador).
 - `version` es la versión del formato:
   - v1: STRIPS;
-  - v2 (actual): PDDL 1.2, subconjunto ADL.
+  - v2: PDDL 1.2, subconjunto ADL;
+  - v3 (actual): PDDL 2.1 numérico y costes de acción (`:action-costs`).
 
   Cada versión solo **añade** construcciones, así que un documento v1 sigue siendo
   válido.
@@ -48,6 +49,7 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 | `types` | no | `[{"name": "truck", "parent": "vehicle"}, {"name": "place"}, ...]`; sin `parent`, el supertipo es `object` |
 | `constants` | no | `[{"name": "home", "type": "place"}, ...]` |
 | `predicates` | no | `[{"name": "at", "parameters": [{"name": "?x", "type": "truck"}, ...]}, ...]` |
+| `functions` | no | funciones numéricas, con la misma forma que `predicates` (v3) |
 | `actions` | no | ver abajo |
 
 Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fórmula) y
@@ -62,7 +64,8 @@ Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fó
 | `goal` | sí | fórmula |
 | `requirements` | no | se suman a los del dominio |
 | `objects` | no | como `constants`. Si repiten una constante del dominio, se ignoran |
-| `init` | no | lista de átomos sin variables |
+| `init` | no | lista de átomos sin variables y de valores iniciales `{"op": "=", "fluent": …, "value": 3.5}` (v3) |
+| `metric` | no | `{"direction": "minimize" \| "maximize", "expression": …}` (v3) |
 
 ## Tipos (v2)
 
@@ -89,8 +92,12 @@ Las reglas están en `pyplanner/requirements.py`:
 | `=` | `:equality` |
 | `forall` o `when` en un efecto | `:conditional-effects` |
 
+| `functions`, valores iniciales, `compare`, efectos numéricos, `metric` | `:numeric-fluents` |
+| perfil de costes de acción: `functions` y sus valores iniciales, `increase` de `(total-cost)` con un número o una función, `minimize (total-cost)` | `:numeric-fluents` o `:action-costs` |
+
 - `not` en un efecto es un borrado STRIPS y no necesita nada.
-- `:adl` y `:quantified-preconditions` equivalen a sus requisitos componentes.
+- `:adl` y `:quantified-preconditions` equivalen a sus requisitos componentes, y
+  `:fluents` equivale a `:numeric-fluents`.
 
 ## Fórmulas y efectos
 
@@ -105,7 +112,25 @@ Las reglas están en `pyplanner/requirements.py`:
 | `exists`, `forall` | `parameters` (al menos 1), `arg` (una fórmula) | fórmulas | v2 |
 | `=` | `args` (exactamente 2 términos) | fórmulas | v2 |
 | `forall` | `parameters`, `arg` (un efecto) | efectos | v2 |
-| `when` | `condition` (fórmula), `arg` (solo `atom`, `not` y `and`) | efectos | v2 |
+| `when` | `condition` (fórmula), `arg` (solo `atom`, `not`, `and` y efectos numéricos) | efectos | v2 |
+| `compare` | `comparator` (`<`, `<=`, `=`, `>=`, `>`), `left`, `right` (expresiones) | fórmulas | v3 |
+| `increase`, `decrease`, `assign`, `scale-up`, `scale-down` | `fluent` (término de función), `value` (expresión) | efectos | v3 |
+
+## Expresiones numéricas (v3)
+
+| `op` | Campos | Notas |
+|------|--------|-------|
+| `num` | `value` | número |
+| `fluent` | `function`, `args` | término de función, p. ej. `{"op": "fluent", "function": "fuel", "args": ["?a"]}` |
+| `+`, `*` | `args` (dos o más) | |
+| `-` | `args` (uno o dos) | con uno, cambio de signo |
+| `/` | `args` (dos) | |
+| `total-time` | — | duración del plan; **solo en la métrica**. En un plan secuencial, cada acción dura una unidad |
+
+- `=` entre dos objetos o variables es la igualdad de `:equality` (`{"op": "=", "args": […]}`);
+  entre expresiones es una comparación (`{"op": "compare", "comparator": "=", …}`).
+- Los efectos numéricos se evalúan con los valores del estado **anterior** a la acción.
+- Una función sin valor inicial está indefinida.
 
 Otras restricciones:
 

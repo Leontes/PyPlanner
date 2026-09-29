@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Leontes/PyPlanner/schema/pddl.schema.json",
   "title": "PyPlanner PDDL-JSON",
-  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales).",
+  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción.",
   "type": "object",
   "required": [
     "kind"
@@ -56,10 +56,10 @@
   ],
   "$defs": {
     "version": {
-      "description": "Versión del formato (1 o 2). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
+      "description": "Versión del formato (1 a 3). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
       "type": "integer",
       "minimum": 1,
-      "maximum": 2
+      "maximum": 3
     },
     "loc": {
       "description": "Posición opcional en el fichero PDDL original (el fichero va en 'source' a nivel de documento).",
@@ -206,7 +206,7 @@
       "additionalProperties": false
     },
     "formula": {
-      "description": "Fórmula lógica (precondiciones, objetivos y condiciones de 'when'). v1: átomos y conjunciones; v2: or, not, imply, exists, forall e =.",
+      "description": "Fórmula lógica (precondiciones, objetivos y condiciones de 'when'). v1: átomos y conjunciones; v2: or, not, imply, exists, forall e =; v3: comparaciones numéricas (compare).",
       "type": "object",
       "required": [
         "op"
@@ -221,7 +221,8 @@
             "imply",
             "exists",
             "forall",
-            "="
+            "=",
+            "compare"
           ]
         }
       },
@@ -457,11 +458,53 @@
             },
             "additionalProperties": false
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "compare"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "comparator",
+              "left",
+              "right"
+            ],
+            "properties": {
+              "op": {
+                "const": "compare"
+              },
+              "comparator": {
+                "enum": [
+                  "<",
+                  "<=",
+                  "=",
+                  ">=",
+                  ">"
+                ]
+              },
+              "left": {
+                "$ref": "#/$defs/expression"
+              },
+              "right": {
+                "$ref": "#/$defs/expression"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       ]
     },
     "effect": {
-      "description": "Efecto de una acción. v1: átomos añadidos, átomos borrados ('not') y conjunciones; v2: forall y when.",
+      "description": "Efecto de una acción. v1: átomos añadidos, átomos borrados ('not') y conjunciones; v2: forall y when; v3: efectos numéricos.",
       "type": "object",
       "required": [
         "op"
@@ -473,7 +516,12 @@
             "not",
             "and",
             "forall",
-            "when"
+            "when",
+            "increase",
+            "decrease",
+            "assign",
+            "scale-up",
+            "scale-down"
           ]
         }
       },
@@ -612,6 +660,66 @@
             },
             "additionalProperties": false
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "increase"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "decrease"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "assign"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "scale-up"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "scale-down"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
         }
       ]
     },
@@ -678,6 +786,12 @@
             "$ref": "#/$defs/predicate"
           }
         },
+        "functions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/function_decl"
+          }
+        },
         "actions": {
           "type": "array",
           "items": {
@@ -722,11 +836,14 @@
         "init": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/atom"
+            "$ref": "#/$defs/init_element"
           }
         },
         "goal": {
           "$ref": "#/$defs/formula"
+        },
+        "metric": {
+          "$ref": "#/$defs/metric"
         }
       },
       "additionalProperties": false
@@ -827,7 +944,7 @@
       }
     },
     "literal_effect": {
-      "description": "Efecto simple: un átomo añadido, un átomo borrado ('not') o una conjunción de ellos. Es lo único que admite 'when'.",
+      "description": "Efecto simple: un átomo añadido, un átomo borrado ('not'), un efecto numérico o una conjunción de ellos. Es lo único que admite 'when'.",
       "type": "object",
       "required": [
         "op"
@@ -837,7 +954,12 @@
           "enum": [
             "atom",
             "not",
-            "and"
+            "and",
+            "increase",
+            "decrease",
+            "assign",
+            "scale-up",
+            "scale-down"
           ]
         }
       },
@@ -912,8 +1034,444 @@
             },
             "additionalProperties": false
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "increase"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "decrease"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "assign"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "scale-up"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "scale-down"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
         }
       ]
+    },
+    "fluent": {
+      "description": "Término de función: (función arg1 ... argN).",
+      "type": "object",
+      "required": [
+        "op",
+        "function",
+        "args"
+      ],
+      "properties": {
+        "op": {
+          "const": "fluent"
+        },
+        "function": {
+          "$ref": "#/$defs/name"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/term"
+          }
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "expression": {
+      "description": "Expresión numérica: número, término de función u operación aritmética (+ y * con dos o más términos, - con uno o dos, / con dos). 'total-time' (duración del plan) solo puede aparecer en la métrica.",
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "num",
+            "fluent",
+            "+",
+            "-",
+            "*",
+            "/",
+            "total-time"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "num"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "value"
+            ],
+            "properties": {
+              "op": {
+                "const": "num"
+              },
+              "value": {
+                "type": "number"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "fluent"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/fluent"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "+"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "+"
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "$ref": "#/$defs/expression"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "*"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "*"
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "$ref": "#/$defs/expression"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "-"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "-"
+              },
+              "args": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/$defs/expression"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "/"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "/"
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/$defs/expression"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "total-time"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op"
+            ],
+            "properties": {
+              "op": {
+                "const": "total-time"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "numeric_effect": {
+      "description": "Efecto numérico sobre un término de función.",
+      "type": "object",
+      "required": [
+        "op",
+        "fluent",
+        "value"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "increase",
+            "decrease",
+            "assign",
+            "scale-up",
+            "scale-down"
+          ]
+        },
+        "fluent": {
+          "$ref": "#/$defs/fluent"
+        },
+        "value": {
+          "$ref": "#/$defs/expression"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "function_decl": {
+      "description": "Declaración de una función numérica.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "init_element": {
+      "description": "Elemento del estado inicial: un átomo o el valor inicial de una función.",
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "atom",
+            "="
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "atom"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/atom"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "="
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "fluent",
+              "value"
+            ],
+            "properties": {
+              "op": {
+                "const": "="
+              },
+              "fluent": {
+                "$ref": "#/$defs/fluent"
+              },
+              "value": {
+                "type": "number"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "metric": {
+      "description": "Métrica de calidad del plan.",
+      "type": "object",
+      "required": [
+        "direction",
+        "expression"
+      ],
+      "properties": {
+        "direction": {
+          "enum": [
+            "minimize",
+            "maximize"
+          ]
+        },
+        "expression": {
+          "$ref": "#/$defs/expression"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

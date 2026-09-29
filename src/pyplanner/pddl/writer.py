@@ -40,6 +40,12 @@ def _write_domain(document: Mapping[str, Any]) -> str:
         for predicate in predicates:
             lines.append(f"{_INDENT * 2}{_signature(predicate)}")
         lines.append(f"{_INDENT})")
+    functions = document.get("functions", [])
+    if functions:
+        lines.append(f"{_INDENT}(:functions")
+        for function in functions:
+            lines.append(f"{_INDENT * 2}{_signature(function)} - number")
+        lines.append(f"{_INDENT})")
     for action in document.get("actions", []):
         lines.append(f"{_INDENT}(:action {action['name']}")
         lines.append(f"{_INDENT * 2}:parameters ({_typed_list(action.get('parameters', []))})")
@@ -59,10 +65,18 @@ def _write_problem(document: Mapping[str, Any]) -> str:
     if objects:
         lines.append(f"{_INDENT}(:objects {_typed_list(objects)})")
     lines.append(f"{_INDENT}(:init")
-    for atom in document.get("init", []):
-        lines.append(f"{_INDENT * 2}{_formula(atom)}")
+    for element in document.get("init", []):
+        if element["op"] == "=":
+            value = _number(element["value"])
+            lines.append(f"{_INDENT * 2}(= {_expression(element['fluent'])} {value})")
+        else:
+            lines.append(f"{_INDENT * 2}{_formula(element)}")
     lines.append(f"{_INDENT})")
     lines.append(f"{_INDENT}(:goal {_formula(document['goal'])})")
+    if "metric" in document:
+        metric = document["metric"]
+        expression = _expression(metric["expression"])
+        lines.append(f"{_INDENT}(:metric {metric['direction']} {expression})")
     lines.append(")")
     return "\n".join(lines) + "\n"
 
@@ -118,7 +132,26 @@ def _formula(node: Mapping[str, Any]) -> str:
         return f"({' '.join([op, *(_formula(arg) for arg in node['args'])])})"
     if op in ("exists", "forall"):
         return f"({op} ({_typed_list(node['parameters'])}) {_formula(node['arg'])})"
+    if op == "compare":
+        left, right = _expression(node["left"]), _expression(node["right"])
+        return f"({node['comparator']} {left} {right})"
     raise ValueError(f"operador de fórmula desconocido: {op}")
+
+
+def _expression(node: Mapping[str, Any]) -> str:
+    """Escribe una expresión numérica."""
+    op = node["op"]
+    if op == "num":
+        return _number(node["value"])
+    if op == "fluent":
+        return f"({' '.join([node['function'], *node['args']])})"
+    if op == "total-time":
+        return "(total-time)"
+    return f"({' '.join([op, *(_expression(arg) for arg in node['args'])])})"
+
+
+def _number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
 
 
 def _effect(node: Mapping[str, Any]) -> str:
@@ -134,4 +167,6 @@ def _effect(node: Mapping[str, Any]) -> str:
         return f"(forall ({_typed_list(node['parameters'])}) {_effect(node['arg'])})"
     if op == "when":
         return f"(when {_formula(node['condition'])} {_effect(node['arg'])})"
+    if op in ("increase", "decrease", "assign", "scale-up", "scale-down"):
+        return f"({op} {_expression(node['fluent'])} {_expression(node['value'])})"
     raise ValueError(f"operador de efecto desconocido: {op}")

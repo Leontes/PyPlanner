@@ -264,6 +264,8 @@ Es la iteración más grande, así que se divide en dos.
 ### 3a: fluentes numéricos
 **Requisitos:** `:numeric-fluents` (y `:fluents`), y `:action-costs` (PDDL 3.1).
 
+- **Parser:** ✅ hecho (esquema JSON v3; ver [formato-json.md](formato-json.md)).
+
 Solo lo necesario para PDDL 2.1, más `:action-costs`. Es una forma restringida de
 fluentes numéricos (`total-cost`, costes fijos por acción), pero la usa casi todo el
 track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.

@@ -44,7 +44,6 @@ _NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 # Secciones y operadores de versiones posteriores de PDDL, con el requisito que los introduce.
 # Sirven para dar un error de "no soportado" en lugar de uno de sintaxis.
 _FUTURE_DOMAIN_SECTIONS = {
-    ":functions": ":numeric-fluents",
     ":durative-action": ":durative-actions",
     ":derived": ":derived-predicates",
     ":process": ":time",
@@ -52,26 +51,29 @@ _FUTURE_DOMAIN_SECTIONS = {
     ":constraints": ":constraints",
 }
 _FUTURE_PROBLEM_SECTIONS = {
-    ":metric": ":numeric-fluents",
     ":constraints": ":constraints",
 }
 #: Operadores lógicos: no pueden usarse como nombre de predicado dentro de un borrado.
 _OPERATORS = frozenset({"and", "or", "not", "imply", "exists", "forall", "=", "when"})
 
 _FUTURE_FORMULA_OPS = {
-    "<": ":numeric-fluents",
-    ">": ":numeric-fluents",
-    "<=": ":numeric-fluents",
-    ">=": ":numeric-fluents",
     "preference": ":preferences",
 }
-_FUTURE_EFFECT_OPS = {
-    "assign": ":numeric-fluents",
-    "increase": ":numeric-fluents",
-    "decrease": ":numeric-fluents",
-    "scale-up": ":numeric-fluents",
-    "scale-down": ":numeric-fluents",
+
+#: Comparadores numéricos.
+_COMPARATORS = ("<", "<=", "=", ">=", ">")
+#: Operadores aritméticos.
+_ARITHMETIC = ("+", "-", "*", "/")
+#: Efectos numéricos.
+_NUMERIC_EFFECTS = ("increase", "decrease", "assign", "scale-up", "scale-down")
+#: Símbolos de expresiones temporales (iteración 3b).
+_FUTURE_EXPRESSION_SYMBOLS = {
+    "#t": ":continuous-effects",
+    "?duration": ":durative-actions",
 }
+#: Duración total del plan: solo puede aparecer en la métrica. En un plan secuencial, cada
+#: acción dura una unidad, así que es el número de acciones.
+_TOTAL_TIME = "total-time"
 
 
 def parse_pddl(text: str, filename: str | None = None, *, locations: bool = True) -> JSONDict:
@@ -182,7 +184,9 @@ class _Parser:
 
     def _domain(self, name: str, sections: list[tuple[Symbol, SList]]) -> JSONDict:
         document = self._header("domain", name)
-        document.update(requirements=[], types=[], constants=[], predicates=[], actions=[])
+        document.update(
+            requirements=[], types=[], constants=[], predicates=[], functions=[], actions=[]
+        )
         seen: set[str] = set()
         for keyword, section in sections:
             key = keyword.value
@@ -197,6 +201,8 @@ class _Parser:
                 document["constants"] = self._objects(body)
             elif key == ":predicates":
                 document["predicates"] = [self._predicate(item) for item in body]
+            elif key == ":functions":
+                document["functions"] = self._functions(body)
             elif key == ":action":
                 document["actions"].append(self._action(section))
             else:
@@ -270,6 +276,8 @@ class _Parser:
                 if len(body) != 1:
                     raise PDDLSyntaxError("se esperaba (:goal <fórmula>)", section.location)
                 document["goal"] = self._formula(body[0])
+            elif key == ":metric":
+                document["metric"] = self._metric(section)
             else:
                 self._unknown_section(keyword, _FUTURE_PROBLEM_SECTIONS, "problema")
         if document["domain"] is None:
@@ -283,7 +291,14 @@ class _Parser:
         head = element.items[0] if element.items else None
         if isinstance(head, Symbol):
             if head.value == "=":
-                self._unsupported("valores iniciales de funciones", ":numeric-fluents", head)
+                rest = element.items[1:]
+                self._arity(element, rest, 2, "(= (<función> <objetos>) <número>)")
+                node = {
+                    "op": "=",
+                    "fluent": self._fluent(self._list(rest[0], "una función")),
+                    "value": self._number(rest[1]),
+                }
+                return self._with_loc(node, element)
             if (
                 head.value == "at"
                 and len(element.items) == 3
@@ -318,9 +333,16 @@ class _Parser:
                 "parameters": self._quantified(rest[0]),
                 "arg": self._formula(rest[1]),
             }
-        elif op == "=":
-            self._arity(formula, rest, 2, "(= <término> <término>)")
+        elif op == "=" and len(rest) == 2 and all(self._is_term(item) for item in rest):
             node = {"op": "=", "args": [self._term(rest[0]), self._term(rest[1])]}
+        elif op in _COMPARATORS:
+            self._arity(formula, rest, 2, f"({op} <expresión> <expresión>)")
+            node = {
+                "op": "compare",
+                "comparator": op,
+                "left": self._expression(rest[0]),
+                "right": self._expression(rest[1]),
+            }
         elif op in _FUTURE_FORMULA_OPS:
             self._unsupported(f"'{op}' en fórmulas", _FUTURE_FORMULA_OPS[op], head)
         else:
@@ -367,9 +389,115 @@ class _Parser:
                 "arg": self._effect(rest[1], conditional=True),
             }
             return self._with_loc(node, effect)
-        if op in _FUTURE_EFFECT_OPS:
-            self._unsupported(f"'{op}' en efectos", _FUTURE_EFFECT_OPS[op], head)
+        if op in _NUMERIC_EFFECTS:
+            self._arity(effect, rest, 2, f"({op} (<función> <términos>) <expresión>)")
+            node = {
+                "op": op,
+                "fluent": self._fluent(self._list(rest[0], "una función")),
+                "value": self._expression(rest[1]),
+            }
+            return self._with_loc(node, effect)
         return self._atom(effect)
+
+    # --- Expresiones numéricas ---------------------------------------------------------
+
+    def _expression(self, expr: SExpr) -> JSONDict:
+        """Expresión numérica: número, función o ``(+ - * /)`` de expresiones.
+
+        ``total-time`` se acepta aquí y el loader comprueba que solo aparece en la métrica.
+        """
+        if self._is_symbol(expr, _TOTAL_TIME) or (
+            isinstance(expr, SList)
+            and len(expr.items) == 1
+            and self._is_symbol(expr.items[0], _TOTAL_TIME)
+        ):
+            return self._with_loc({"op": "total-time"}, expr)
+        if isinstance(expr, Symbol):
+            if expr.value in _FUTURE_EXPRESSION_SYMBOLS:
+                requirement = _FUTURE_EXPRESSION_SYMBOLS[expr.value]
+                self._unsupported(f"'{expr.value}' en una expresión", requirement, expr)
+            return self._with_loc({"op": "num", "value": self._number(expr)}, expr)
+        if not expr.items:
+            raise PDDLSyntaxError("expresión vacía", expr.location)
+        head = self._symbol(expr.items[0], "un operador aritmético o una función")
+        op, rest = head.value, expr.items[1:]
+        if op in _ARITHMETIC:
+            if op == "-" and len(rest) == 1:
+                node: JSONDict = {"op": "-", "args": [self._expression(rest[0])]}
+            elif op in ("-", "/"):
+                self._arity(expr, rest, 2, f"({op} <expresión> <expresión>)")
+                node = {"op": op, "args": [self._expression(item) for item in rest]}
+            else:
+                if len(rest) < 2:
+                    raise PDDLSyntaxError(
+                        f"({op} ...) necesita al menos dos términos", expr.location
+                    )
+                node = {"op": op, "args": [self._expression(item) for item in rest]}
+            return self._with_loc(node, expr)
+        if op in _FUTURE_EXPRESSION_SYMBOLS:
+            self._unsupported(f"'{op}' en una expresión", _FUTURE_EXPRESSION_SYMBOLS[op], head)
+        return self._fluent(expr)
+
+    def _fluent(self, expr: SList) -> JSONDict:
+        """Término de función: ``(nombre arg1 ... argN)``."""
+        if not expr.items:
+            raise PDDLSyntaxError("función vacía", expr.location)
+        name = self._name(expr.items[0], "el nombre de la función")
+        args = [self._term(item) for item in expr.items[1:]]
+        return self._with_loc({"op": "fluent", "function": name, "args": args}, expr)
+
+    def _number(self, expr: SExpr) -> float:
+        symbol = self._symbol(expr, "un número")
+        if not _NUMBER.match(symbol.value):
+            raise PDDLSyntaxError(f"'{symbol.value}' no es un número", symbol.location)
+        return float(symbol.value)
+
+    def _is_term(self, expr: SExpr) -> bool:
+        """``True`` si es un objeto o una variable (para distinguir la igualdad de objetos)."""
+        return (
+            isinstance(expr, Symbol)
+            and bool(_NAME.match(expr.value) or _VARIABLE.match(expr.value))
+            and expr.value not in _FUTURE_EXPRESSION_SYMBOLS
+            and expr.value != _TOTAL_TIME
+        )
+
+    def _metric(self, section: SList) -> JSONDict:
+        body = section.items[1:]
+        self._arity(section, body, 2, "(:metric minimize|maximize <expresión>)")
+        direction = self._symbol(body[0], "minimize o maximize")
+        if direction.value not in ("minimize", "maximize"):
+            raise PDDLSyntaxError(
+                f"se esperaba minimize o maximize, no '{direction.value}'", direction.location
+            )
+        node = {"direction": direction.value, "expression": self._expression(body[1])}
+        return self._with_loc(node, section)
+
+    def _functions(self, items: tuple[SExpr, ...]) -> list[JSONDict]:
+        """``(:functions (f ?x - t) (g) - number ...)``: el tipo, si aparece, es ``number``."""
+        functions: list[JSONDict] = []
+        i = 0
+        while i < len(items):
+            item = items[i]
+            if self._is_symbol(item, "-"):
+                if i + 1 >= len(items) or not functions:
+                    raise PDDLSyntaxError("'-' mal colocado en :functions", item.location)
+                result_type = self._symbol(items[i + 1], "el tipo del resultado")
+                if result_type.value != "number":
+                    self._unsupported(
+                        f"funciones de tipo '{result_type.value}'", ":object-fluents", result_type
+                    )
+                i += 2
+                continue
+            declaration = self._list(item, "una declaración de función (nombre ?x ...)")
+            if not declaration.items:
+                raise PDDLSyntaxError("declaración de función vacía", declaration.location)
+            node: JSONDict = {
+                "name": self._name(declaration.items[0], "el nombre de la función"),
+                "parameters": self._parameters(declaration.items[1:]),
+            }
+            functions.append(self._with_loc(node, declaration))
+            i += 1
+        return functions
 
     def _arity(self, expr: SList, rest: tuple[SExpr, ...], count: int, form: str) -> None:
         if len(rest) != count:

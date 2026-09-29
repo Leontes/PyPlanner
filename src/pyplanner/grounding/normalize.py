@@ -30,6 +30,7 @@ from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.loader.ast import (
     And,
     Atom,
+    Comparison,
     Constant,
     Effect,
     Equals,
@@ -39,6 +40,7 @@ from pyplanner.loader.ast import (
     Formula,
     Imply,
     Not,
+    NumericEffect,
     Or,
     Parameter,
     Term,
@@ -146,6 +148,10 @@ class Normalizer:
             ]
             conjunctive = isinstance(formula, Forall) != negated
             return _conjunction(parts) if conjunctive else _disjunction(parts)
+        if isinstance(formula, Comparison):
+            raise UnsupportedFeatureError(
+                f"el motor todavía no admite condiciones numéricas como {formula}"
+            )
         raise TypeError(f"fórmula desconocida: {formula!r}")
 
     # --- Efectos ----------------------------------------------------------------------
@@ -197,6 +203,10 @@ class Normalizer:
                     SimpleEffect(tuple(condition), frozenset(inner_adds), frozenset(inner_deletes))
                 )
         else:
+            if isinstance(effect, NumericEffect):
+                raise UnsupportedFeatureError(
+                    f"el motor todavía no admite efectos numéricos como {effect}"
+                )
             raise TypeError(f"efecto desconocido: {effect!r}")
 
     # --- Utilidades -------------------------------------------------------------------

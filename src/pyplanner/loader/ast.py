@@ -163,8 +163,74 @@ class Forall:
         return f"(forall ({' '.join(p.name for p in self.parameters)}) {self.arg})"
 
 
+# --- Expresiones numéricas (iteración 3) ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class Number:
+    """Una constante numérica."""
+
+    value: float
+
+    def __str__(self) -> str:
+        return f"{self.value:g}"
+
+
+@dataclass(frozen=True)
+class FluentTerm:
+    """Un término de función ``(función arg1 ... argN)``: una variable numérica del estado."""
+
+    function: str
+    args: tuple[Term, ...] = ()
+
+    @property
+    def is_ground(self) -> bool:
+        """``True`` si ningún argumento es una variable."""
+        return all(isinstance(arg, Constant) for arg in self.args)
+
+    def __str__(self) -> str:
+        return f"({' '.join([self.function, *map(str, self.args)])})"
+
+
+@dataclass(frozen=True)
+class Arithmetic:
+    """Operación aritmética: ``+`` y ``*`` con dos o más términos, ``-`` con uno (cambio de
+    signo) o dos, y ``/`` con dos."""
+
+    op: str
+    args: tuple["Expression", ...]
+
+    def __str__(self) -> str:
+        return f"({' '.join([self.op, *map(str, self.args)])})"
+
+
+@dataclass(frozen=True)
+class TotalTime:
+    """Duración del plan. Solo aparece en la métrica; en un plan secuencial, cada acción
+    dura una unidad."""
+
+    def __str__(self) -> str:
+        return "(total-time)"
+
+
+#: Expresión numérica.
+Expression = Number | FluentTerm | Arithmetic | TotalTime
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """Comparación numérica ``(<comparador> izquierda derecha)``."""
+
+    comparator: str
+    left: Expression
+    right: Expression
+
+    def __str__(self) -> str:
+        return f"({self.comparator} {self.left} {self.right})"
+
+
 #: Fórmula lógica (precondiciones, objetivos y condiciones de efectos condicionales).
-Formula = Atom | Equals | Not | And | Or | Imply | Exists | Forall
+Formula = Atom | Equals | Not | And | Or | Imply | Exists | Forall | Comparison
 
 
 # --- Efectos ------------------------------------------------------------------------
@@ -192,9 +258,24 @@ class When:
         return f"(when {self.condition} {self.arg})"
 
 
-#: Efecto de una acción: añadidos (``Atom``), borrados (``Not(Atom)``), conjunciones y, desde
-#: la iteración 2, efectos universales y condicionales.
-Effect = Atom | Not | And | ForallEffect | When
+@dataclass(frozen=True)
+class NumericEffect:
+    """Efecto numérico: ``increase``, ``decrease``, ``assign``, ``scale-up`` o ``scale-down``.
+
+    ``value`` se evalúa con los valores del estado *anterior* a la acción.
+    """
+
+    op: str
+    fluent: FluentTerm
+    value: Expression
+
+    def __str__(self) -> str:
+        return f"({self.op} {self.fluent} {self.value})"
+
+
+#: Efecto de una acción: añadidos (``Atom``), borrados (``Not(Atom)``), conjunciones; desde
+#: la iteración 2, efectos universales y condicionales; desde la 3, efectos numéricos.
+Effect = Atom | Not | And | ForallEffect | When | NumericEffect
 
 
 # --- Declaraciones ------------------------------------------------------------------
@@ -211,6 +292,27 @@ class Predicate:
     def arity(self) -> int:
         """Número de argumentos del predicado."""
         return len(self.parameters)
+
+
+@dataclass(frozen=True)
+class Function:
+    """Declaración de una función numérica: nombre y parámetros con tipo."""
+
+    name: str
+    parameters: tuple[Parameter, ...] = ()
+
+    @property
+    def arity(self) -> int:
+        """Número de argumentos de la función."""
+        return len(self.parameters)
+
+
+@dataclass(frozen=True)
+class Metric:
+    """Métrica de calidad del plan: ``minimize`` o ``maximize`` una expresión."""
+
+    direction: str
+    expression: Expression
 
 
 @dataclass(frozen=True)
@@ -242,6 +344,7 @@ class Domain:
     constants: tuple[ObjectDecl, ...]
     predicates: tuple[Predicate, ...]
     actions: tuple[Action, ...]
+    functions: tuple[Function, ...] = ()
 
     @cached_property
     def _parents(self) -> dict[str, str]:
@@ -265,6 +368,10 @@ class Domain:
         """Devuelve la declaración del predicado ``name``, o ``None`` si no existe."""
         return next((p for p in self.predicates if p.name == name), None)
 
+    def function(self, name: str) -> Function | None:
+        """Devuelve la declaración de la función ``name``, o ``None`` si no existe."""
+        return next((f for f in self.functions if f.name == name), None)
+
     def action(self, name: str) -> Action | None:
         """Devuelve el esquema de acción ``name``, o ``None`` si no existe."""
         return next((a for a in self.actions if a.name == name), None)
@@ -277,6 +384,9 @@ class Problem:
     Attributes:
         objects: objetos del problema, sin incluir las constantes del dominio.
         init: hechos del estado inicial (átomos sin variables).
+        values: valores iniciales de las funciones (términos sin variables). Una función sin
+            valor inicial está indefinida.
+        metric: métrica de calidad del plan, si la hay.
     """
 
     name: str
@@ -285,3 +395,5 @@ class Problem:
     objects: tuple[ObjectDecl, ...]
     init: frozenset[Atom]
     goal: Formula
+    values: tuple[tuple[FluentTerm, float], ...] = ()
+    metric: Metric | None = None

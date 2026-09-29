@@ -13,6 +13,8 @@ eso hace cuatro comprobaciones, en este orden:
    * tipos declarados y jerarquía sin ciclos;
    * predicados declarados y con la aridad correcta;
    * variables ligadas a un parámetro o a un cuantificador, sin ocultar otra variable;
+   * funciones declaradas y con la aridad correcta; valores iniciales sin variables y sin
+     repetir; ``total-time`` solo en la métrica;
    * objetos declarados y con un tipo compatible con el del predicado;
    * problema asociado a su dominio.
 
@@ -34,28 +36,38 @@ from pyplanner.loader.ast import (
     OBJECT,
     Action,
     And,
+    Arithmetic,
     Atom,
+    Comparison,
     Constant,
     Domain,
     Effect,
     Equals,
     Exists,
+    Expression,
+    FluentTerm,
     Forall,
     ForallEffect,
     Formula,
+    Function,
     Imply,
+    Metric,
     Not,
+    Number,
+    NumericEffect,
     ObjectDecl,
     Or,
     Parameter,
     Predicate,
     Problem,
     Term,
+    TotalTime,
     Variable,
     When,
 )
 from pyplanner.requirements import (
     KNOWN_REQUIREMENTS,
+    NUMERIC_EFFECTS,
     expand_requirements,
     first_undeclared,
     unsupported_requirements,
@@ -91,10 +103,17 @@ def load_domain(document: JSON) -> Domain:
         if name in predicates:
             ctx.fail(f"predicado '{name}' declarado dos veces", node, path)
         predicates[name] = Predicate(name, ctx.parameters(node.get("parameters", []), path))
+    functions: dict[str, Function] = {}
+    for i, node in enumerate(document.get("functions", [])):
+        path = f"functions[{i}]"
+        name = node["name"].lower()
+        if name in functions:
+            ctx.fail(f"función '{name}' declarada dos veces", node, path)
+        functions[name] = Function(name, ctx.parameters(node.get("parameters", []), path))
 
     # Dominio provisional (sin acciones) para consultar la jerarquía de tipos al comprobar.
     ctx.domain = Domain(document["name"].lower(), requirements, types, constants, (), ())
-    scope = _Scope(predicates, {c.name: c.types for c in constants})
+    scope = _Scope(predicates, {c.name: c.types for c in constants}, functions=functions)
     actions: dict[str, Action] = {}
     for i, node in enumerate(document.get("actions", [])):
         path = f"actions[{i}]"
@@ -118,6 +137,7 @@ def load_domain(document: JSON) -> Domain:
         constants=constants,
         predicates=tuple(predicates.values()),
         actions=tuple(actions.values()),
+        functions=tuple(functions.values()),
     )
 
 
@@ -156,12 +176,28 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
         if o.name not in constant_types
     )
     predicates = {p.name: p for p in domain.predicates}
-    scope = _Scope(predicates, {**constant_types, **{o.name: o.types for o in objects}})
+    functions = {f.name: f for f in domain.functions}
+    scope = _Scope(
+        predicates, {**constant_types, **{o.name: o.types for o in objects}}, functions=functions
+    )
 
     init: set[Atom] = set()
+    values: dict[FluentTerm, float] = {}
     for i, node in enumerate(document.get("init", [])):
-        init.add(ctx.atom(node, f"init[{i}]", scope))
+        path = f"init[{i}]"
+        if node["op"] == "=":
+            fluent = ctx.fluent(node["fluent"], f"{path}.fluent", scope)
+            if fluent in values:
+                ctx.fail(f"la función {fluent} tiene dos valores iniciales", node, path)
+            values[fluent] = float(node["value"])
+        else:
+            init.add(ctx.atom(node, path, scope))
     goal = ctx.formula(document["goal"], "goal", scope)
+    metric = None
+    if "metric" in document:
+        node = document["metric"]
+        expression = ctx.expression(node["expression"], "metric.expression", scope, metric=True)
+        metric = Metric(node["direction"], expression)
 
     return Problem(
         name=document["name"].lower(),
@@ -170,6 +206,8 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
         objects=objects,
         init=frozenset(init),
         goal=goal,
+        values=tuple(sorted(values.items(), key=lambda item: str(item[0]))),
+        metric=metric,
     )
 
 
@@ -181,15 +219,17 @@ class _Scope:
         predicates: Mapping[str, Predicate],
         objects: Mapping[str, tuple[str, ...]],
         variables: Mapping[str, tuple[str, ...]] | None = None,
+        functions: Mapping[str, Function] | None = None,
     ) -> None:
         self.predicates = predicates
         self.objects = objects
         self.variables: Mapping[str, tuple[str, ...]] = variables or {}
+        self.functions: Mapping[str, Function] = functions or {}
 
     def bind(self, parameters: Iterable[Parameter]) -> "_Scope":
         variables = dict(self.variables)
         variables.update((p.name, p.types) for p in parameters)
-        return _Scope(self.predicates, self.objects, variables)
+        return _Scope(self.predicates, self.objects, variables, self.functions)
 
 
 class _Context:
@@ -318,6 +358,12 @@ class _Context:
         if op == "=":
             left, right = (self.term(t.lower(), node, path, scope) for t in node["args"])
             return Equals(left, right)
+        if op == "compare":
+            return Comparison(
+                node["comparator"],
+                self.expression(node["left"], f"{path}.left", scope),
+                self.expression(node["right"], f"{path}.right", scope),
+            )
         return self.atom(node, path, scope)
 
     def effect(self, node: JSON, path: str, scope: _Scope) -> Effect:
@@ -337,7 +383,48 @@ class _Context:
         if op == "when":
             condition = self.formula(node["condition"], f"{path}.condition", scope)
             return When(condition, self.effect(node["arg"], f"{path}.arg", scope))
+        if op in NUMERIC_EFFECTS:
+            return NumericEffect(
+                op,
+                self.fluent(node["fluent"], f"{path}.fluent", scope),
+                self.expression(node["value"], f"{path}.value", scope),
+            )
         return self.atom(node, path, scope)
+
+    def expression(
+        self, node: JSON, path: str, scope: _Scope, *, metric: bool = False
+    ) -> Expression:
+        """Expresión numérica. ``total-time`` solo se admite en la métrica (``metric``)."""
+        op = node["op"]
+        if op == "num":
+            return Number(float(node["value"]))
+        if op == "fluent":
+            return self.fluent(node, path, scope)
+        if op == "total-time":
+            if not metric:
+                self.fail("'total-time' solo puede aparecer en la métrica", node, path)
+            return TotalTime()
+        args = tuple(
+            self.expression(arg, f"{path}.args[{i}]", scope, metric=metric)
+            for i, arg in enumerate(node["args"])
+        )
+        return Arithmetic(op, args)
+
+    def fluent(self, node: JSON, path: str, scope: _Scope) -> FluentTerm:
+        name = node["function"].lower()
+        function = scope.functions.get(name)
+        if function is None:
+            self.fail(f"función '{name}' no declarada", node, path)
+        args = node["args"]
+        if len(args) != function.arity:
+            self.fail(
+                f"la función '{name}' espera {function.arity} argumentos y recibe {len(args)}",
+                node,
+                path,
+            )
+        terms = tuple(self.term(arg.lower(), node, path, scope) for arg in args)
+        self.check_argument_types(name, terms, function.parameters, scope, node, path)
+        return FluentTerm(name, terms)
 
     def quantified(
         self, node: JSON, path: str, scope: _Scope
@@ -363,8 +450,21 @@ class _Context:
                 f"'{name}' espera {predicate.arity} argumentos y recibe {len(args)}", node, path
             )
         terms = tuple(self.term(arg.lower(), node, path, scope) for arg in args)
+        self.check_argument_types(name, terms, predicate.parameters, scope, node, path)
+        return Atom(name, terms)
+
+    def check_argument_types(
+        self,
+        name: str,
+        terms: tuple[Term, ...],
+        parameters: tuple[Parameter, ...],
+        scope: _Scope,
+        node: JSON,
+        path: str,
+    ) -> None:
+        """Las constantes de ``terms`` tienen que ser del tipo de los ``parameters``."""
         assert self.domain is not None
-        for position, (term, parameter) in enumerate(zip(terms, predicate.parameters, strict=True)):
+        for position, (term, parameter) in enumerate(zip(terms, parameters, strict=True)):
             if isinstance(term, Constant):
                 own = scope.objects[term.name]
                 if not self.domain.is_subtype(own, parameter.types):
@@ -375,7 +475,6 @@ class _Context:
                         node,
                         path,
                     )
-        return Atom(name, terms)
 
     def term(self, name: str, node: JSON, path: str, scope: _Scope) -> Term:
         if name.startswith("?"):

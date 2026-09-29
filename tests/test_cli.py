@@ -52,9 +52,9 @@ def test_parse_to_file_and_check_json(
 
 def test_invalid_input_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     bad = tmp_path / "bad.pddl"
-    bad.write_text("(define (domain d) (:requirements :fluents))")
+    bad.write_text("(define (domain d) (:requirements :time))")
     assert main(["parse", str(bad)]) == EXIT_INVALID_INPUT
-    assert "no soportado ':fluents'" in capsys.readouterr().err
+    assert "no soportado ':time'" in capsys.readouterr().err
 
 
 def test_malformed_json_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -22,6 +22,7 @@ def test_domain_document() -> None:
         "name": "test",
         "requirements": [":strips"],
         "types": [],
+        "functions": [],
         "constants": [{"name": "home"}, {"name": "robot"}],
         "predicates": [
             {"name": "at", "parameters": [{"name": "?x"}, {"name": "?y"}]},
@@ -144,20 +145,22 @@ def test_syntax_errors(text: str, message: str) -> None:
 @pytest.mark.parametrize(
     ("text", "requirement"),
     [
-        ("(define (domain d) (:requirements :fluents))", ":fluents"),
+        ("(define (domain d) (:requirements :time))", ":time"),
         ("(define (domain d) (:requirements :durative-actions))", ":durative-actions"),
-        ("(define (domain d) (:functions (f)))", ":numeric-fluents"),
+        ("(define (domain d) (:functions (f) - object))", ":object-fluents"),
         ("(define (domain d) (:durative-action a))", ":durative-actions"),
         ("(define (domain d) (:derived (p) (q)))", ":derived-predicates"),
         ("(define (domain d) (:process p))", ":time"),
-        ("(define (domain d) (:action a :precondition (< (f) 1)))", ":numeric-fluents"),
-        ("(define (domain d) (:action a :effect (increase (f) 1)))", ":numeric-fluents"),
-        ("(define (problem p) (:domain d) (:init (= (f) 1)) (:goal (q)))", ":numeric-fluents"),
+        ("(define (domain d) (:action a :precondition (< (f) ?duration)))", ":durative-actions"),
+        ("(define (domain d) (:action a :effect (increase (f) (* #t 2))))", ":continuous-effects"),
         (
             "(define (problem p) (:domain d) (:init (at 10 (p))) (:goal (q)))",
             ":timed-initial-literals",
         ),
-        ("(define (problem p) (:domain d) (:goal (q)) (:metric minimize (c)))", ":numeric"),
+        (
+            "(define (problem p) (:domain d) (:goal (q)) (:constraints (always (q))))",
+            ":constraints",
+        ),
     ],
 )
 def test_future_features_are_unsupported(text: str, requirement: str) -> None:

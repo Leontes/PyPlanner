@@ -16,7 +16,11 @@ PDDL 2.1:
 * ``exists`` → ``:existential-preconditions``; ``forall`` en una fórmula →
   ``:universal-preconditions``;
 * ``=`` → ``:equality`` (y ``(not (= ...))`` además ``:negative-preconditions``);
-* ``forall`` y ``when`` en un efecto → ``:conditional-effects``.
+* ``forall`` y ``when`` en un efecto → ``:conditional-effects``;
+* funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica →
+  ``:numeric-fluents``. Lo que encaja en el perfil de ``:action-costs`` (PDDL 3.1) también
+  se acepta con ese requisito: declarar funciones y darles valor inicial, ``(increase
+  (total-cost) <número o función>)`` y ``(:metric minimize (total-cost))``.
 
 ``(not <átomo>)`` en un efecto es un borrado STRIPS y no necesita nada.
 """
@@ -104,6 +108,9 @@ SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
         ":existential-preconditions",
         ":universal-preconditions",
         ":conditional-effects",
+        # Iteración 3a (PDDL 2.1 numérico y costes de acción de PDDL 3.1)
+        ":numeric-fluents",
+        ":action-costs",
     }
 )
 
@@ -150,12 +157,15 @@ class RequirementUse:
         construct: descripción de la construcción, para los mensajes de error.
         path: ruta dentro del documento JSON.
         loc: posición en el PDDL original (``{"line", "column"}``), si el documento la trae.
+        alternatives: otros requisitos que también la permiten (``:action-costs`` para las
+            construcciones numéricas de su perfil).
     """
 
     requirement: str
     construct: str
     path: str
     loc: Mapping[str, int] | None = None
+    alternatives: tuple[str, ...] = ()
 
 
 def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
@@ -168,6 +178,12 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
         yield RequirementUse(":typing", "la sección :types", "types", _loc(document["types"][0]))
     for key in ("constants", "objects"):
         yield from _typed_items(document.get(key, []), key)
+    for i, function in enumerate(document.get("functions", [])):
+        path = f"functions[{i}]"
+        yield RequirementUse(
+            ":numeric-fluents", "la sección :functions", path, _loc(function), _COSTS
+        )
+        yield from _typed_items(function.get("parameters", []), f"{path}.parameters")
     for i, predicate in enumerate(document.get("predicates", [])):
         yield from _typed_items(predicate.get("parameters", []), f"predicates[{i}].parameters")
     for i, action in enumerate(document.get("actions", [])):
@@ -177,8 +193,19 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
             yield from _formula_uses(action["precondition"], f"{path}.precondition")
         if "effect" in action:
             yield from _effect_uses(action["effect"], f"{path}.effect")
+    for i, element in enumerate(document.get("init", [])):
+        if element["op"] == "=":
+            yield RequirementUse(
+                ":numeric-fluents", "un valor inicial numérico", f"init[{i}]", _loc(element), _COSTS
+            )
     if "goal" in document:
         yield from _formula_uses(document["goal"], "goal")
+    if "metric" in document:
+        metric = document["metric"]
+        cost_only = metric["direction"] == "minimize" and _is_total_cost(metric["expression"])
+        yield RequirementUse(
+            ":numeric-fluents", "la métrica", "metric", _loc(metric), _COSTS if cost_only else ()
+        )
 
 
 def first_undeclared(document: Mapping[str, Any], declared: Iterable[str]) -> RequirementUse | None:
@@ -188,9 +215,17 @@ def first_undeclared(document: Mapping[str, Any], declared: Iterable[str]) -> Re
     """
     expanded = expand_requirements(declared)
     for use in requirement_uses(document):
-        if use.requirement not in expanded:
+        if use.requirement not in expanded and not any(a in expanded for a in use.alternatives):
             return use
     return None
+
+
+#: Las construcciones numéricas de este perfil también se aceptan con ``:action-costs``.
+_COSTS = (":action-costs",)
+
+
+def _is_total_cost(node: Mapping[str, Any]) -> bool:
+    return node["op"] == "fluent" and node["function"] == "total-cost" and not node["args"]
 
 
 def _loc(node: Any) -> Mapping[str, int] | None:
@@ -208,8 +243,10 @@ def _formula_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse
     loc = _loc(node)
     if op == "=":
         yield RequirementUse(":equality", "'=' en una fórmula", path, loc)
+    elif op == "compare":
+        yield RequirementUse(":numeric-fluents", "una comparación numérica", path, loc)
     elif op == "not":
-        if node["arg"]["op"] in ("atom", "="):
+        if node["arg"]["op"] in ("atom", "=", "compare"):
             yield RequirementUse(":negative-preconditions", "'not' en una fórmula", path, loc)
         else:
             yield RequirementUse(
@@ -243,3 +280,21 @@ def _effect_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]
         yield RequirementUse(":conditional-effects", "'when' en un efecto", path, _loc(node))
         yield from _formula_uses(node["condition"], f"{path}.condition")
         yield from _effect_uses(node["arg"], f"{path}.arg")
+    elif op in NUMERIC_EFFECTS:
+        value = node["value"]
+        cost_only = (
+            op == "increase"
+            and _is_total_cost(node["fluent"])
+            and (value["op"] == "num" or value["op"] == "fluent")
+        )
+        yield RequirementUse(
+            ":numeric-fluents",
+            f"'{op}' en un efecto",
+            path,
+            _loc(node),
+            _COSTS if cost_only else (),
+        )
+
+
+#: Operadores de los efectos numéricos.
+NUMERIC_EFFECTS = ("increase", "decrease", "assign", "scale-up", "scale-down")
