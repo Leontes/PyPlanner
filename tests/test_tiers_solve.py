@@ -1,7 +1,7 @@
 """Evaluación por tiers del planificador completo: plan encontrado y validado con VAL.
 
 Cada instancia de los tiers soportados se resuelve con el portfolio de cada número de
-núcleos (1, 2, 4, 5 y 6), y el plan se valida con VAL (``tools/bin/Validate``, ver
+núcleos (1, 2, 4, 5, 6 y 7), y el plan se valida con VAL (``tools/bin/Validate``, ver
 ``scripts/build_val.sh``). Si VAL no está compilado, estos tests se saltan.
 """
 

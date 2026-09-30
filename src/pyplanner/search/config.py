@@ -205,8 +205,14 @@ PRESETS: dict[str, SearchConfig] = {
 #: * 4 núcleos: + la perezosa con exploración por tipos (otra semilla) y la más barata y
 #:   aleatoria (objetivos pendientes);
 #: * 5 núcleos: + GBFS con exploración por tipos, la más rápida en slitherlink;
-#: * 6 núcleos: + WA* con h_add, que no mejora los tiempos de las pruebas pero tiende a
-#:   planes más cortos: diversidad a cambio de un núcleo más, que suele sobrar.
+#: * 6 núcleos (por defecto): + GBFS con lote adaptativo y evaluación híbrida (Numba o
+#:   GPU según el lote), el único miembro con GPU: en las pruebas es la mejor sexta
+#:   configuración (de 100,9 s a 93,8 s). Sin GPU, evalúa todo con Numba;
+#: * 7 núcleos: + WA* con h_add, que no mejora los tiempos pero tiende a planes más
+#:   cortos: diversidad a cambio de un núcleo más.
+#:
+#: Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
+#: no pagan el arranque de PyTorch y CUDA (unos segundos) en las tareas pequeñas.
 PORTFOLIOS: dict[int, tuple[str, ...]] = {
     1: ("bfws-ff-pref",),
     2: ("bfws-ff-pref", "lazy-ff-pref"),
@@ -224,6 +230,15 @@ PORTFOLIOS: dict[int, tuple[str, ...]] = {
         "lazy-ff-pref-tb",
         "gbfs-goalcount-rnd",
         "gbfs-ff-pref-tb",
+        "gbfs-ff-pref-hybrid",
+    ),
+    7: (
+        "bfws-ff-pref",
+        "lazy-ff-pref",
+        "lazy-ff-pref-tb",
+        "gbfs-goalcount-rnd",
+        "gbfs-ff-pref-tb",
+        "gbfs-ff-pref-hybrid",
         "wastar-add-3",
     ),
 }

@@ -41,7 +41,7 @@ claro.
 - **Rendimiento:** heurísticas y generación de sucesores compiladas con Numba, con
   resultados idénticos a la implementación de referencia en Python. También hay evaluación
   por lotes en GPU con PyTorch.
-- **Portfolio paralelo:** conjuntos de búsquedas predefinidos para 1, 2, 4, 5 y 6 núcleos;
+- **Portfolio paralelo:** conjuntos de búsquedas predefinidos para 1, 2, 4, 5, 6 y 7 núcleos;
   gana la primera que encuentra un plan.
 - **Planes** en formato IPC (el que lee VAL) o en JSON.
 

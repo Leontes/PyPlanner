@@ -383,14 +383,15 @@ Resultados (driverlog y zenotravel temporales 12–17, un proceso, 60 s):
 
 - **El lote adaptativo es neutro para la búsqueda** (con paciencia 4 perdía instancias;
   con 8, no). Su valor es que habilita la GPU, que recorta un 30–55% en las tareas grandes.
-- **En el portfolio aporta poco en estas pruebas:** la búsqueda perezosa ya resuelve
-  zenotravel en pocos segundos. Añadido al de 6 núcleos, el tiempo del mejor miembro en
-  esas 12 instancias baja de 99 s a 92 s.
+- **En el portfolio aporta poco en estas pruebas** (la búsqueda perezosa ya resuelve
+  zenotravel en pocos segundos), pero es la mejor sexta configuración: con las 7
+  candidatas medidas en las 34 instancias, el mejor portfolio de 6 es el de 5 más el
+  híbrido (93,8 s frente a 100,9 s), y WA* pasa al de 7.
 
 ## Portfolio
 
 **Qué búsquedas se lanzan.** Depende del número de núcleos (`-j N`). Hay un portfolio
-predefinido para 1, 2, 4, 5 y 6 núcleos (`PORTFOLIOS` en `search/config.py`), y cada uno
+predefinido para 1, 2, 4, 5, 6 y 7 núcleos (`PORTFOLIOS` en `search/config.py`), y cada uno
 contiene al anterior:
 
 | Núcleos | Búsquedas | Qué se añade |
@@ -399,10 +400,14 @@ contiene al anterior:
 | 2 | + `lazy-ff-pref` | la más rápida en tareas grandes y fáciles |
 | 4 | + `lazy-ff-pref-tb`, `gbfs-goalcount-rnd` | la perezosa con exploración, y la más barata y aleatoria |
 | 5 | + `gbfs-ff-pref-tb` | GBFS con exploración por tipos, la más rápida en slitherlink |
-| 6 | + `wastar-add-3` | WA*, que tiende a planes más cortos: más diversidad con CPU de sobra |
+| 6 | + `gbfs-ff-pref-hybrid` | lote adaptativo y evaluación híbrida CPU/GPU: el único miembro con GPU; la mejor sexta configuración (el mejor miembro de cada instancia pasa de 100,9 s a 93,8 s) |
+| 7 | + `wastar-add-3` | WA*, que tiende a planes más cortos: más diversidad con CPU de sobra |
 
 - Con otro número de núcleos se usa el portfolio más grande que quepa: con 3, el de 2;
-  con más de 6, el de 6. Nunca hay más búsquedas que núcleos.
+  con más de 7, el de 7. Nunca hay más búsquedas que núcleos.
+- Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
+  no pagan el arranque de PyTorch y CUDA en las tareas pequeñas. Sin GPU, el miembro
+  híbrido del de 6 y del de 7 evalúa todo con Numba.
 - **Por defecto se usan 6 núcleos**, para la máxima robustez, pero limitados a los que
   tenga la máquina (`os.sched_getaffinity`). En un sistema mononúcleo se usa el
   portfolio de 1 sin necesidad de indicarlo.

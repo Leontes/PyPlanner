@@ -133,7 +133,7 @@ def test_portfolios_by_cores() -> None:
 
 
 @pytest.mark.parametrize(
-    ("cores", "size"), [(1, 1), (2, 2), (3, 2), (4, 4), (5, 5), (6, 6), (64, 6)]
+    ("cores", "size"), [(1, 1), (2, 2), (3, 2), (4, 4), (5, 5), (6, 6), (7, 7), (64, 7)]
 )
 def test_portfolio_for_cores(cores: int, size: int) -> None:
     assert [c.name for c in portfolio_for_cores(cores)] == list(PORTFOLIOS[size])
