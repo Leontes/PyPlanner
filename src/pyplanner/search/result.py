@@ -39,6 +39,8 @@ class SearchStatistics:
     dead_ends: int = 0
     pruned: int = 0
     evaluation_batches: int = 0
+    largest_batch: int = 0
+    gpu_batches: int = 0
     time: float = 0.0
 
 

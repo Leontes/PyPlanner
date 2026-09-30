@@ -171,7 +171,7 @@ El portfolio se monta encima de todo eso.
 | HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
 | Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
 | Búsqueda completa en GPU | expansión masiva en paralelo | descartado (ver abajo) |
-| Lotes adaptativos y evaluación híbrida (Numba en CPU / PyTorch en GPU) | lotes grandes solo cuando compensan, en el dispositivo que más rinde | final de la iteración 3b |
+| Lotes adaptativos y evaluación híbrida (Numba en CPU / PyTorch en GPU) | lotes grandes solo cuando compensan, en el dispositivo que más rinde | final de la iteración 3b ✅ |
 
 **Sobre la búsqueda completa en GPU.** Hay trabajos que hacen toda la búsqueda en GPU
 (expansión, detección de estados repetidos y cola de prioridad). Pero la búsqueda es
@@ -323,10 +323,11 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
   Geffner, 2012 y 2017). BFWS con h_FF y acciones útiles es la mejor configuración
   individual en las pruebas y entra en todos los portfolios (ver
   [motor-busqueda.md](motor-busqueda.md#búsqueda-por-novedad)).
-- **Al final de la 3b (opcional, prevista):** **lotes adaptativos y evaluación híbrida**
-  (Numba en CPU / PyTorch en GPU); ver "Trabajo opcional" para las preguntas que hay que
-  estudiar y el punto de partida medido. Se compara con la búsqueda por novedad, que
-  ataca el mismo problema de las mesetas.
+- **Al final de la 3b (opcional):** ✅ **lotes adaptativos y evaluación híbrida** (Numba en
+  CPU / PyTorch en GPU), con umbral calibrado por tarea y portfolio de arranque mixto
+  (ver [motor-busqueda.md](motor-busqueda.md#lotes-adaptativos-y-evaluación-híbrida)). La
+  GPU recorta un 30–55% en las tareas grandes; en los portfolios aporta poco en las
+  pruebas, porque la búsqueda perezosa ya resuelve rápido esas tareas.
 
 ## Iteración 4: PDDL 2.2
 
@@ -410,8 +411,8 @@ Nada por ahora.
   El coste en eficiencia es importante (el espacio de estados crece con 1/δ; la
   programación entera puede ser exponencial), así que se activarían solo en los dominios
   que lo necesiten, como la programación lineal ahora: el resto no pagaría nada.
-- **Lotes adaptativos y evaluación híbrida** (línea de trabajo prometedora, prevista al
-  final de la 3b). El tamaño de
+- **Lotes adaptativos y evaluación híbrida** (hecho al final de la 3b; esta era la
+  propuesta de partida). El tamaño de
   lote deja de ser fijo: la búsqueda lo ajusta en cada momento según lo necesite, y cada
   lote se evalúa en CPU con Numba o en GPU con PyTorch según convenga. Hay que estudiar:
   - **Cómo decidir el tamaño en cada momento.** Candidatos: según el progreso (lote

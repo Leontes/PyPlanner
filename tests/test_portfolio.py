@@ -79,13 +79,25 @@ def test_invalid_portfolios() -> None:
 
 
 def test_fork_is_only_used_when_safe(monkeypatch: pytest.MonkeyPatch) -> None:
-    cpu = [PRESETS["gbfs-ff"]]
+    cpu = PRESETS["gbfs-ff"]
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     monkeypatch.setattr(threading, "active_count", lambda: 1)
     assert portfolio._fork_is_safe(cpu)
-    assert not portfolio._fork_is_safe([PRESETS["gbfs-ff"].with_changes(device="cuda")])
+    assert not portfolio._fork_is_safe(cpu.with_changes(device="cuda"))
+    assert not portfolio._fork_is_safe(cpu.with_changes(device="hybrid"))
     monkeypatch.setattr(threading, "active_count", lambda: 3)
     assert not portfolio._fork_is_safe(cpu)
+
+
+@pytest.mark.skipif(not numba_available(), reason="Numba no está instalado")
+def test_gpu_members_do_not_slow_down_cpu_members() -> None:
+    """Un miembro híbrido arranca con spawn y los demás con fork: comparten la señal de
+    parada y la cola de resultados, y el de CPU gana en una tarea trivial."""
+    pytest.importorskip("torch")
+    configs = [PRESETS["gbfs-ff"], PRESETS["gbfs-ff-pref-hybrid"]]
+    result = run_portfolio(chain(), configs, time_limit=60)
+    assert result.best.solved
+    assert set(result.results) == {"gbfs-ff", "gbfs-ff-pref-hybrid"}
 
 
 @pytest.mark.skipif(not numba_available(), reason="Numba no está instalado")

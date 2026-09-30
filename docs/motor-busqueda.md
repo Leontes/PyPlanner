@@ -220,6 +220,7 @@ cada paso. El código está en `grounding/temporal.py`.
 | `python` | implementación de referencia en Python puro | tests y máquinas sin Numba |
 | `numba` | la referencia compilada con Numba (`pip install -e ".[fast]"`); 12–19 veces más rápida | es la opción rápida para búsquedas normales |
 | `cpu`, `cuda` | PyTorch por lotes (`pip install -e ".[gpu]"`) | solo con lotes grandes; en GPU, 4 veces más rápido que Python con lotes de 256 |
+| `hybrid` | cada lote en Numba o en la GPU según su tamaño, con un umbral calibrado al empezar | con lotes adaptativos y tareas grandes (ver "Lotes adaptativos") |
 
 Los tres dan **exactamente los mismos valores y acciones útiles** que la referencia; los
 tests lo comprueban en los tiers 1 a 3 (numérico), en tareas hechas a mano y, durante el
@@ -277,7 +278,9 @@ desarrollo, en tareas aleatorias con muchos empates y costes 0.
   ese tipo. Evita que la búsqueda voraz se atasque en mesetas y zonas con muchos
   callejones sin salida;
 - `novelty`: anchura de la novedad (0, 1 o 2; ver "Búsqueda por novedad");
-- `batch_size`;
+- `batch_size`; con `adaptive_batch`, el mínimo de un lote adaptativo que se duplica
+  (hasta `max_batch_size`) tras `plateau_patience` lotes sin mejorar la mejor h (ver
+  "Lotes adaptativos");
 - `device`: `auto` (por defecto), `python`, `numba`, `cpu` o `cuda` (ver arriba);
 - `max_time`, `max_expansions` y `max_memory` (MB de memoria residente del proceso; se
   consulta cada 32 iteraciones leyendo `/proc/self/statm`).
@@ -335,6 +338,54 @@ Lipovetzky y Geffner (2012, 2017); código en `search/novelty.py` y `search/engi
   mayor que k. Resuelve de inmediato los problemas de anchura ≤ k (los que se pueden
   resolver pasando solo por estados nuevos), pero es incompleta.
 - Solo con evaluación inmediata: la novedad de un estado se mide al generarlo.
+
+## Lotes adaptativos y evaluación híbrida
+
+Código en `search/engine.py` y `heuristics/hybrid.py`.
+
+- **Lote adaptativo.** El tamaño de lote vuelve al mínimo en cuanto mejora la mejor h
+  vista, y se duplica tras 8 lotes seguidos sin mejorarla (hasta 256). Mientras la
+  heurística guía, la búsqueda es la clásica; en las mesetas expande muchos nodos de golpe
+  y evalúa juntos todos sus sucesores.
+- **Evaluación híbrida** (`device="hybrid"`). Numba y PyTorch dan exactamente los mismos
+  valores, así que cada lote puede ir a cualquiera sin cambiar la búsqueda. El coste de
+  Numba por estado no depende del lote pero crece con la tarea; el de la GPU tiene un
+  coste fijo alto por llamada y crece menos. Al empezar se miden los dos en la propia
+  tarea (paseo aleatorio) y se fija el tamaño a partir del cual la GPU es más rápida; si
+  no lo es nunca, todo va a Numba. Coste por estado de h_FF (µs) en la máquina de
+  desarrollo (GTX 970):
+
+  | Tarea | Numba (cualquier lote) | GPU, lote 64 | GPU, lote 256 |
+  |-------|------------------------|--------------|---------------|
+  | slitherlink p02 (1920 acciones) | 45–59 | 253 | 158 |
+  | driverlog 15 (5184) | 550 | 445 | 280 |
+  | zenotravel 15 (20 160) | 1765 | 861 | 756 |
+
+  PyTorch en CPU no gana nunca a Numba.
+- **Trozos.** Los lotes de PyTorch se evalúan por trozos de como mucho 5·10⁷ elementos
+  (estados × relaciones de la tarea relajada): en Windows, la GPU que dibuja la pantalla
+  tiene un vigilante que aborta cualquier cálculo de más de unos 2 s
+  (`cudaErrorLaunchTimeout`), y los lotes de miles de estados de una tarea grande lo
+  superaban.
+- **Una sola búsqueda por GPU.** Dos procesos compartiendo la GPU pierden toda la ventaja
+  (zenotravel 14: 17,5 s con dos, 3,4 s con uno).
+- **Portfolio mixto.** Los miembros con GPU arrancan con `spawn` y los demás con `fork`;
+  si ya hay un plan, a los que siguen arrancando se les termina enseguida. Un miembro con
+  GPU cuesta unas décimas en las tareas pequeñas (gripper p01: 1,1 s frente a 0,9 s).
+
+Resultados (driverlog y zenotravel temporales 12–17, un proceso, 60 s):
+
+| Configuración | Tiempo total | Destacados |
+|---------------|--------------|------------|
+| `gbfs-ff-pref` (lote 1, Numba) | — | zenotravel 16: 34,2 s |
+| `gbfs-ff-pref-ab` (adaptativo, Numba) | 176 s | zenotravel 16: 25,2 s |
+| `gbfs-ff-pref-hybrid` (adaptativo, híbrido) | 136 s | zenotravel 16: 14,9 s; driverlog 17: 18,2 s |
+
+- **El lote adaptativo es neutro para la búsqueda** (con paciencia 4 perdía instancias;
+  con 8, no). Su valor es que habilita la GPU, que recorta un 30–55% en las tareas grandes.
+- **En el portfolio aporta poco en estas pruebas:** la búsqueda perezosa ya resuelve
+  zenotravel en pocos segundos. Añadido al de 6 núcleos, el tiempo del mejor miembro en
+  esas 12 instancias baja de 99 s a 92 s.
 
 ## Portfolio
 

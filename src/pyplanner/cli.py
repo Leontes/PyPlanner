@@ -240,6 +240,8 @@ def _report(result: PlanningResult) -> None:
         f"evaluados {stats.evaluated} en {stats.evaluation_batches} lotes, "
         f"callejones {stats.dead_ends}"
         + (f", podados por novedad {stats.pruned}" if stats.pruned else "")
+        + (f", lote máximo {stats.largest_batch}" if stats.largest_batch > 1 else "")
+        + (f", lotes en GPU {stats.gpu_batches}" if stats.gpu_batches else "")
         + f", tiempo {stats.time:.3f} s"
     )
     if result.plan is not None:

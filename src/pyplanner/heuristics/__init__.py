@@ -32,7 +32,7 @@ TENSOR_HEURISTICS = ("hmax", "hadd", "ff")
 COMPILED_HEURISTICS = ("hmax", "hadd", "ff")
 
 #: Dispositivos de evaluación.
-DEVICES = ("auto", "python", "numba", "cpu", "cuda")
+DEVICES = ("auto", "python", "numba", "cpu", "cuda", "hybrid")
 
 #: Heurísticas que calculan acciones útiles.
 PREFERRED_HEURISTICS = ("ff",)
@@ -74,6 +74,8 @@ def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuri
         device = "numba" if numba_available() else "python"
     if device == "numba" and name not in COMPILED_HEURISTICS:
         device = "python"  # nada que acelerar
+    if device == "hybrid":
+        return _hybrid(name, task)
     if device == "python":
         reference: dict[str, type[Heuristic]] = {
             "blind": BlindHeuristic,
@@ -111,6 +113,30 @@ def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuri
         "ff": tensor.TensorFFHeuristic,
     }
     return classes[name](task, device)
+
+
+def _hybrid(name: str, task: GroundTask) -> Heuristic:
+    """Heurística híbrida: Numba para los lotes pequeños y PyTorch en GPU para los grandes
+    (ver :mod:`pyplanner.heuristics.hybrid`). Sin GPU, todo va a Numba."""
+    from pyplanner.heuristics.hybrid import HybridHeuristic
+
+    if name not in TENSOR_HEURISTICS or not numba_available():
+        raise HeuristicError(
+            f"el dispositivo 'hybrid' necesita Numba y una heurística con implementación en "
+            f"PyTorch, y '{name}' no la tiene"
+            if numba_available()
+            else "el dispositivo 'hybrid' necesita Numba"
+        )
+    fast = create_heuristic(name, task, "numba")
+    wide = None
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            wide = create_heuristic(name, task, "cuda")
+    except ImportError:
+        pass
+    return HybridHeuristic(task, fast, wide)
 
 
 __all__ = [

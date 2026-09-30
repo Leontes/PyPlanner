@@ -397,6 +397,13 @@ class TensorRelaxation:
         ).bool()
 
 
+#: Elementos (estados × relaciones de la tarea relajada) que procesa como mucho cada
+#: operación de un lote. Los lotes más grandes se evalúan por trozos: en Windows, la GPU
+#: que dibuja la pantalla tiene un vigilante (TDR) que aborta cualquier cálculo de más de
+#: unos 2 s (``cudaErrorLaunchTimeout``), y los trozos acotan también la memoria.
+CHUNK_ELEMENTS = 50_000_000
+
+
 class _TensorHeuristic(Heuristic):
     combine_max = False
 
@@ -404,6 +411,23 @@ class _TensorHeuristic(Heuristic):
         super().__init__(task)
         self.device = device
         self.tensors = TensorRelaxation(relaxed or RelaxedTask(task), resolve_device(device))
+        relations = max(
+            1,
+            self.tensors.pre_fact.numel() + self.tensors.edge_fact.numel() + self.tensors.num_facts,
+        )
+        self.chunk_size = max(16, CHUNK_ELEMENTS // relations)
+
+    def evaluate_batch(self, states: Sequence[State]) -> list[Evaluation]:
+        """Evalúa el lote por trozos de como mucho ``chunk_size`` estados."""
+        if len(states) <= self.chunk_size:
+            return self._evaluate(states)
+        results: list[Evaluation] = []
+        for start in range(0, len(states), self.chunk_size):
+            results.extend(self._evaluate(states[start : start + self.chunk_size]))
+        return results
+
+    def _evaluate(self, states: Sequence[State]) -> list[Evaluation]:
+        raise NotImplementedError
 
 
 class TensorHMaxHeuristic(_TensorHeuristic):
@@ -412,7 +436,7 @@ class TensorHMaxHeuristic(_TensorHeuristic):
     name = "hmax"
     combine_max = True
 
-    def evaluate_batch(self, states: Sequence[State]) -> list[Evaluation]:
+    def _evaluate(self, states: Sequence[State]) -> list[Evaluation]:
         costs = self.tensors.fact_costs(states, True)
         return [Evaluation(v) for v in self.tensors.goal_values(costs, True)]
 
@@ -422,7 +446,7 @@ class TensorHAddHeuristic(_TensorHeuristic):
 
     name = "hadd"
 
-    def evaluate_batch(self, states: Sequence[State]) -> list[Evaluation]:
+    def _evaluate(self, states: Sequence[State]) -> list[Evaluation]:
         costs = self.tensors.fact_costs(states, False)
         return [Evaluation(v) for v in self.tensors.goal_values(costs, False)]
 
@@ -433,7 +457,7 @@ class TensorFFHeuristic(_TensorHeuristic):
     name = "ff"
     provides_preferred = True
 
-    def evaluate_batch(self, states: Sequence[State]) -> list[Evaluation]:
+    def _evaluate(self, states: Sequence[State]) -> list[Evaluation]:
         return self.tensors.relaxed_plans(states)
 
 

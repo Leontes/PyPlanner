@@ -44,9 +44,17 @@ class SearchConfig:
             valor h. Con ``"iw"`` es la k de IW(k). Ver :mod:`pyplanner.search.novelty`.
         seed: semilla del desempate aleatorio y de la exploración.
         batch_size: número de nodos que se expanden antes de evaluar juntos sus sucesores.
-            Con 1, la búsqueda es la clásica.
+            Con 1, la búsqueda es la clásica. Con ``adaptive_batch``, es el tamaño mínimo.
+        adaptive_batch: tamaño de lote adaptativo: vuelve a ``batch_size`` cuando mejora la
+            mejor h vista y se duplica (hasta ``max_batch_size``) tras ``plateau_patience``
+            lotes seguidos sin mejorarla. Lotes pequeños mientras la heurística guía y
+            grandes en las mesetas, donde aporta poco y conviene evaluar mucho de golpe.
+        max_batch_size: tamaño máximo del lote adaptativo.
+        plateau_patience: lotes sin mejora antes de duplicar el tamaño.
         device: dónde se evalúa la heurística: ``"auto"`` (Numba si está instalado, si no
-            Python), ``"python"``, ``"numba"``, ``"cpu"`` o ``"cuda"`` (PyTorch).
+            Python), ``"python"``, ``"numba"``, ``"cpu"``, ``"cuda"`` (PyTorch) o
+            ``"hybrid"`` (cada lote en Numba o en la GPU según su tamaño; ver
+            :mod:`pyplanner.heuristics.hybrid`).
         max_time: límite de tiempo en segundos (``None``: sin límite).
         max_expansions: límite de expansiones (``None``: sin límite).
         max_memory: límite de memoria residente del proceso, en MB (``None``: sin límite).
@@ -64,6 +72,9 @@ class SearchConfig:
     novelty: int = 0
     seed: int = 0
     batch_size: int = 1
+    adaptive_batch: bool = False
+    max_batch_size: int = 256
+    plateau_patience: int = 8
     device: str = "auto"
     max_time: float | None = None
     max_expansions: int | None = None
@@ -76,7 +87,7 @@ class SearchConfig:
             raise ConfigError(f"{self.name}: heurística desconocida '{self.heuristic}'")
         if self.device not in DEVICES:
             raise ConfigError(f"{self.name}: dispositivo desconocido '{self.device}'")
-        if self.device in ("cpu", "cuda") and self.heuristic not in TENSOR_HEURISTICS:
+        if self.device in ("cpu", "cuda", "hybrid") and self.heuristic not in TENSOR_HEURISTICS:
             raise ConfigError(
                 f"{self.name}: la heurística '{self.heuristic}' no tiene implementación en PyTorch"
             )
@@ -102,6 +113,10 @@ class SearchConfig:
             raise ConfigError(f"{self.name}: la novedad necesita evaluación inmediata")
         if self.batch_size < 1:
             raise ConfigError(f"{self.name}: batch_size tiene que ser ≥ 1")
+        if self.max_batch_size < self.batch_size:
+            raise ConfigError(f"{self.name}: max_batch_size tiene que ser ≥ batch_size")
+        if self.plateau_patience < 1:
+            raise ConfigError(f"{self.name}: plateau_patience tiene que ser ≥ 1")
         if self.max_time is not None and self.max_time <= 0:
             raise ConfigError(f"{self.name}: max_time tiene que ser positivo")
         if self.max_expansions is not None and self.max_expansions < 0:
@@ -153,6 +168,26 @@ PRESETS: dict[str, SearchConfig] = {
         SearchConfig("bfws-ff", "gbfs", "ff", novelty=2),
         SearchConfig("bfws-ff-pref", "gbfs", "ff", preferred_operators=True, novelty=2),
         SearchConfig("bfws-goalcount", "gbfs", "goalcount", novelty=2),
+        SearchConfig(
+            "gbfs-ff-pref-ab", "gbfs", "ff", preferred_operators=True, adaptive_batch=True
+        ),
+        SearchConfig(
+            "gbfs-ff-pref-hybrid",
+            "gbfs",
+            "ff",
+            preferred_operators=True,
+            adaptive_batch=True,
+            device="hybrid",
+        ),
+        SearchConfig(
+            "bfws-ff-pref-hybrid",
+            "gbfs",
+            "ff",
+            preferred_operators=True,
+            novelty=2,
+            adaptive_batch=True,
+            device="hybrid",
+        ),
         SearchConfig("iw1", "iw", "blind", novelty=1),
         SearchConfig("iw2", "iw", "blind", novelty=2),
         SearchConfig("astar-hmax", "astar", "hmax"),

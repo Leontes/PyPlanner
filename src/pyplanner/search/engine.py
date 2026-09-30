@@ -22,6 +22,12 @@ ellas. Como todos los sucesores están en la cola normal, la búsqueda sigue sie
 cola que saca un nodo al azar de un tipo (h, g) al azar (ver :class:`_TypeBuckets`). Ayuda
 en dominios con mesetas o muchos callejones sin salida, donde la búsqueda voraz se atasca.
 
+**Lote adaptativo** (``adaptive_batch``): el tamaño de lote vuelve al mínimo cada vez que
+mejora la mejor h vista, y se duplica tras ``plateau_patience`` lotes seguidos sin
+mejorarla. Mientras la heurística guía, la búsqueda se comporta como la clásica; en las
+mesetas, donde la guía aporta poco, expande muchos nodos de golpe y los evalúa juntos
+(lo que aprovecha la GPU con el dispositivo ``"hybrid"``).
+
 **Novedad** (``novelty``, solo con evaluación inmediata; ver
 :mod:`pyplanner.search.novelty`):
 
@@ -209,6 +215,9 @@ class _BestFirstSearch:
         self._start = 0.0
         self._iterations = 0
         self._message = ""
+        self.batch_size = config.batch_size
+        self._best_h = float("inf")
+        self._stalled = 0
 
     # --- Nodos ----------------------------------------------------------------------
 
@@ -232,10 +241,28 @@ class _BestFirstSearch:
         evaluations = self.heuristic.evaluate_batch([self.states[n] for n in nodes])
         self.stats.evaluated += len(nodes)
         self.stats.evaluation_batches += 1
+        self.stats.largest_batch = max(self.stats.largest_batch, len(nodes))
+        if self.config.adaptive_batch:
+            self.adapt(evaluations)
         for node, evaluation in zip(nodes, evaluations, strict=True):
             self.h[node] = evaluation.value
             self.preferred[node] = frozenset(evaluation.preferred)
         return evaluations
+
+    def adapt(self, evaluations: list[Evaluation]) -> None:
+        """Ajusta el tamaño de lote: al mínimo si mejora la mejor h; si no, lo duplica tras
+        ``plateau_patience`` lotes sin mejora."""
+        config = self.config
+        best = min((e.value for e in evaluations), default=float("inf"))
+        if best < self._best_h:
+            self._best_h = best
+            self.batch_size = config.batch_size
+            self._stalled = 0
+            return
+        self._stalled += 1
+        if self._stalled >= config.plateau_patience:
+            self.batch_size = min(2 * self.batch_size, config.max_batch_size)
+            self._stalled = 0
 
     def measure_novelty(self, node: int) -> bool:
         """Calcula la novedad del nodo (si la búsqueda la usa). Devuelve ``False`` si IW lo
@@ -301,6 +328,7 @@ class _BestFirstSearch:
         self, status: SearchStatus, plan: tuple[int, ...] | None = None, cost: float | None = None
     ) -> SearchResult:
         self.stats.time = time.perf_counter() - self._start
+        self.stats.gpu_batches = getattr(self.heuristic, "gpu_batches", 0)
         return SearchResult(status, plan, cost, self.stats, self.config.name, self._message)
 
     def run(self) -> SearchResult:
@@ -387,7 +415,7 @@ class EagerSearch(_BestFirstSearch):
         expandir, o ``None`` si la cola se ha agotado.
         """
         batch: list[int] = []
-        while len(batch) < self.config.batch_size:
+        while len(batch) < self.batch_size:
             item = self.open.pop()
             if item is None:
                 break
@@ -430,7 +458,7 @@ class LazySearch(_BestFirstSearch):
 
             # Saca hasta batch_size entradas cuyos sucesores sean estados nuevos.
             children: list[int] = []
-            while len(children) < self.config.batch_size:
+            while len(children) < self.batch_size:
                 item = self.open.pop()
                 if item is None:
                     break

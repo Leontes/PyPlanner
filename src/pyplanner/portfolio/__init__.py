@@ -9,12 +9,17 @@ Arranque de los procesos:
 
 * ``fork`` (por defecto en Linux): los hijos heredan la tarea instanciada sin copiarla.
 * ``spawn``: los hijos arrancan un intérprete nuevo y reciben la tarea serializada. Es más
-  lento de arrancar, pero seguro. Se usa si:
+  lento de arrancar (unos segundos con PyTorch), pero seguro. Se usa:
 
-  * algún miembro evalúa en ``"cuda"``, porque CUDA no se puede usar en un proceso creado
-    con ``fork`` (el proceso padre nunca inicializa CUDA);
-  * el proceso padre tiene varios hilos o ya ha cargado PyTorch (que crea los suyos),
-    porque hacer ``fork`` de un proceso con varios hilos puede bloquear al hijo.
+  * para los miembros que evalúan en ``"cuda"`` o ``"hybrid"``, porque CUDA no se puede
+    usar en un proceso creado con ``fork`` (el proceso padre nunca inicializa CUDA). Los
+    demás miembros siguen arrancando con ``fork``: así un miembro con GPU no retrasa a los
+    de CPU, que resuelven las tareas pequeñas en décimas de segundo;
+  * para todos, si el proceso padre tiene varios hilos o ya ha cargado PyTorch (que crea
+    los suyos), porque hacer ``fork`` de un proceso con varios hilos puede bloquear al hijo.
+
+  La señal de parada y la cola de resultados se crean con ``spawn`` si algún miembro lo
+  usa: sus semáforos tienen nombre y sirven también a los hijos de ``fork`` (al revés no).
 
 Resultado: el plan del ganador, o, si ninguno lo encuentra, el estado más informativo.
 Por orden de prioridad: ``UNSOLVABLE`` si alguno lo ha demostrado; si no, ``LIMIT_REACHED``;
@@ -38,6 +43,8 @@ from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
 
 #: Segundos que se espera a que un proceso cancelado termine antes de forzarlo.
 JOIN_TIMEOUT = 2.0
+#: Lo mismo cuando ya hay un plan: basta con que los demás paren pronto.
+WINNER_JOIN_TIMEOUT = 0.2
 
 #: Cada cuántos segundos se consulta la cola de resultados.
 POLL_INTERVAL = 0.05
@@ -83,11 +90,16 @@ def run_portfolio(
         ]
 
     _warm_up_compiled(configs)
-    context = _context(configs, start_method)
-    stop = context.Event()
-    results_queue = context.Queue()
+    contexts = {c.name: _context(c, configs, start_method) for c in configs}
+    shared = (
+        mp.get_context("spawn")
+        if any(ctx.get_start_method() == "spawn" for ctx in contexts.values())
+        else next(iter(contexts.values()))
+    )
+    stop = shared.Event()
+    results_queue = shared.Queue()
     processes = {
-        c.name: context.Process(
+        c.name: contexts[c.name].Process(
             target=_worker,
             args=(task, c, stop, results_queue),
             name=f"pyplanner-{c.name}",
@@ -96,7 +108,10 @@ def run_portfolio(
         for c in configs
     }
     start = time.perf_counter()
-    for process in processes.values():
+    # Primero los de fork, que arrancan al instante.
+    for _name, process in sorted(
+        processes.items(), key=lambda item: contexts[item[0]].get_start_method() != "fork"
+    ):
         process.start()
 
     results: dict[str, SearchResult] = {}
@@ -117,7 +132,9 @@ def run_portfolio(
                 winner = result
     finally:
         stop.set()
-        _shutdown(processes.values())
+        # Con un ganador, los demás solo pueden aportar resultados descartables: se les da
+        # un margen corto (un miembro con GPU puede estar aún importando PyTorch).
+        _shutdown(processes.values(), WINNER_JOIN_TIMEOUT if winner else JOIN_TIMEOUT)
     while winner is None:  # resultados enviados justo antes de terminar
         try:
             result = results_queue.get(timeout=POLL_INTERVAL)
@@ -151,10 +168,11 @@ def _worker(task: GroundTask, config: SearchConfig, stop: Any, results_queue: An
 
 
 def _context(
-    configs: Sequence[SearchConfig], start_method: str | None
+    config: SearchConfig, configs: Sequence[SearchConfig], start_method: str | None
 ) -> ForkContext | SpawnContext | ForkServerContext:
+    """Modo de arranque de un miembro: el indicado, o ``fork`` si es seguro para él."""
     if start_method is None:
-        start_method = "fork" if _fork_is_safe(configs) else "spawn"
+        start_method = "fork" if _fork_is_safe(config) else "spawn"
     if start_method == "fork":
         return mp.get_context("fork")
     if start_method == "spawn":
@@ -180,18 +198,19 @@ def _warm_up_compiled(configs: Sequence[SearchConfig]) -> None:
         compiled_successors.warm_up()
 
 
-def _fork_is_safe(configs: Sequence[SearchConfig]) -> bool:
-    """``True`` si se puede usar ``fork`` sin riesgo de bloqueos (ver la documentación)."""
+def _fork_is_safe(config: SearchConfig) -> bool:
+    """``True`` si se puede arrancar el miembro con ``fork`` sin riesgo (ver la
+    documentación del módulo)."""
     return (
         os.name == "posix"
-        and not any(c.device == "cuda" for c in configs)
+        and config.device not in ("cuda", "hybrid")
         and "torch" not in sys.modules
         and threading.active_count() == 1
     )
 
 
-def _shutdown(processes: Any) -> None:
-    deadline = time.perf_counter() + JOIN_TIMEOUT
+def _shutdown(processes: Any, timeout: float) -> None:
+    deadline = time.perf_counter() + timeout
     for process in processes:
         process.join(timeout=max(0.0, deadline - time.perf_counter()))
     for process in processes:
