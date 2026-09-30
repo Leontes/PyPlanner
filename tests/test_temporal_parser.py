@@ -9,9 +9,7 @@ from pyplanner.errors import (
     SchemaValidationError,
     SemanticError,
     UndeclaredRequirementError,
-    UnsupportedFeatureError,
 )
-from pyplanner.grounding import ground
 from pyplanner.loader import load_domain, load_problem
 from pyplanner.loader.ast import (
     Arithmetic,
@@ -365,6 +363,15 @@ def test_semantic_errors(duration: str, condition: str, effect: str, message: st
         load(duration, condition, effect)
 
 
+def test_duration_is_not_allowed_in_conditions() -> None:
+    """Como en la gramática de PDDL 2.1 y en VAL: ?duration solo en la duración y en los
+    efectos."""
+    with pytest.raises(SemanticError, match="no puede aparecer en una condición"):
+        load(condition="(at start (>= (g) ?duration))")
+    with pytest.raises(SemanticError, match="no puede aparecer en una condición"):
+        load(effect="(when (at end (> (g) ?duration)) (at end (q)))")
+
+
 def test_duration_outside_durative_actions() -> None:
     document = domain(f"{BASE} (:action b :precondition (> (g) ?duration))")
     with pytest.raises(SemanticError, match="solo puede aparecer en una acción durativa"):
@@ -426,10 +433,3 @@ def test_missing_condition_and_effect_are_written_as_empty_conjunctions() -> Non
     assert ":condition (and)" in text and ":effect (and)" in text
     rewritten = load_domain(parse_pddl(text)).durative_actions[0]
     assert rewritten == load_domain(document).durative_actions[0]
-
-
-def test_planner_rejects_durative_actions_for_now() -> None:
-    loaded = load_domain(parse_domain(TEMPORAL_DOMAIN))
-    problem = load_problem(parse_problem("(define (problem p) (:domain d) (:goal (q)))"), loaded)
-    with pytest.raises(UnsupportedFeatureError, match="acciones durativas"):
-        ground(loaded, problem)

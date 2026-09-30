@@ -1,4 +1,4 @@
-# Motor de búsqueda (iteraciones 1 a 3a)
+# Motor de búsqueda (iteraciones 1 a 3b)
 
 Cómo está construido el motor y cómo se usa. Las decisiones de fondo (portfolio, lotes,
 GPU, técnicas descartadas) están en el [roadmap](ROADMAP.md#motor-de-búsqueda-diseño-y-repertorio).
@@ -111,6 +111,57 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
   heurística nunca declara un callejón sin salida falso. Los efectos que empeoran una
   condición se ignoran, como los borrados. h_FF cuenta cada operador por su coste por el
   máximo número de repeticiones que necesita.
+
+## Motor temporal (iteración 3b)
+
+El motor temporal sigue a POPF (Coles, Coles, Fox y Long, 2010): búsqueda hacia delante
+sobre acciones de inicio y fin, con una red temporal simple (STN) que decide cuándo ocurre
+cada paso. El código está en `grounding/temporal.py`.
+
+- **Compilación.** Cada acción durativa `a` da dos acciones clásicas y un hecho
+  `running@a`:
+  - `a@start`: condiciones `at start` y `¬running@a` (una instancia no se solapa consigo
+    misma); efectos `at start` y `running@a`;
+  - `a@end`: condiciones `at end` y `over all`, y `running@a`; efectos `at end` y
+    `¬running@a`.
+
+  El objetivo exige además que no quede ninguna acción en curso. Todo lo demás se
+  reutiliza tal cual: grounder, normalización ADL y numérica, sucesores compilados y
+  *h^hbd* (Python, Numba y PyTorch) sobre la tarea de inicios y fines. Las acciones
+  instantáneas del dominio conviven con las durativas.
+- **Estado temporal.** Un `State` (hechos y valores) con una línea temporal adjunta. Se
+  compara solo por la parte lógica (memoización al estilo de POPF), así que la detección
+  de repetidos funciona como en la planificación clásica. Es incompleta en casos raros:
+  un estado repetido con otra planificación en el tiempo se descarta.
+- **Órdenes.** Para cada hecho y variable se guarda el último paso que lo cambió y los que
+  lo han leído desde que tiene su valor. Un paso nuevo va, con una separación ε, después
+  del último cambio de lo que lee o modifica y de los que leyeron el valor que cambia. Los
+  pasos independientes no se ordenan: la red temporal los hace simultáneos, y el plan sale
+  en paralelo aunque la búsqueda los eligiera en secuencia.
+- **Red temporal.** Restricciones `t_j ≥ t_i + w`: las órdenes (ε) y la duración de cada
+  acción (mínima y máxima). Se mantienen los tiempos más tempranos con propagación
+  incremental. Solo una duración máxima puede crear un ciclo positivo, y pasa
+  necesariamente por el paso nuevo, así que se detecta al añadirlo. Los tiempos más
+  tempranos son la planificación del plan.
+- **Duraciones.** Fijas (`=`) o con desigualdades; con funciones, se evalúan al empezar (o
+  al terminar, con `(at end ...)`). `?duration` en los efectos se sustituye por la duración
+  cuando es fija y no depende de funciones que cambian.
+- **Invariantes.** Las condiciones `over all` se comprueban tras cada paso en todas las
+  acciones en curso. Sus hechos y variables cuentan como leídos por el inicio y por el
+  fin, así que los pasos que los cambian quedan fuera del intervalo.
+- **Efectos condicionales** con la condición al empezar y el efecto al terminar: un hecho
+  auxiliar recuerda, al empezar, si la condición se cumplía.
+- **ε = 0,01.** VAL agrupa como simultáneos los sucesos más cercanos que su tolerancia (por
+  defecto 0,01), así que con ε = 0,001 (el valor de POPF) solo valida con
+  `Validate -t 0.001`. Con 0,01 el plan vale con la configuración por defecto, a cambio de
+  0,01 unidades por dependencia.
+- **Métrica.** Solo `(:metric minimize (total-time))`: su valor es la duración total. La
+  búsqueda cuenta pasos (coste unitario); no optimiza la duración.
+- **Salida.** `t: (acción args) [d]` en IPC, con `; makespan = …`; en JSON, `time` y
+  `duration` en cada paso y `makespan` en el plan.
+- **Pendiente** (error claro): efectos continuos y `?duration` con duraciones no fijas
+  (programación lineal, al estilo COLIN), y efectos condicionales con condiciones
+  `over all`.
 
 ## Heurísticas
 
@@ -442,3 +493,19 @@ Búsqueda en slitherlink p02 (`gbfs-ff-pref-tb`, tiempo de búsqueda, mismas exp
 
 En PyTorch, el resto de la diferencia es `float64`, que mueve el doble de memoria en cada
 `scatter` y `gather`: es el precio de la exactitud.
+
+### Iteración 3b: motor temporal
+
+Instancias de driverlog y zenotravel (IPC 2002, *time-simple*) hasta la 17, con
+`gbfs-ff-pref-tb` y `lazy-ff-pref` (Numba, 60 s): se resuelven 47 de 52. Las instancias
+del tier 3 tardan milisegundos.
+
+- **La heurística domina el tiempo** (más del 80% en driverlog 15). Aplicar un paso
+  (órdenes, red temporal e invariantes) cuesta unos 5 µs.
+- **Se corrigió un derroche en h_FF compilada:** convertía a lista el array entero de
+  acciones útiles (lote × hechos, unos 830 000 elementos por lote en driverlog 15) en
+  lugar de solo la parte usada. Venía de la iteración 2; con tareas grandes costaba 0,7 s.
+- **Se descartó exigir la invariante ya en el inicio** (cuando los efectos `at start` no
+  la tocan). Evita generar inicios que la rompen, pero empeoró la búsqueda: 46 resueltos
+  frente a 47 y un 20% más de tiempo total.
+

@@ -200,8 +200,9 @@ Una acción durativa tiene `name`, `parameters`, `duration` y, opcionalmente, `c
   | `forall` | `parameters`, `arg` (un efecto) | |
   | `when` | `condition` (una condición con momentos), `arg` (efectos con momento o continuos) | un efecto `at start` solo puede depender de condiciones `at start` |
 
-- `?duration` (`{"op": "duration"}`) puede aparecer en las condiciones y los efectos de la
-  acción, pero no en su propia duración.
+- `?duration` (`{"op": "duration"}`) puede aparecer en los valores de los efectos numéricos
+  de la acción, pero no en sus condiciones ni en su propia duración. Así lo define la
+  gramática de PDDL 2.1, y VAL no valida planes de dominios que lo usen en condiciones.
 - En PDDL, `(at start X)` se distingue de un átomo del predicado `at` porque `X` es una
   lista.
 - El conversor inverso escribe una condición o un efecto ausentes como `(and)`, porque VAL

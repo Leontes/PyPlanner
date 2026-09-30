@@ -291,8 +291,15 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
 **Requisitos:** `:durative-actions`, `:duration-inequalities` y `:continuous-effects`.
 
 - **Parser:** ✅ hecho (esquema JSON v4; ver [formato-json.md](formato-json.md#acciones-durativas-v4)).
-  Hasta que esté el motor temporal, el grounding rechaza las acciones durativas con un
-  error claro.
+  `?duration` solo en la duración y en los efectos numéricos, como en la gramática y en VAL.
+- **Motor:** 🚧 primera parte hecha (ver
+  [motor-busqueda.md](motor-busqueda.md#motor-temporal-iteración-3b)): acciones de inicio y
+  fin, órdenes al estilo POPF, red temporal con duraciones fijas o con desigualdades,
+  invariantes, efectos numéricos discretos, `?duration` con duración fija, efectos
+  condicionales de inicio a fin y planes temporales. Resuelve el tier 3 temporal,
+  validado con VAL. **Pendiente:** efectos continuos y `?duration` con duraciones no fijas
+  (programación lineal, al estilo COLIN) y efectos condicionales con condiciones
+  `over all`.
 - **Parser:**
   - `:durative-action` y `:duration`;
   - condiciones `at start`, `at end` y `over all`;

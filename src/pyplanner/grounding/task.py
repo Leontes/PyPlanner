@@ -333,9 +333,11 @@ class GroundTask:
                 ):
                     yield action
 
-    @staticmethod
-    def apply(state: State, action: GroundAction) -> State | None:
-        """Aplica una acción; ``None`` si no se puede. Ver :meth:`GroundAction.apply`."""
+    def apply(self, state: State, action: GroundAction) -> State | None:
+        """Aplica una acción; ``None`` si no se puede. Ver :meth:`GroundAction.apply`.
+
+        Las tareas temporales (:class:`pyplanner.grounding.temporal.TemporalTask`) lo
+        redefinen para comprobar además la red temporal y las invariantes."""
         return action.apply(state)
 
     def atoms(self, state: State) -> list[Atom]:

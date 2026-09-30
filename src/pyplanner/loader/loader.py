@@ -15,8 +15,9 @@ eso hace cuatro comprobaciones, en este orden:
    * variables ligadas a un parámetro o a un cuantificador, sin ocultar otra variable;
    * funciones declaradas y con la aridad correcta; valores iniciales sin variables y sin
      repetir; ``total-time`` solo en la métrica;
-   * acciones durativas: nombres distintos de los de las acciones, ``?duration`` solo dentro
-     de ellas (y no en su propia duración), ``#t`` solo en efectos continuos con la forma
+   * acciones durativas: nombres distintos de los de las acciones, ``?duration`` solo en
+     los efectos numéricos de ellas (ni en sus condiciones ni en su propia duración, como
+     en la gramática de PDDL 2.1 y en VAL), ``#t`` solo en efectos continuos con la forma
      ``(increase|decrease f (* #t e))``, y efectos ``at start`` que no dependen de
      condiciones posteriores (``at end`` u ``over all``);
    * objetos declarados y con un tipo compatible con el del predicado;
@@ -249,19 +250,30 @@ class _Scope:
         variables: Mapping[str, tuple[str, ...]] | None = None,
         functions: Mapping[str, Function] | None = None,
         durative: bool = False,
+        condition: bool = False,
     ) -> None:
         self.predicates = predicates
         self.objects = objects
         self.variables: Mapping[str, tuple[str, ...]] = variables or {}
         self.functions: Mapping[str, Function] = functions or {}
-        #: ``True`` dentro de una acción durativa, donde se puede usar ``?duration``.
+        #: ``True`` dentro de una acción durativa, donde se puede usar ``?duration``...
         self.durative = durative
+        #: ...salvo en sus condiciones (``True`` dentro de ellas).
+        self.condition = condition
 
     def bind(self, parameters: Iterable[Parameter], *, durative: bool | None = None) -> "_Scope":
         variables = dict(self.variables)
         variables.update((p.name, p.types) for p in parameters)
         inside = self.durative if durative is None else durative
-        return _Scope(self.predicates, self.objects, variables, self.functions, inside)
+        return _Scope(
+            self.predicates, self.objects, variables, self.functions, inside, self.condition
+        )
+
+    def in_condition(self) -> "_Scope":
+        """El mismo ámbito, dentro de una condición de una acción durativa."""
+        return _Scope(
+            self.predicates, self.objects, self.variables, self.functions, self.durative, True
+        )
 
 
 class _Context:
@@ -439,6 +451,13 @@ class _Context:
         if op == "duration":
             if not scope.durative:
                 self.fail("'?duration' solo puede aparecer en una acción durativa", node, path)
+            if scope.condition:
+                self.fail(
+                    "'?duration' no puede aparecer en una condición: PDDL 2.1 solo lo admite "
+                    "en la duración y en los efectos numéricos",
+                    node,
+                    path,
+                )
             return DurationVar()
         if op == "#t":
             self.fail(
@@ -507,7 +526,7 @@ class _Context:
                 parameters, self.timed_condition(node["arg"], f"{path}.arg", inner)
             )
         time = _TIMES[op]
-        return TimedCondition(time, self.formula(node["arg"], f"{path}.arg", scope))
+        return TimedCondition(time, self.formula(node["arg"], f"{path}.arg", scope.in_condition()))
 
     def timed_effect(self, node: JSON, path: str, scope: _Scope) -> DurativeEffect:
         op = node["op"]

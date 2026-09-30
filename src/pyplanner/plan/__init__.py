@@ -1,8 +1,10 @@
 """Planes: representación, validación interna y salida en formato IPC o JSON.
 
 El formato IPC (una acción por línea, ``(accion arg1 arg2)``) es el que leen VAL y el resto
-de herramientas de la comunidad. El JSON sigue el esquema de :mod:`pyplanner.schema`
-(``"kind": "plan"``) y es el que usará el proyecto en el que se integre el planificador.
+de herramientas de la comunidad. En un plan temporal cada línea lleva además el tiempo de
+inicio y la duración: ``12.010: (accion arg1 arg2) [20.000]``. El JSON sigue el esquema de
+:mod:`pyplanner.schema` (``"kind": "plan"``) y es el que usará el proyecto en el que se
+integre el planificador.
 """
 
 import json
@@ -10,23 +12,37 @@ from dataclasses import dataclass
 from typing import Any
 
 from pyplanner.grounding import GroundTask
+from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.schema import SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
 class PlanStep:
-    """Una acción del plan: nombre del esquema y argumentos."""
+    """Una acción del plan: nombre del esquema y argumentos.
+
+    En un plan temporal lleva también su tiempo de inicio y su duración (``None`` en las
+    acciones instantáneas).
+    """
 
     name: str
     args: tuple[str, ...]
+    time: float | None = None
+    duration: float | None = None
 
     def __str__(self) -> str:
         return f"({' '.join([self.name, *self.args])})"
 
+    def to_ipc(self) -> str:
+        """La línea del plan en formato IPC."""
+        if self.time is None:
+            return str(self)
+        line = f"{self.time:.3f}: {self}"
+        return line if self.duration is None else f"{line} [{self.duration:.3f}]"
+
 
 @dataclass(frozen=True)
 class Plan:
-    """Un plan secuencial para una tarea."""
+    """Un plan para una tarea: secuencial, o temporal si tiene ``makespan``."""
 
     domain: str
     problem: str
@@ -36,10 +52,39 @@ class Plan:
     metric: float | None = None
     #: ``True`` si el coste es el número de acciones (sin métrica que sirva de coste).
     unit_cost: bool = True
+    #: Duración total de un plan temporal (``None`` en uno secuencial).
+    makespan: float | None = None
+
+    @property
+    def is_temporal(self) -> bool:
+        return self.makespan is not None
 
     @classmethod
     def from_indices(cls, task: GroundTask, indices: tuple[int, ...]) -> "Plan":
-        """Construye el plan a partir de índices de acciones de ``task``."""
+        """Construye el plan a partir de índices de acciones de ``task``.
+
+        En una tarea temporal, los índices son pasos (inicios, fines y acciones
+        instantáneas) y el plan se construye con su planificación en el tiempo.
+        """
+        if isinstance(task, TemporalTask):
+            scheduled, makespan = task.schedule(indices)
+            makespan = _clean(makespan)
+            return cls(
+                domain=task.domain_name,
+                problem=task.problem_name,
+                steps=tuple(
+                    PlanStep(
+                        s.name,
+                        s.args,
+                        _clean(s.time),
+                        None if s.duration is None else _clean(s.duration),
+                    )
+                    for s in scheduled
+                ),
+                cost=len(scheduled),
+                metric=makespan if task.metric_is_makespan else None,
+                makespan=makespan,
+            )
         actions = [task.actions[i] for i in indices]
         cost = sum(a.cost for a in actions)
         offset = task.metric_offset
@@ -56,9 +101,14 @@ class Plan:
         return len(self.steps)
 
     def to_ipc(self) -> str:
-        """El plan en formato IPC, con el coste (y la métrica) en comentarios finales."""
-        lines = [str(step) for step in self.steps]
-        lines.append(f"; cost = {_number(self.cost)}" + (" (unit cost)" if self.unit_cost else ""))
+        """El plan en formato IPC, con el coste (y la métrica) en comentarios finales. En un
+        plan temporal, el comentario da la duración total en lugar del coste."""
+        lines = [step.to_ipc() for step in self.steps]
+        if self.makespan is not None:
+            lines.append(f"; makespan = {_number(self.makespan)}")
+        else:
+            unit = " (unit cost)" if self.unit_cost else ""
+            lines.append(f"; cost = {_number(self.cost)}{unit}")
         if self.metric is not None:
             lines.append(f"; metric = {_number(self.metric)}")
         return "\n".join(lines) + "\n"
@@ -74,7 +124,17 @@ class Plan:
         }
         if self.metric is not None:
             document["metric"] = _number(self.metric)
-        document["steps"] = [{"name": s.name, "args": list(s.args)} for s in self.steps]
+        if self.makespan is not None:
+            document["makespan"] = _number(self.makespan)
+        steps = []
+        for step in self.steps:
+            node: dict[str, Any] = {"name": step.name, "args": list(step.args)}
+            if step.time is not None:
+                node["time"] = _number(step.time)
+            if step.duration is not None:
+                node["duration"] = _number(step.duration)
+            steps.append(node)
+        document["steps"] = steps
         return document
 
     def to_json(self, indent: int | None = 2) -> str:
@@ -106,6 +166,11 @@ def simulate(task: GroundTask, indices: tuple[int, ...]) -> str | None:
 
 def _number(value: float) -> int | float:
     return int(value) if float(value).is_integer() else value
+
+
+def _clean(value: float) -> float:
+    """Quita el ruido de coma flotante de los tiempos (sumas de ε)."""
+    return round(value, 6)
 
 
 __all__ = ["Plan", "PlanStep", "simulate"]

@@ -24,6 +24,7 @@ from pathlib import Path
 from pyplanner import __version__
 from pyplanner.errors import PDDLError
 from pyplanner.frontend import read_domain, read_problem
+from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.heuristics import DEVICES
 from pyplanner.pddl import parse_file
 from pyplanner.planner import PlanningResult, available_cores, solve
@@ -204,8 +205,15 @@ def _report(result: PlanningResult) -> None:
         print(line, file=sys.stderr)
 
     variables = f", {len(task.variables)} variables numéricas" if task.variables else ""
+    if isinstance(task, TemporalTask):
+        actions = (
+            f"{len(task.durative)} acciones durativas "
+            f"({len(task.actions)} acciones de inicio, fin o instantáneas)"
+        )
+    else:
+        actions = f"{len(task.actions)} acciones"
     err(
-        f"Tarea: {len(task.facts)} hechos{variables}, {len(task.actions)} acciones "
+        f"Tarea: {len(task.facts)} hechos{variables}, {actions} "
         f"(grounding {result.grounding_time:.3f} s)"
     )
     for note in task.notes:
@@ -224,9 +232,13 @@ def _report(result: PlanningResult) -> None:
         f"callejones {stats.dead_ends}, tiempo {stats.time:.3f} s"
     )
     if result.plan is not None:
-        metric = result.plan.metric
+        plan = result.plan
+        metric = plan.metric
         suffix = f", métrica {metric:g}" if metric is not None else ""
-        err(f"Plan: {len(result.plan)} acciones, coste {result.plan.cost:g}{suffix}")
+        if plan.makespan is not None:
+            err(f"Plan: {len(plan)} acciones, duración total {plan.makespan:g}{suffix}")
+        else:
+            err(f"Plan: {len(plan)} acciones, coste {plan.cost:g}{suffix}")
     if search.message:
         err(f"Detalle: {search.message}")
 

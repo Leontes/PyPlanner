@@ -33,7 +33,6 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from itertools import product
 
-from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding.normalize import (
     TRUE,
     Clause,
@@ -50,6 +49,7 @@ from pyplanner.grounding.numeric import (
     Var,
     linear,
     make,
+    remap,
     variables_of,
 )
 from pyplanner.grounding.task import (
@@ -86,23 +86,70 @@ from pyplanner.loader.ast import (
     When,
 )
 
+#: Asignación de los parámetros de un esquema (nombre de la variable → objeto).
+Binding = dict[str, str]
+
 
 def ground(domain: Domain, problem: Problem) -> GroundTask:
     """Instancia y normaliza un dominio y un problema.
+
+    Si el dominio tiene acciones durativas, devuelve una tarea temporal
+    (:func:`pyplanner.grounding.temporal.ground_temporal`).
 
     Returns:
         La tarea instanciada, con hechos, variables y acciones en un orden determinista.
 
     Raises:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
-            disyuntiva, o si el dominio tiene acciones durativas (el motor temporal está en
-            desarrollo; iteración 3b).
+            disyuntiva, o si usa algo que el motor temporal todavía no admite.
     """
     if domain.durative_actions:
-        raise UnsupportedFeatureError(
-            "el motor de búsqueda todavía no admite acciones durativas "
-            "(motor temporal: iteración 3b)"
+        from pyplanner.grounding.temporal import ground_temporal
+
+        return ground_temporal(domain, problem)
+    return ground_with_context(domain, problem)[0]
+
+
+@dataclass
+class GroundingContext:
+    """Lo necesario para instanciar, después del grounding, fórmulas y expresiones de un
+    esquema con una asignación de sus parámetros (lo usa el motor temporal para las
+    invariantes y las duraciones)."""
+
+    normalizer: Normalizer
+    fact_index: Mapping[Fact, int]
+    var_index: Mapping[Fact, int]
+
+    def conditions(self, formula: Formula, binding: Binding) -> tuple[Condition, ...]:
+        """La fórmula en DNF sobre los hechos y variables de la tarea. Las cláusulas con
+        hechos inalcanzables se descartan; una tupla vacía es una fórmula imposible."""
+        return tuple(
+            _condition(clause, self.fact_index, self.var_index)
+            for clause in _sorted_clauses(self.normalizer.dnf(formula, binding))
+            if all(f in self.fact_index for f in clause.pos)
         )
+
+    def expression(self, expression: Expression, binding: Binding) -> NumExpr | None:
+        """La expresión sobre las variables de la tarea, o ``None`` si usa una función
+        estática sin valor."""
+        result = self.normalizer.expression(expression, binding)
+        return None if result is None else remap(result, self.var_index.__getitem__)
+
+
+def ground_with_context(
+    domain: Domain,
+    problem: Problem,
+    extra_reads: Mapping[str, tuple[Expression, ...]] | None = None,
+) -> tuple[GroundTask, GroundingContext]:
+    """Como :func:`ground`, para un dominio sin acciones durativas, pero devuelve también
+    el contexto de grounding.
+
+    Args:
+        extra_reads: expresiones que lee cada esquema además de sus condiciones (por nombre
+            de esquema). Sus funciones cuentan para la relevancia, y sus términos pasan a
+            ser variables del estado.
+    """
+    extra_reads = extra_reads or {}
     declarations = {o.name: o.types for o in (*domain.constants, *problem.objects)}
     universe = _TypedUniverse(domain, declarations)
     fluent_predicates = frozenset(
@@ -116,7 +163,7 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
         for effect in _numeric_effects(action.effect)
     )
     static_functions = frozenset(f.name for f in domain.functions) - targeted
-    relevant = _relevant_functions(domain, problem, targeted)
+    relevant = _relevant_functions(domain, problem, targeted, extra_reads)
     initial_values = {(t.function, _args(t)): v for t, v in problem.values}
     normalizer = Normalizer(
         universe.objects_of,
@@ -163,6 +210,14 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
     for clause in goal_dnf:
         for condition in clause.numeric:
             keys |= variables_of(condition.expression)
+    parameters = {schema.name: schema.parameters for schema in schemas}
+    for (name, args), _ in live.items():
+        for expression in extra_reads.get(name, ()):
+            ground_expression = normalizer.expression(
+                expression, dict(zip(parameters[name], args, strict=True))
+            )
+            if ground_expression is not None:
+                keys |= variables_of(ground_expression)
     variables = sorted(k for k in keys if k[0] in relevant)
     var_index = {key: i for i, key in enumerate(variables)}
 
@@ -190,7 +245,7 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
 
     goal = [_condition(clause, index, var_index) for clause in goal_dnf if clause.pos <= reached]
     init_values = tuple(initial_values.get(key) for key in variables)
-    return GroundTask(
+    task = GroundTask(
         domain_name=domain.name,
         problem_name=problem.name,
         facts=tuple(Atom(pred, tuple(Constant(a) for a in args)) for pred, args in facts),
@@ -202,9 +257,7 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
         metric_offset=metric.offset if metric_is_cost else None,
         notes=tuple(notes),
     )
-
-
-Binding = dict[str, str]
+    return task, GroundingContext(normalizer, index, var_index)
 
 
 def _normalize(normalizer: Normalizer, schema: "_Schema", binding: Binding) -> "_Instance":
@@ -509,7 +562,10 @@ def _conditions_of(effect: Effect) -> Iterator[Formula]:
 
 
 def _relevant_functions(
-    domain: Domain, problem: Problem, targeted: frozenset[str]
+    domain: Domain,
+    problem: Problem,
+    targeted: frozenset[str],
+    extra_reads: Mapping[str, tuple[Expression, ...]],
 ) -> frozenset[str]:
     """Funciones que modifica alguna acción y que importan para decidir qué es aplicable
     u objetivo.
@@ -521,6 +577,9 @@ def _relevant_functions(
     coste serían estados distintos y no se detectarían los repetidos.
     """
     read: set[str] = set(_functions_in(problem.goal))
+    for expressions in extra_reads.values():
+        for expression in expressions:
+            read |= set(_functions_in(expression))
     for action in domain.actions:
         read |= set(_functions_in(action.precondition))
         for condition in _conditions_of(action.effect):

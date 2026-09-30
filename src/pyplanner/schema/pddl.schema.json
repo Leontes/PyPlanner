@@ -903,10 +903,25 @@
                 "items": {
                   "$ref": "#/$defs/name"
                 }
+              },
+              "time": {
+                "description": "Tiempo de inicio de la acción en un plan temporal (v4).",
+                "type": "number",
+                "minimum": 0
+              },
+              "duration": {
+                "description": "Duración de una acción durativa en un plan temporal (v4).",
+                "type": "number",
+                "exclusiveMinimum": 0
               }
             },
             "additionalProperties": false
           }
+        },
+        "makespan": {
+          "description": "Duración total de un plan temporal (v4).",
+          "type": "number",
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -1135,7 +1150,7 @@
       "additionalProperties": false
     },
     "expression": {
-      "description": "Expresión numérica: número, término de función u operación aritmética (+ y * con dos o más términos, - con uno o dos, / con dos). 'total-time' (duración del plan) solo puede aparecer en la métrica. v4: 'duration' (?duration) solo dentro de una acción durativa y '#t' (tiempo transcurrido) solo en un efecto continuo.",
+      "description": "Expresión numérica: número, término de función u operación aritmética (+ y * con dos o más términos, - con uno o dos, / con dos). 'total-time' (duración del plan) solo puede aparecer en la métrica. v4: 'duration' (?duration) solo en los efectos numéricos de una acción durativa y '#t' (tiempo transcurrido) solo en un efecto continuo.",
       "type": "object",
       "required": [
         "op"

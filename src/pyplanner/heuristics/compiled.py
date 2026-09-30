@@ -160,8 +160,8 @@ class CompiledRelaxation:
             self.operator_cost,
             len(self.relaxed.task.actions),
         )
-        flat = preferred.tolist()
         bounds = pointers.tolist()
+        flat = preferred[: bounds[-1]].tolist()  # solo la parte usada (el array es lote × hechos)
         return [
             Evaluation(DEAD_END)
             if value == INF
