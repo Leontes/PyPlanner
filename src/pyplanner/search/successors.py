@@ -89,9 +89,19 @@ class CompiledSuccessors:
         self._out = np.empty(len(task.actions), dtype=np.int64)
         self._num_bytes = num_bytes
         self._no_values = np.zeros(0)
+        # Sin precondiciones numéricas se usa el núcleo con menos argumentos.
+        self._propositional = not constant
+        self._facts_kernel = kernels.applicable_facts
 
     def __call__(self, state: State) -> list[GroundAction]:
         words = np.frombuffer(state.facts.to_bytes(self._num_bytes, "little"), dtype=np.uint64)
+        if self._propositional:
+            count = self._facts_kernel(
+                words, self.pre, self.neg, self.always, self.trigger_ptr, self.trigger_idx,
+                self._out,
+            )  # fmt: skip
+            actions = self.actions
+            return [actions[i] for i in self._out[:count].tolist()]
         values = (
             np.array([np.nan if v is None else v for v in state.values], dtype=np.float64)
             if state.values

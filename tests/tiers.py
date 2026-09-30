@@ -12,17 +12,17 @@ DOMINIOS_DIR = Path(__file__).resolve().parent.parent / "dominios"
 
 #: Tier máximo que el planificador tiene que resolver (con plan válido según VAL).
 #: Se sube al cerrar cada iteración.
-SUPPORTED_TIER = 2
+SUPPORTED_TIER = 3
 
 #: Tier máximo que el parser (fases 1 y 2) tiene que aceptar. Durante una iteración va por
 #: delante de :data:`SUPPORTED_TIER`; al cerrarla, los dos valen lo mismo.
-PARSER_TIER = 2
+PARSER_TIER = 3
 
 #: Partes (*subtiers*) de tiers superiores que ya están soportadas, para las iteraciones que
 #: se dividen en partes (la 3 en numérica y temporal). Al cerrar la iteración se sube el
 #: tier y se vacía su entrada.
-PARSER_PARTIAL: dict[int, frozenset[str]] = {3: frozenset({"numeric", "temporal"})}
-SUPPORTED_PARTIAL: dict[int, frozenset[str]] = {3: frozenset({"numeric", "temporal"})}
+PARSER_PARTIAL: dict[int, frozenset[str]] = {}
+SUPPORTED_PARTIAL: dict[int, frozenset[str]] = {}
 
 _TIER_DIR = re.compile(r"^tier(\d+)-")
 

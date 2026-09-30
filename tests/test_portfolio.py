@@ -82,10 +82,14 @@ def test_fork_is_only_used_when_safe(monkeypatch: pytest.MonkeyPatch) -> None:
     cpu = PRESETS["gbfs-ff"]
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     monkeypatch.setattr(threading, "active_count", lambda: 1)
+    monkeypatch.setattr(portfolio, "_os_threads", lambda: 1)
     assert portfolio._fork_is_safe(cpu)
     assert not portfolio._fork_is_safe(cpu.with_changes(device="cuda"))
     assert not portfolio._fork_is_safe(cpu.with_changes(device="hybrid"))
     monkeypatch.setattr(threading, "active_count", lambda: 3)
+    assert not portfolio._fork_is_safe(cpu)
+    monkeypatch.setattr(threading, "active_count", lambda: 1)
+    monkeypatch.setattr(portfolio, "_os_threads", lambda: 12)  # hilos de HiGHS u OpenBLAS
     assert not portfolio._fork_is_safe(cpu)
 
 
@@ -116,3 +120,11 @@ def test_numba_kernels_are_warmed_up_in_the_parent(monkeypatch: pytest.MonkeyPat
     assert calls == [1]
     run_portfolio(chain(), [PRESETS["gbfs-ff"].with_changes(device="python")])  # sin Numba
     assert calls == [1]
+
+
+def test_members_started_in_the_background_are_waited_for(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Si ningún miembro puede usar fork (p. ej. PyTorch ya cargado), todos arrancan desde
+    un hilo: el portfolio no puede darlos por terminados mientras arrancan."""
+    monkeypatch.setattr(portfolio, "_fork_is_safe", lambda config: False)
+    result = run_portfolio(chain(), [PRESETS["gbfs-ff"], PRESETS["lazy-ff-pref"]], time_limit=60)
+    assert result.best.solved

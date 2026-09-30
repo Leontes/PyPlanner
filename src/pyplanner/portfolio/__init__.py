@@ -15,8 +15,9 @@ Arranque de los procesos:
     usar en un proceso creado con ``fork`` (el proceso padre nunca inicializa CUDA). Los
     demás miembros siguen arrancando con ``fork``: así un miembro con GPU no retrasa a los
     de CPU, que resuelven las tareas pequeñas en décimas de segundo;
-  * para todos, si el proceso padre tiene varios hilos o ya ha cargado PyTorch (que crea
-    los suyos), porque hacer ``fork`` de un proceso con varios hilos puede bloquear al hijo.
+  * para todos, si el proceso padre tiene varios hilos (de Python o del sistema, como los
+    de HiGHS u OpenBLAS tras resolver un programa lineal) o ya ha cargado PyTorch, porque
+    hacer ``fork`` de un proceso con varios hilos puede bloquear al hijo.
 
   La señal de parada y la cola de resultados se crean con ``spawn`` si algún miembro lo
   usa: sus semáforos tienen nombre y sirven también a los hijos de ``fork`` (al revés no).
@@ -44,7 +45,7 @@ from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
 #: Segundos que se espera a que un proceso cancelado termine antes de forzarlo.
 JOIN_TIMEOUT = 2.0
 #: Lo mismo cuando ya hay un plan: basta con que los demás paren pronto.
-WINNER_JOIN_TIMEOUT = 0.2
+WINNER_JOIN_TIMEOUT = 0.05
 
 #: Cada cuántos segundos se consulta la cola de resultados.
 POLL_INTERVAL = 0.05
@@ -108,11 +109,15 @@ def run_portfolio(
         for c in configs
     }
     start = time.perf_counter()
-    # Primero los de fork, que arrancan al instante.
-    for _name, process in sorted(
-        processes.items(), key=lambda item: contexts[item[0]].get_start_method() != "fork"
-    ):
-        process.start()
+    # Los de fork arrancan al instante. Los de spawn (GPU) se arrancan en un hilo: hay que
+    # serializarles la tarea, y mientras tanto el padre ya puede recoger los resultados de
+    # los demás (en las tareas pequeñas, un miembro de CPU gana antes de que acaben).
+    slow = [p for n, p in processes.items() if contexts[n].get_start_method() != "fork"]
+    for name, process in processes.items():
+        if contexts[name].get_start_method() == "fork":
+            process.start()
+    starter = threading.Thread(target=lambda: [p.start() for p in slow], daemon=True)
+    starter.start()
 
     results: dict[str, SearchResult] = {}
     winner: SearchResult | None = None
@@ -124,7 +129,7 @@ def run_portfolio(
             try:
                 result: SearchResult = results_queue.get(timeout=POLL_INTERVAL)
             except queue.Empty:
-                if not any(p.is_alive() for p in processes.values()):
+                if not starter.is_alive() and not any(p.is_alive() for p in processes.values()):
                     break  # todos han terminado; lo que quede en la cola se recoge abajo
                 continue
             results[result.config_name] = result
@@ -132,6 +137,7 @@ def run_portfolio(
                 winner = result
     finally:
         stop.set()
+        starter.join()
         # Con un ganador, los demás solo pueden aportar resultados descartables: se les da
         # un margen corto (un miembro con GPU puede estar aún importando PyTorch).
         _shutdown(processes.values(), WINNER_JOIN_TIMEOUT if winner else JOIN_TIMEOUT)
@@ -206,7 +212,23 @@ def _fork_is_safe(config: SearchConfig) -> bool:
         and config.device not in ("cuda", "hybrid")
         and "torch" not in sys.modules
         and threading.active_count() == 1
+        and _os_threads() <= 1
     )
+
+
+def _os_threads() -> int:
+    """Hilos del proceso según el sistema operativo (no solo los de Python): bibliotecas
+    como HiGHS (programación lineal) u OpenBLAS crean los suyos, y un ``fork`` con ellos
+    vivos puede bloquear al hijo. Pasa si el proceso ya ha resuelto una tarea con
+    programación lineal (al usar el planificador como librería). Sin ``/proc``, 1."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("Threads:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 1
 
 
 def _shutdown(processes: Any, timeout: float) -> None:

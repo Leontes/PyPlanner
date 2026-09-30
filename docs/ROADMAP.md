@@ -8,7 +8,7 @@ proyecto avanza en 6 iteraciones y cada una amplía el lenguaje que se acepta:
 |-----------|----------|---------|--------|
 | 1 | STRIPS | v0.1 | ✅ |
 | 2 | PDDL 1.2 (subconjunto ADL) | v0.2 | ✅ |
-| 3 | PDDL 2.1 (3a numérico con `:action-costs`, 3b temporal) | v0.3 | |
+| 3 | PDDL 2.1 (3a numérico con `:action-costs`, 3b temporal) | v0.3 | ✅ |
 | 4 | PDDL 2.2 (predicados derivados y TIL) | v0.4 | |
 | 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | |
 | 6 | PDDL+ (procesos y eventos) | v0.6 | |

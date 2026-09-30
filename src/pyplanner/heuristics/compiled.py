@@ -355,7 +355,9 @@ def _dijkstra(
         for p in range(num_pending):
             a = pending_triggers[p]
             acc = accumulated[a]
-            lev = action_level[a] + 1
+            # Los niveles solo deciden los soportadores (h_FF); sin ellos (h_add, h_max) se
+            # ordena solo por coste, que es más barato y da los mismos valores.
+            lev = action_level[a] + 1 if track else 0
             base = cost[a]
             # Oferta a cada efecto; como ``offer`` en la referencia. Va escrita aquí y no en
             # una función: pasar tantos arrays en cada llamada multiplicaba el tiempo.
@@ -399,7 +401,7 @@ def _dijkstra(
                     accumulated[a] = c
             else:
                 accumulated[a] += c
-            if lev > action_level[a]:
+            if track and lev > action_level[a]:
                 action_level[a] = lev
             if unsatisfied[a] == 0:
                 pending_triggers[num_pending] = a

@@ -42,9 +42,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-from scipy.optimize import linprog
-
 from pyplanner.grounding.numeric import (
     Const,
     NumericAssignment,
@@ -403,7 +400,13 @@ def solve(
     extra: Sequence[Row] = (),
 ) -> dict[Symbol, float] | None:
     """Resuelve el programa (con las restricciones de la red temporal ``out`` y las filas
-    ``extra``). Devuelve el valor de cada incógnita, o ``None`` si no tiene solución."""
+    ``extra``). Devuelve el valor de cada incógnita, o ``None`` si no tiene solución.
+
+    SciPy se importa aquí y no al cargar el módulo: cuesta un cuarto de segundo, y solo lo
+    necesitan las tareas con variables lineales."""
+    import numpy as np
+    from scipy.optimize import linprog
+
     steps = len(out)
     symbols: dict[Symbol, int] = {("t", j): j for j in range(steps)}
     for variable, chain in state.chains.items():

@@ -61,6 +61,8 @@ from pyplanner.search.successors import create_successor_generator
 STOP_CHECK_INTERVAL = 32
 
 _NO_PARENT = -1
+#: Acciones útiles de un nodo sin ellas (compartido, para no crear un conjunto por nodo).
+_NO_PREFERRED: frozenset[int] = frozenset()
 
 #: Entrada de una cola: (prioridad, desempate, datos del nodo).
 _Entry = tuple[tuple[float, ...], float, tuple[int, ...]]
@@ -216,6 +218,9 @@ class _BestFirstSearch:
         self._iterations = 0
         self._message = ""
         self.batch_size = config.batch_size
+        # En las tareas clásicas se aplica la acción directamente (una llamada menos por
+        # sucesor); las temporales redefinen GroundTask.apply.
+        self._direct_apply = type(task).apply is GroundTask.apply
         self._best_h = float("inf")
         self._stalled = 0
 
@@ -229,24 +234,30 @@ class _BestFirstSearch:
         self.h.append(None)
         self.parent.append(parent)
         self.action.append(action)
-        self.preferred.append(frozenset())
+        self.preferred.append(_NO_PREFERRED)
         self.closed.append(False)
-        self.width.append(0)
+        if self.novelty is not None:
+            self.width.append(0)
         return node
 
     def evaluate(self, nodes: list[int]) -> list[Evaluation]:
         """Evalúa los nodos en un solo lote y guarda h y las acciones útiles."""
         if not nodes:
             return []
-        evaluations = self.heuristic.evaluate_batch([self.states[n] for n in nodes])
-        self.stats.evaluated += len(nodes)
-        self.stats.evaluation_batches += 1
-        self.stats.largest_batch = max(self.stats.largest_batch, len(nodes))
+        states = self.states
+        evaluations = self.heuristic.evaluate_batch([states[n] for n in nodes])
+        stats = self.stats
+        stats.evaluated += len(nodes)
+        stats.evaluation_batches += 1
+        if len(nodes) > stats.largest_batch:
+            stats.largest_batch = len(nodes)
         if self.config.adaptive_batch:
             self.adapt(evaluations)
+        h, preferred = self.h, self.preferred
         for node, evaluation in zip(nodes, evaluations, strict=True):
-            self.h[node] = evaluation.value
-            self.preferred[node] = frozenset(evaluation.preferred)
+            h[node] = evaluation.value
+            if evaluation.preferred:
+                preferred[node] = frozenset(evaluation.preferred)
         return evaluations
 
     def adapt(self, evaluations: list[Evaluation]) -> None:
@@ -369,7 +380,11 @@ class EagerSearch(_BestFirstSearch):
                 useful = self.preferred[node]
                 for action in self.successors(state):
                     self.stats.generated += 1
-                    successor = self.task.apply(state, action)
+                    successor = (
+                        action.apply(state)
+                        if self._direct_apply
+                        else self.task.apply(state, action)
+                    )
                     if successor is None:
                         continue  # efecto numérico indefinido: la acción no se puede aplicar
                     new_g = g + action.cost
@@ -406,7 +421,8 @@ class EagerSearch(_BestFirstSearch):
         h = self.h[node]
         assert h is not None
         g = self.g[node]
-        self.open.push(self.priority(g, h, self.width[node]), (node,), preferred, (h, g))
+        width = self.width[node] if self.novelty is not None else 0
+        self.open.push(self.priority(g, h, width), (node,), preferred, (h, g))
 
     def pop_batch(self) -> list[int] | int | None:
         """Saca hasta ``batch_size`` nodos por expandir.
@@ -464,7 +480,12 @@ class LazySearch(_BestFirstSearch):
                     break
                 parent, action_index = item
                 action = self.task.actions[action_index]
-                successor = self.task.apply(self.states[parent], action)
+                parent_state = self.states[parent]
+                successor = (
+                    action.apply(parent_state)
+                    if self._direct_apply
+                    else self.task.apply(parent_state, action)
+                )
                 if successor is None or successor in self.index:
                     continue
                 children.append(
