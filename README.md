@@ -41,7 +41,7 @@ claro.
 - **Rendimiento:** heurísticas y generación de sucesores compiladas con Numba, con
   resultados idénticos a la implementación de referencia en Python. También hay evaluación
   por lotes en GPU con PyTorch.
-- **Portfolio paralelo:** conjuntos de búsquedas predefinidos para 1, 2, 4 y 5 núcleos;
+- **Portfolio paralelo:** conjuntos de búsquedas predefinidos para 1, 2, 4, 5 y 6 núcleos;
   gana la primera que encuentra un plan.
 - **Planes** en formato IPC (el que lee VAL) o en JSON.
 
@@ -75,7 +75,7 @@ pip install torch --index-url https://download.pytorch.org/whl/cu126
 
 ```bash
 # Buscar un plan: el plan sale por la salida estándar y las estadísticas por la de error
-pyplanner solve dominio.pddl problema.pddl                 # portfolio de 5 núcleos (o menos)
+pyplanner solve dominio.pddl problema.pddl                 # portfolio de 6 núcleos (o menos)
 pyplanner solve -j 1 -t 60 dominio.pddl problema.pddl       # un solo núcleo, 60 s
 pyplanner solve -c astar-hmax dominio.pddl problema.pddl    # plan óptimo
 pyplanner solve -f json -o plan.json dominio.pddl problema.pddl

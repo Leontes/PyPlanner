@@ -339,7 +339,7 @@ Lipovetzky y Geffner (2012, 2017); código en `search/novelty.py` y `search/engi
 ## Portfolio
 
 **Qué búsquedas se lanzan.** Depende del número de núcleos (`-j N`). Hay un portfolio
-predefinido para 1, 2, 4 y 5 núcleos (`PORTFOLIOS` en `search/config.py`), y cada uno
+predefinido para 1, 2, 4, 5 y 6 núcleos (`PORTFOLIOS` en `search/config.py`), y cada uno
 contiene al anterior:
 
 | Núcleos | Búsquedas | Qué se añade |
@@ -348,10 +348,11 @@ contiene al anterior:
 | 2 | + `lazy-ff-pref` | la más rápida en tareas grandes y fáciles |
 | 4 | + `lazy-ff-pref-tb`, `gbfs-goalcount-rnd` | la perezosa con exploración, y la más barata y aleatoria |
 | 5 | + `gbfs-ff-pref-tb` | GBFS con exploración por tipos, la más rápida en slitherlink |
+| 6 | + `wastar-add-3` | WA*, que tiende a planes más cortos: más diversidad con CPU de sobra |
 
 - Con otro número de núcleos se usa el portfolio más grande que quepa: con 3, el de 2;
-  con más de 5, el de 5. Nunca hay más búsquedas que núcleos.
-- **Por defecto se usan 5 núcleos**, para la máxima robustez, pero limitados a los que
+  con más de 6, el de 6. Nunca hay más búsquedas que núcleos.
+- **Por defecto se usan 6 núcleos**, para la máxima robustez, pero limitados a los que
   tenga la máquina (`os.sched_getaffinity`). En un sistema mononúcleo se usa el
   portfolio de 1 sin necesidad de indicarlo.
 - Con `-c` se eligen las configuraciones a mano. Si se piden más configuraciones que
@@ -373,7 +374,7 @@ contiene al anterior:
 
 ```bash
 pyplanner configs                                   # configuraciones y portfolios
-pyplanner solve dominio.pddl problema.pddl          # portfolio de 5 núcleos (o menos)
+pyplanner solve dominio.pddl problema.pddl          # portfolio de 6 núcleos (o menos)
 pyplanner solve -j 1 dominio.pddl problema.pddl     # un solo núcleo
 pyplanner solve -j 2 -t 60 dominio.pddl p.pddl      # 2 núcleos, 60 s como máximo
 pyplanner solve -m 4000 dominio.pddl p.pddl         # 4000 MB en total para las búsquedas

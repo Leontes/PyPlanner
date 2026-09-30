@@ -218,7 +218,8 @@ máximo soportado es una constante que se sube al cerrar cada iteración.
     admite `batch_size`;
   - salida del plan en formato IPC (para VAL) y en JSON;
   - **portfolio paralelo** con varias configuraciones, con portfolios predefinidos para
-    1, 2, 4 y 5 núcleos (`-j N`; por defecto 5, o los que tenga la máquina).
+    1, 2, 4, 5 y 6 núcleos (`-j N`; por defecto 6, o los que tenga la máquina; el de 6
+    desde la iteración 3b).
 - **Tests:** ✅ tier 1 (blocksworld y gripper) resuelto y validado con VAL, con el
   portfolio de cada número de núcleos. También hay problemas sin solución hechos
   a mano, tests del portfolio y tests de equivalencia entre la referencia y PyTorch.

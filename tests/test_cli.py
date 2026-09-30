@@ -78,7 +78,9 @@ def test_solve_prints_ipc_plan(task: tuple[Path, Path], capsys: pytest.CaptureFi
     assert "Resultado: solved (bfws-ff-pref)" in captured.err
 
 
-@pytest.mark.parametrize(("cores", "expected"), [(1, 1), (2, 2), (3, 2), (4, 4), (5, 5), (9, 5)])
+@pytest.mark.parametrize(
+    ("cores", "expected"), [(1, 1), (2, 2), (3, 2), (4, 4), (5, 5), (6, 6), (9, 6)]
+)
 def test_solve_selects_portfolio_by_cores(
     task: tuple[Path, Path], capsys: pytest.CaptureFixture[str], cores: int, expected: int
 ) -> None:
@@ -150,7 +152,7 @@ def test_solve_limit(task: tuple[Path, Path]) -> None:
 def test_configs_lists_presets(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["configs"]) == 0
     out = capsys.readouterr().out
-    assert "bfws-ff-pref" in out and "[núcleos 1,2,4,5]" in out
+    assert "bfws-ff-pref" in out and "[núcleos 1,2,4,5,6]" in out
     assert "exploración type-based" in out
     assert "astar-hmax" in out and "óptima" in out
     assert "1: bfws-ff-pref" in out

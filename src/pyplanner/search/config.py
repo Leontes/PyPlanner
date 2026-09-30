@@ -169,7 +169,9 @@ PRESETS: dict[str, SearchConfig] = {
 #: * 2 núcleos: + la búsqueda perezosa, la más rápida en tareas grandes y fáciles;
 #: * 4 núcleos: + la perezosa con exploración por tipos (otra semilla) y la más barata y
 #:   aleatoria (objetivos pendientes);
-#: * 5 núcleos: + GBFS con exploración por tipos, la más rápida en slitherlink.
+#: * 5 núcleos: + GBFS con exploración por tipos, la más rápida en slitherlink;
+#: * 6 núcleos: + WA* con h_add, que no mejora los tiempos de las pruebas pero tiende a
+#:   planes más cortos: diversidad a cambio de un núcleo más, que suele sobrar.
 PORTFOLIOS: dict[int, tuple[str, ...]] = {
     1: ("bfws-ff-pref",),
     2: ("bfws-ff-pref", "lazy-ff-pref"),
@@ -181,10 +183,18 @@ PORTFOLIOS: dict[int, tuple[str, ...]] = {
         "gbfs-goalcount-rnd",
         "gbfs-ff-pref-tb",
     ),
+    6: (
+        "bfws-ff-pref",
+        "lazy-ff-pref",
+        "lazy-ff-pref-tb",
+        "gbfs-goalcount-rnd",
+        "gbfs-ff-pref-tb",
+        "wastar-add-3",
+    ),
 }
 
 #: Núcleos que usa el planificador si no se indica otra cosa (máxima robustez).
-DEFAULT_CORES = 5
+DEFAULT_CORES = 6
 
 #: Portfolio por defecto (el de :data:`DEFAULT_CORES` núcleos).
 DEFAULT_PORTFOLIO = PORTFOLIOS[DEFAULT_CORES]
