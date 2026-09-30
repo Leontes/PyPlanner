@@ -40,6 +40,8 @@ BLOCKS = tier1("blocksworld", "p02")
 )
 def test_every_preset_finds_a_valid_plan(task: GroundTask, name: str) -> None:
     result = search(task, PRESETS[name])
+    if not PRESETS[name].is_complete and result.status is SearchStatus.FAILED:
+        return  # IW: problemas de más anchura que su k
     assert result.status is SearchStatus.SOLVED
     assert result.plan is not None
     assert simulate(task, result.plan) is None
@@ -234,3 +236,33 @@ def test_lazy_search_dead_end_and_limits() -> None:
     assert search(unreachable(), lazy).status is SearchStatus.UNSOLVABLE
     limited = search(GRIPPER, lazy.with_changes(max_expansions=1))
     assert limited.status is SearchStatus.LIMIT_REACHED
+
+
+# --- Límite de memoria ----------------------------------------------------------------
+
+
+def test_memory_limit_stops_the_search() -> None:
+    """Con un límite menor que la memoria que ya usa el proceso, para en la primera
+    comprobación."""
+    result = search(chain(), PRESETS["gbfs-ff"].with_changes(max_memory=1))
+    assert result.status is SearchStatus.LIMIT_REACHED
+    assert "límite de memoria" in result.message
+
+
+def test_invalid_memory_limit() -> None:
+    with pytest.raises(ConfigError, match="max_memory"):
+        PRESETS["gbfs-ff"].with_changes(max_memory=0)
+
+
+def test_solve_applies_a_memory_limit() -> None:
+    from pyplanner.loader import load_domain, load_problem
+    from pyplanner.pddl import parse_domain, parse_problem
+    from pyplanner.planner import solve
+    from tests.tasks import CHAIN_DOMAIN, CHAIN_PROBLEM
+
+    domain = load_domain(parse_domain(CHAIN_DOMAIN))
+    problem = load_problem(parse_problem(CHAIN_PROBLEM), domain)
+    assert solve(domain, problem, [PRESETS["gbfs-ff"]], memory_limit=1).status is (
+        SearchStatus.LIMIT_REACHED
+    )
+    assert solve(domain, problem, [PRESETS["gbfs-ff"]]).status is SearchStatus.SOLVED

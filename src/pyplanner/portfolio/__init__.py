@@ -18,7 +18,7 @@ Arranque de los procesos:
 
 Resultado: el plan del ganador, o, si ninguno lo encuentra, el estado más informativo.
 Por orden de prioridad: ``UNSOLVABLE`` si alguno lo ha demostrado; si no, ``LIMIT_REACHED``;
-si no, ``ERROR``.
+si no, ``FAILED`` (una búsqueda incompleta que se rindió); si no, ``ERROR``.
 """
 
 import multiprocessing as mp
@@ -201,7 +201,12 @@ def _shutdown(processes: Any) -> None:
 
 
 def _most_informative(results: dict[str, SearchResult]) -> SearchResult:
-    for status in (SearchStatus.UNSOLVABLE, SearchStatus.LIMIT_REACHED, SearchStatus.ERROR):
+    for status in (
+        SearchStatus.UNSOLVABLE,
+        SearchStatus.LIMIT_REACHED,
+        SearchStatus.FAILED,
+        SearchStatus.ERROR,
+    ):
         for result in results.values():
             if result.status is status:
                 return result

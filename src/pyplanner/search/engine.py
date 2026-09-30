@@ -22,6 +22,16 @@ ellas. Como todos los sucesores están en la cola normal, la búsqueda sigue sie
 cola que saca un nodo al azar de un tipo (h, g) al azar (ver :class:`_TypeBuckets`). Ayuda
 en dominios con mesetas o muchos callejones sin salida, donde la búsqueda voraz se atasca.
 
+**Novedad** (``novelty``, solo con evaluación inmediata; ver
+:mod:`pyplanner.search.novelty`):
+
+* **BFWS** (GBFS con novedad): la prioridad es (novedad, h), con la novedad medida entre
+  los estados del mismo valor h. Entre estados igual de buenos, se prefieren los que hacen
+  cierto algo nuevo. Es completa: no se poda nada.
+* **IW(k)** (``algorithm="iw"``): búsqueda en anchura que descarta los estados de novedad
+  mayor que k. Es incompleta: si agota la cola habiendo podado algo, termina con
+  :attr:`SearchStatus.FAILED`, no con ``UNSOLVABLE``.
+
 **Callejones sin salida.** Los estados con valor heurístico infinito se descartan. Es
 seguro con las heurísticas disponibles, porque solo dan infinito si el objetivo es
 inalcanzable incluso en la relajación.
@@ -36,6 +46,8 @@ from collections.abc import Iterator
 from pyplanner.grounding import GroundTask, State
 from pyplanner.heuristics import Evaluation, Heuristic, create_heuristic
 from pyplanner.search.config import SearchConfig
+from pyplanner.search.memory import resident_memory_mb
+from pyplanner.search.novelty import NoveltyTable, negated_facts
 from pyplanner.search.result import SearchResult, SearchStatistics, SearchStatus, StopSignal
 from pyplanner.search.successors import create_successor_generator
 
@@ -188,8 +200,15 @@ class _BestFirstSearch:
         self.action: list[int] = []
         self.preferred: list[frozenset[int]] = []
         self.closed: list[bool] = []
+        self.width: list[int] = []
+        self.novelty = (
+            NoveltyTable(config.novelty, len(task.facts), negated_facts(task))
+            if config.novelty
+            else None
+        )
         self._start = 0.0
         self._iterations = 0
+        self._message = ""
 
     # --- Nodos ----------------------------------------------------------------------
 
@@ -203,6 +222,7 @@ class _BestFirstSearch:
         self.action.append(action)
         self.preferred.append(frozenset())
         self.closed.append(False)
+        self.width.append(0)
         return node
 
     def evaluate(self, nodes: list[int]) -> list[Evaluation]:
@@ -217,10 +237,31 @@ class _BestFirstSearch:
             self.preferred[node] = frozenset(evaluation.preferred)
         return evaluations
 
-    def priority(self, g: float, h: float) -> tuple[float, ...]:
+    def measure_novelty(self, node: int) -> bool:
+        """Calcula la novedad del nodo (si la búsqueda la usa). Devuelve ``False`` si IW lo
+        poda."""
+        if self.novelty is None:
+            return True
+        h = self.h[node]
+        partition = None if self.config.algorithm == "iw" else h
+        width = self.novelty.novelty(self.states[node], partition)
+        self.width[node] = width
+        if self.config.algorithm == "iw" and width > self.config.novelty:
+            self.stats.pruned += 1
+            return False
+        return True
+
+    def exhausted(self) -> SearchResult:
+        """La cola se ha agotado: no hay plan, salvo que se haya podado algo (IW)."""
+        status = SearchStatus.FAILED if self.stats.pruned else SearchStatus.UNSOLVABLE
+        return self.finish(status)
+
+    def priority(self, g: float, h: float, width: int = 0) -> tuple[float, ...]:
         algorithm = self.config.algorithm
+        if algorithm == "iw":
+            return (g,)
         if algorithm == "gbfs":
-            return (h,)
+            return (width, h) if self.novelty is not None else (h,)
         if algorithm == "astar":
             return (g + h, h)
         return (g + self.config.weight * h, h)
@@ -244,19 +285,23 @@ class _BestFirstSearch:
             return SearchStatus.LIMIT_REACHED
         if config.max_time is not None and time.perf_counter() - self._start >= config.max_time:
             return SearchStatus.LIMIT_REACHED
-        if (
-            self.stop is not None
-            and self._iterations % STOP_CHECK_INTERVAL == 1
-            and self.stop.is_set()
-        ):
-            return SearchStatus.CANCELLED
+        if self._iterations % STOP_CHECK_INTERVAL == 1:
+            if self.stop is not None and self.stop.is_set():
+                return SearchStatus.CANCELLED
+            if config.max_memory is not None:
+                used = resident_memory_mb()
+                if used is not None and used > config.max_memory:
+                    self._message = (
+                        f"límite de memoria: {used:.0f} MB usados (máximo {config.max_memory})"
+                    )
+                    return SearchStatus.LIMIT_REACHED
         return None
 
     def finish(
         self, status: SearchStatus, plan: tuple[int, ...] | None = None, cost: float | None = None
     ) -> SearchResult:
         self.stats.time = time.perf_counter() - self._start
-        return SearchResult(status, plan, cost, self.stats, self.config.name)
+        return SearchResult(status, plan, cost, self.stats, self.config.name, self._message)
 
     def run(self) -> SearchResult:
         self._start = time.perf_counter()
@@ -274,8 +319,9 @@ class EagerSearch(_BestFirstSearch):
         [evaluation] = self.evaluate([root])
         if evaluation.is_dead_end:
             return self.finish(SearchStatus.UNSOLVABLE)
+        self.measure_novelty(root)
         self.push(root, preferred=False)
-        reopen = self.config.algorithm != "gbfs"
+        reopen = self.config.algorithm in ("astar", "wastar")
 
         while True:
             reason = self.interrupted()
@@ -283,7 +329,7 @@ class EagerSearch(_BestFirstSearch):
                 return self.finish(reason)
             batch = self.pop_batch()
             if batch is None:
-                return self.finish(SearchStatus.UNSOLVABLE)
+                return self.exhausted()
             if isinstance(batch, int):
                 return self.extract_plan(batch)
 
@@ -323,6 +369,8 @@ class EagerSearch(_BestFirstSearch):
                 if evaluation.is_dead_end:
                     self.stats.dead_ends += 1
                     self.closed[child] = True
+                elif not self.measure_novelty(child):
+                    self.closed[child] = True
                 else:
                     self.push(child, pending_preferred[child])
 
@@ -330,7 +378,7 @@ class EagerSearch(_BestFirstSearch):
         h = self.h[node]
         assert h is not None
         g = self.g[node]
-        self.open.push(self.priority(g, h), (node,), preferred, (h, g))
+        self.open.push(self.priority(g, h, self.width[node]), (node,), preferred, (h, g))
 
     def pop_batch(self) -> list[int] | int | None:
         """Saca hasta ``batch_size`` nodos por expandir.

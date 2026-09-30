@@ -23,6 +23,10 @@ from pyplanner.loader.ast import Domain, Problem
 from pyplanner.plan import Plan, simulate
 from pyplanner.portfolio import PortfolioResult, run_portfolio
 from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
+from pyplanner.search.memory import available_memory_mb
+
+#: Fracción de la memoria disponible que usa el planificador si no se le da un límite.
+DEFAULT_MEMORY_FRACTION = 0.8
 
 
 def available_cores() -> int:
@@ -63,8 +67,16 @@ def solve(
     problem: Problem,
     configs: Sequence[SearchConfig],
     time_limit: float | None = None,
+    memory_limit: float | None = None,
 ) -> PlanningResult:
     """Resuelve una tarea con una configuración o, si hay varias, con un portfolio paralelo.
+
+    Args:
+        time_limit: límite de tiempo en segundos para cada búsqueda.
+        memory_limit: memoria total (MB) que pueden usar las búsquedas; se reparte a
+            partes iguales entre los miembros del portfolio. Por defecto, el 80% de la
+            memoria disponible, para que una búsqueda larga nunca agote la de la máquina.
+            Las configuraciones con ``max_memory`` propio lo conservan.
 
     Raises:
         InvalidPlanError: si el plan encontrado no supera la validación interna.
@@ -74,6 +86,15 @@ def solve(
     start = time.perf_counter()
     task = ground(domain, problem)
     grounding_time = time.perf_counter() - start
+
+    if memory_limit is None:
+        available = available_memory_mb()
+        memory_limit = None if available is None else available * DEFAULT_MEMORY_FRACTION
+    if memory_limit is not None:
+        share = max(1, int(memory_limit / len(configs)))
+        configs = [
+            c if c.max_memory is not None else c.with_changes(max_memory=share) for c in configs
+        ]
 
     portfolio = None
     if len(configs) == 1:

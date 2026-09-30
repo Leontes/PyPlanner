@@ -83,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
         "menos); determina qué búsquedas se lanzan",
     )
     solve_cmd.add_argument("-t", "--time-limit", type=float, help="límite de tiempo en segundos")
+    solve_cmd.add_argument(
+        "-m",
+        "--memory-limit",
+        type=float,
+        help="memoria total en MB para las búsquedas, repartida entre ellas "
+        "(por defecto, el 80%% de la disponible)",
+    )
     solve_cmd.add_argument("--batch-size", type=int, help="tamaño de lote de evaluación")
     solve_cmd.add_argument(
         "--device",
@@ -181,7 +188,9 @@ def _solve(args: argparse.Namespace) -> int:
 
     domain = read_domain(args.domain)
     problem = read_problem(args.problem, domain)
-    result = solve(domain, problem, configs, time_limit=args.time_limit)
+    result = solve(
+        domain, problem, configs, time_limit=args.time_limit, memory_limit=args.memory_limit
+    )
     if not args.quiet:
         _report(result)
 
@@ -229,7 +238,9 @@ def _report(result: PlanningResult) -> None:
     err(
         f"Expandidos {stats.expanded}, generados {stats.generated}, "
         f"evaluados {stats.evaluated} en {stats.evaluation_batches} lotes, "
-        f"callejones {stats.dead_ends}, tiempo {stats.time:.3f} s"
+        f"callejones {stats.dead_ends}"
+        + (f", podados por novedad {stats.pruned}" if stats.pruned else "")
+        + f", tiempo {stats.time:.3f} s"
     )
     if result.plan is not None:
         plan = result.plan

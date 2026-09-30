@@ -167,7 +167,7 @@ El portfolio se monta encima de todo eso.
 | Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional |
 | Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional |
 | Landmarks (h_LM) | heurística informada más potente | opcional |
-| Búsqueda por novedad (IW, BFWS) | salir de mesetas; diversidad en el portfolio | final de la iteración 3b |
+| Búsqueda por novedad (IW, BFWS) | salir de mesetas; diversidad en el portfolio | final de la iteración 3b ✅ |
 | HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
 | Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
 | Búsqueda completa en GPU | expansión masiva en paralelo | descartado (ver abajo) |
@@ -318,9 +318,10 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
     que dependen del estado;
   - efectos continuos lineales;
   - salida de planes temporales (`t: (acción) [d]`).
-- **Al final de la 3b (opcional, prevista):** búsqueda por **novedad** (*novelty*, IW y
-  BFWS; Lipovetzky y Geffner, 2012 y 2017), para incorporarla al portfolio a partir de ahí.
-  Es muy eficaz en dominios con mesetas, como slitherlink.
+- **Al final de la 3b (opcional):** ✅ búsqueda por **novedad** (IW y BFWS; Lipovetzky y
+  Geffner, 2012 y 2017). BFWS con h_FF y acciones útiles es la mejor configuración
+  individual en las pruebas y entra en todos los portfolios (ver
+  [motor-busqueda.md](motor-busqueda.md#búsqueda-por-novedad)).
 - **Al final de la 3b (opcional, prevista):** **lotes adaptativos y evaluación híbrida**
   (Numba en CPU / PyTorch en GPU); ver "Trabajo opcional" para las preguntas que hay que
   estudiar y el punto de partida medido. Se compara con la búsqueda por novedad, que

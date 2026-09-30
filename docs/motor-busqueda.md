@@ -133,6 +133,11 @@ cada paso. El código está en `grounding/temporal.py`.
   compara solo por la parte lógica (memoización al estilo de POPF), así que la detección
   de repetidos funciona como en la planificación clásica. Es incompleta en casos raros:
   un estado repetido con otra planificación en el tiempo se descarta.
+- **Línea temporal bajo demanda.** Al generar un sucesor se comprueba su línea temporal,
+  pero no se guarda: el estado solo recuerda de dónde viene y la recalcula al expandirse.
+  La búsqueda genera muchos más estados de los que expande, y cada línea temporal crece
+  con la longitud del plan: guardarlas todas costaba de 10 a 14 KB por estado en las
+  tareas grandes (3,5 GB en zenotravel 17 con solo 3000 expansiones), y así, de 2 a 4.
 - **Órdenes.** Para cada hecho y variable se guarda el último paso que lo cambió y los que
   lo han leído desde que tiene su valor. Un paso nuevo va, con una separación ε, después
   del último cambio de lo que lee o modifica y de los que leyeron el valor que cambia. Los
@@ -261,7 +266,8 @@ desarrollo, en tareas aleatorias con muchos empates y costes 0.
 
 `SearchConfig` define por completo una búsqueda y se valida al crearla. Campos:
 
-- `algorithm`: `gbfs`, `astar` o `wastar` (con `weight`);
+- `algorithm`: `gbfs`, `astar`, `wastar` (con `weight`) o `iw` (ver "Búsqueda por
+  novedad");
 - `heuristic`;
 - `preferred_operators`: dos colas alternas, la normal y la de acciones útiles;
 - `lazy`: evaluación perezosa; no se puede usar con A*;
@@ -270,25 +276,29 @@ desarrollo, en tareas aleatorias con muchos empates y costes 0.
   2014) que se alterna con las demás: saca un tipo (h, g) al azar y un nodo al azar de
   ese tipo. Evita que la búsqueda voraz se atasque en mesetas y zonas con muchos
   callejones sin salida;
+- `novelty`: anchura de la novedad (0, 1 o 2; ver "Búsqueda por novedad");
 - `batch_size`;
 - `device`: `auto` (por defecto), `python`, `numba`, `cpu` o `cuda` (ver arriba);
-- `max_time` y `max_expansions`.
+- `max_time`, `max_expansions` y `max_memory` (MB de memoria residente del proceso; se
+  consulta cada 32 iteraciones leyendo `/proc/self/statm`).
 
 Garantías:
 
 - **Óptimo:** A* con `blind` o `hmax` devuelve planes óptimos, también con lotes. En la
   búsqueda inmediata, un objetivo solo se acepta si es el primero que sale de la cola en
   su lote.
-- **Completo:** todas las configuraciones lo son. Los callejones sin salida que se
-  descartan son estados desde los que el objetivo es inalcanzable incluso en la
-  relajación.
+- **Completo:** todas las configuraciones lo son salvo IW(k). Los callejones sin salida que
+  se descartan son estados desde los que el objetivo es inalcanzable incluso en la
+  relajación. IW poda estados por su novedad: si agota la cola habiendo podado alguno,
+  termina con `failed` (sin plan, pero sin demostrar que no lo haya), nunca con
+  `unsolvable`.
 - **Cancelable:** `search(..., stop=evento)` consulta el evento periódicamente.
 
 Configuraciones predefinidas (`pyplanner configs`):
 
 | Nombre | Configuración | Notas |
 |--------|---------------|-------|
-| `gbfs-ff-pref-tb` | GBFS + h_FF + acciones útiles + exploración por tipos | la de 1 núcleo: la más robusta |
+| `gbfs-ff-pref-tb` | GBFS + h_FF + acciones útiles + exploración por tipos | la de 1 núcleo hasta la iteración 3b |
 | `gbfs-ff-pref` | GBFS + h_FF + acciones útiles | |
 | `lazy-ff-pref` | GBFS perezosa + h_FF + acciones útiles | evalúa muchos menos estados |
 | `lazy-ff-pref-tb` | la anterior + exploración por tipos (semilla 1) | |
@@ -296,8 +306,35 @@ Configuraciones predefinidas (`pyplanner configs`):
 | `gbfs-add` | GBFS + h_add | |
 | `wastar-add-3` | WA* (w = 3) + h_add | |
 | `gbfs-goalcount-rnd` | GBFS + objetivos pendientes, desempate aleatorio | muy barata; aporta diversidad |
+| `bfws-ff-pref` | BFWS: GBFS con prioridad (novedad, h_FF) + acciones útiles | la de 1 núcleo: la mejor en las pruebas de la 3b |
+| `bfws-ff` | BFWS con h_FF | |
+| `bfws-goalcount` | BFWS con objetivos pendientes | sin heurística de relajación |
+| `iw1`, `iw2` | IW(1), IW(2) | incompletas; solo para problemas de anchura baja |
 | `astar-hmax` | A* + h_max | óptima |
 | `astar-blind` | A* ciega | óptima; coste uniforme |
+
+## Búsqueda por novedad
+
+Lipovetzky y Geffner (2012, 2017); código en `search/novelty.py` y `search/engine.py`.
+
+- **Novedad** de un estado respecto a los ya vistos: 1 si hace cierto un átomo que ningún
+  estado anterior tenía, 2 si forma un par de átomos nunca visto junto, 3 en otro caso.
+  Los átomos son los hechos ciertos; la falsedad de los hechos que aparecen negados en
+  alguna precondición, condición u objetivo (si el objetivo pide una luz apagada, apagarla
+  es algo nuevo: sin esto, IW(2) no resolvía `lights`); y, para las variables numéricas,
+  los pares (variable, valor). En las tareas temporales se excluyen los hechos internos
+  `running@a`: con miles de acciones durativas, hacían la novedad cara y poco
+  discriminante (de 33 a 29 instancias resueltas).
+- **Bitsets:** los átomos de un estado forman un entero. Para los pares, cada átomo guarda
+  el bitset de los átomos vistos junto a él, así que medir y registrar un estado cuesta
+  O(átomos del estado) operaciones sobre enteros, en C.
+- **BFWS** (`algorithm="gbfs"` con `novelty`): la prioridad es (novedad, h), con la
+  novedad medida entre los estados del mismo valor h. Entre estados igual de buenos para
+  la heurística, se expanden antes los que exploran algo nuevo. Es completa: no poda.
+- **IW(k)** (`algorithm="iw"`): búsqueda en anchura que descarta los estados de novedad
+  mayor que k. Resuelve de inmediato los problemas de anchura ≤ k (los que se pueden
+  resolver pasando solo por estados nuevos), pero es incompleta.
+- Solo con evaluación inmediata: la novedad de un estado se mide al generarlo.
 
 ## Portfolio
 
@@ -307,10 +344,10 @@ contiene al anterior:
 
 | Núcleos | Búsquedas | Qué se añade |
 |---------|-----------|--------------|
-| 1 | `gbfs-ff-pref-tb` | la configuración individual más robusta; se ejecuta en el propio proceso |
+| 1 | `bfws-ff-pref` | BFWS, la configuración individual más robusta y rápida; se ejecuta en el propio proceso |
 | 2 | + `lazy-ff-pref` | la más rápida en tareas grandes y fáciles |
-| 4 | + `gbfs-goalcount-rnd`, `lazy-ff-pref-tb` | la más barata y aleatoria, y la perezosa con exploración |
-| 5 | + `wastar-add-3` | WA*, que tiende a planes más cortos |
+| 4 | + `lazy-ff-pref-tb`, `gbfs-goalcount-rnd` | la perezosa con exploración, y la más barata y aleatoria |
+| 5 | + `gbfs-ff-pref-tb` | GBFS con exploración por tipos, la más rápida en slitherlink |
 
 - Con otro número de núcleos se usa el portfolio más grande que quepa: con 3, el de 2;
   con más de 5, el de 5. Nunca hay más búsquedas que núcleos.
@@ -339,6 +376,7 @@ pyplanner configs                                   # configuraciones y portfoli
 pyplanner solve dominio.pddl problema.pddl          # portfolio de 5 núcleos (o menos)
 pyplanner solve -j 1 dominio.pddl problema.pddl     # un solo núcleo
 pyplanner solve -j 2 -t 60 dominio.pddl p.pddl      # 2 núcleos, 60 s como máximo
+pyplanner solve -m 4000 dominio.pddl p.pddl         # 4000 MB en total para las búsquedas
 pyplanner solve -c astar-hmax dominio.pddl p.pddl   # plan óptimo
 pyplanner solve -c gbfs-add --device cuda --batch-size 64 dominio.pddl p.pddl
 pyplanner solve -f json -o plan.json dominio.pddl p.pddl
@@ -346,6 +384,11 @@ pyplanner solve -f json -o plan.json dominio.pddl p.pddl
 
 - El plan sale por la salida estándar y las estadísticas por la de error; `-q` las
   suprime.
+- **Límite de memoria** (`-m`, o `memory_limit` en `solve`): se reparte a partes iguales
+  entre los miembros del portfolio. Por defecto es el 80% de la memoria disponible, así
+  que una búsqueda larga nunca agota la de la máquina (una búsqueda voraz puede generar
+  cientos de miles de estados por segundo). Al llegar al límite, la búsqueda termina con
+  `limit_reached` y lo explica en el detalle.
 - Códigos de salida:
   - 0: plan encontrado;
   - 2: entrada no válida;
@@ -542,4 +585,33 @@ del tier 3 tardan milisegundos.
 - **Se descartó exigir la invariante ya en el inicio** (cuando los efectos `at start` no
   la tocan). Evita generar inicios que la rompen, pero empeoró la búsqueda: 46 resueltos
   frente a 47 y un 20% más de tiempo total.
+
+### Iteración 3b: búsqueda por novedad y portfolios
+
+Tiers 1 a 3 y driverlog y zenotravel temporales hasta la 17: 34 instancias, 60 s y
+2,5 GB por búsqueda. Número de instancias resueltas y tiempo total (las no resueltas
+cuentan 60 s):
+
+| Configuración | Resueltas | Tiempo |
+|---------------|-----------|--------|
+| `bfws-ff-pref` | 33 | 165 s |
+| `gbfs-ff-pref-tb` | 33 | 249 s |
+| `lazy-ff-pref` | 32 | 144 s |
+| `lazy-ff-pref-tb` | 31 | 202 s |
+| `wastar-add-3` | 28 | 451 s |
+| `gbfs-goalcount-rnd` | 26 | 469 s |
+| `bfws-ff` / `bfws-goalcount` | 30 / 26 | (medidas aparte) |
+| `iw1` / `iw2` | 6 / 9 | incompletas: solo anchura baja |
+
+- **BFWS con acciones útiles es la mejor configuración individual**, y sin acciones
+  útiles pierde casi toda la ventaja. Ni la exploración por tipos ni la novedad 1 (más
+  barata) la mejoran.
+- **Portfolios:** para cada número de núcleos se eligió, entre estas configuraciones, la
+  combinación con más instancias resueltas y menos tiempo (el del miembro más rápido de
+  cada instancia). BFWS entra en todos: con 1 núcleo, de 249 s a 165 s; con 2, de 119 s a
+  107 s; con 4 y 5, de 117 s a 101 s. WA* sale del de 5 (empataba con `gbfs-ff-pref-tb`,
+  que es la más rápida en slitherlink).
+- **Memoria.** La primera tanda, con 10 procesos, agotó la memoria de la máquina: una
+  búsqueda llegó a 10 GB en menos de 3 minutos. De ahí la línea temporal bajo demanda y el
+  límite de memoria (ver "Motor temporal" y "Uso desde la terminal").
 

@@ -271,6 +271,8 @@ def test_accelerated_matches_reference_on_adl(name: str, heuristic: str, device:
 def test_every_preset_solves_adl_tasks(name: str, preset: str) -> None:
     task = task_of(name)
     result = search(task, PRESETS[preset])
+    if not PRESETS[preset].is_complete and result.status is SearchStatus.FAILED:
+        return  # IW: problemas de más anchura que su k
     assert result.status is SearchStatus.SOLVED
     assert result.plan is not None and simulate(task, result.plan) is None
 

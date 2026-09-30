@@ -12,6 +12,8 @@ class SearchStatus(Enum):
     """Se ha encontrado un plan."""
     UNSOLVABLE = "unsolvable"
     """Se ha demostrado que no hay plan (se agotó el espacio de búsqueda)."""
+    FAILED = "failed"
+    """Una búsqueda incompleta (IW) ha terminado sin plan y sin demostrar que no lo haya."""
     LIMIT_REACHED = "limit_reached"
     """Se ha alcanzado un límite de tiempo o de expansiones."""
     CANCELLED = "cancelled"
@@ -35,6 +37,7 @@ class SearchStatistics:
     evaluated: int = 0
     reopened: int = 0
     dead_ends: int = 0
+    pruned: int = 0
     evaluation_batches: int = 0
     time: float = 0.0
 

@@ -607,19 +607,41 @@ class TemporalState(State):
 
     Se compara y se usa como clave solo por los hechos y los valores (memoización al
     estilo de POPF).
+
+    **La línea temporal se calcula cuando se necesita.** Un sucesor guarda solo de dónde
+    viene (la tarea, el estado padre y la acción); su línea temporal se calcula la primera
+    vez que se consulta (al expandirlo) y se guarda desde entonces. La búsqueda genera
+    muchos más estados de los que expande, y cada línea temporal crece con la longitud del
+    plan: guardarlas todas costaba de 10 a 14 KB por estado en las tareas temporales
+    grandes, frente a menos de 1 KB así.
     """
 
-    timeline: Timeline
+    _timeline: "Timeline | None"
+    _origin: "tuple[TemporalTask, State, int] | None"
 
     def __new__(
         cls,
         facts: int,
         values: tuple[float | None, ...] = (),
-        timeline: Timeline | None = None,
+        timeline: "Timeline | None" = None,
+        source: "tuple[TemporalTask, State, int] | None" = None,
     ) -> "TemporalState":
         self = super().__new__(cls, facts, values)
-        self.timeline = timeline if timeline is not None else Timeline()
+        self._timeline = timeline
+        self._origin = source
         return self
+
+    @property
+    def timeline(self) -> "Timeline":
+        """La línea temporal del estado (se calcula la primera vez)."""
+        if self._timeline is None:
+            if self._origin is None:
+                self._timeline = Timeline()
+            else:
+                task, parent, action = self._origin
+                self._timeline = task.recompute_timeline(parent, self, action)
+                self._origin = None
+        return self._timeline
 
 
 @dataclass(frozen=True)
@@ -739,14 +761,24 @@ class TemporalTask(GroundTask):
         extended = self._extend(timeline, state, successor, action.index)
         if extended is None:
             return None
-        new_timeline, linear_values = extended
+        _, linear_values = extended
         values = successor.values
         if linear_values:
             updated = list(values)
             for variable, value in linear_values.items():
                 updated[variable] = value
             values = tuple(updated)
-        return TemporalState(successor.facts, values, new_timeline)
+        # La línea temporal ya se ha comprobado; no se guarda hasta que se expanda el estado
+        # (ver TemporalState).
+        return TemporalState(successor.facts, values, source=(self, state, action.index))
+
+    def recompute_timeline(self, parent: State, state: State, action: int) -> Timeline:
+        """Línea temporal de ``state``, al que se llegó desde ``parent`` con ``action``."""
+        timeline = parent.timeline if isinstance(parent, TemporalState) else Timeline()
+        # ``state`` ya incluye los vigilantes y los valores lineales: sirve como "después".
+        extended = self._extend(timeline, parent, state, action)
+        assert extended is not None, "la línea temporal de un estado ya comprobado es válida"
+        return extended[0]
 
     @cached_property
     def _has_watches(self) -> bool:

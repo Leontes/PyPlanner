@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pyplanner.errors import PDDLError
 from pyplanner.heuristics import DEVICES, HEURISTICS, PREFERRED_HEURISTICS, TENSOR_HEURISTICS
 
-Algorithm = Literal["gbfs", "astar", "wastar"]
+Algorithm = Literal["gbfs", "astar", "wastar", "iw"]
 TieBreaking = Literal["fifo", "lifo", "random"]
 Exploration = Literal["none", "type-based"]
 
@@ -26,8 +26,9 @@ class SearchConfig:
 
     Attributes:
         name: nombre para identificarla (en el portfolio y en las estadísticas).
-        algorithm: ``"gbfs"`` (voraz, prioridad h), ``"astar"`` (g + h) o ``"wastar"``
-            (g + weight · h).
+        algorithm: ``"gbfs"`` (voraz, prioridad h), ``"astar"`` (g + h), ``"wastar"``
+            (g + weight · h) o ``"iw"`` (búsqueda en anchura que poda los estados de
+            novedad mayor que ``novelty``; incompleta).
         heuristic: nombre de la heurística (ver :data:`pyplanner.heuristics.HEURISTICS`).
         weight: peso de la heurística en WA* (≥ 1).
         preferred_operators: usa una segunda cola con los sucesores generados por acciones
@@ -38,6 +39,9 @@ class SearchConfig:
             ``"lifo"`` o ``"random"`` (con ``seed``).
         exploration: ``"type-based"`` añade una cola de exploración por tipos (h, g) que
             se alterna con las demás; ayuda a salir de mesetas.
+        novelty: anchura de la novedad (0: no se usa; 1 o 2). Con ``"gbfs"`` es BFWS: la
+            prioridad es (novedad, h), con la novedad medida entre los estados del mismo
+            valor h. Con ``"iw"`` es la k de IW(k). Ver :mod:`pyplanner.search.novelty`.
         seed: semilla del desempate aleatorio y de la exploración.
         batch_size: número de nodos que se expanden antes de evaluar juntos sus sucesores.
             Con 1, la búsqueda es la clásica.
@@ -45,6 +49,8 @@ class SearchConfig:
             Python), ``"python"``, ``"numba"``, ``"cpu"`` o ``"cuda"`` (PyTorch).
         max_time: límite de tiempo en segundos (``None``: sin límite).
         max_expansions: límite de expansiones (``None``: sin límite).
+        max_memory: límite de memoria residente del proceso, en MB (``None``: sin límite).
+            Al superarlo, la búsqueda termina con ``LIMIT_REACHED``.
     """
 
     name: str = "gbfs-ff"
@@ -55,14 +61,16 @@ class SearchConfig:
     lazy: bool = False
     tie_breaking: TieBreaking = "fifo"
     exploration: Exploration = "none"
+    novelty: int = 0
     seed: int = 0
     batch_size: int = 1
     device: str = "auto"
     max_time: float | None = None
     max_expansions: int | None = None
+    max_memory: int | None = None
 
     def __post_init__(self) -> None:
-        if self.algorithm not in ("gbfs", "astar", "wastar"):
+        if self.algorithm not in ("gbfs", "astar", "wastar", "iw"):
             raise ConfigError(f"{self.name}: algoritmo desconocido '{self.algorithm}'")
         if self.heuristic not in HEURISTICS:
             raise ConfigError(f"{self.name}: heurística desconocida '{self.heuristic}'")
@@ -84,12 +92,27 @@ class SearchConfig:
             )
         if self.lazy and self.algorithm == "astar":
             raise ConfigError(f"{self.name}: A* no admite evaluación perezosa")
+        if self.novelty not in (0, 1, 2):
+            raise ConfigError(f"{self.name}: la novedad tiene que ser 0, 1 o 2")
+        if self.algorithm == "iw" and not self.novelty:
+            raise ConfigError(f"{self.name}: IW necesita novelty = 1 o 2 (la k de IW(k))")
+        if self.novelty and self.algorithm not in ("gbfs", "iw"):
+            raise ConfigError(f"{self.name}: la novedad solo se usa con GBFS (BFWS) o con IW")
+        if self.novelty and self.lazy:
+            raise ConfigError(f"{self.name}: la novedad necesita evaluación inmediata")
         if self.batch_size < 1:
             raise ConfigError(f"{self.name}: batch_size tiene que ser ≥ 1")
         if self.max_time is not None and self.max_time <= 0:
             raise ConfigError(f"{self.name}: max_time tiene que ser positivo")
         if self.max_expansions is not None and self.max_expansions < 0:
             raise ConfigError(f"{self.name}: max_expansions no puede ser negativo")
+        if self.max_memory is not None and self.max_memory <= 0:
+            raise ConfigError(f"{self.name}: max_memory tiene que ser positivo")
+
+    @property
+    def is_complete(self) -> bool:
+        """``True`` si encuentra plan siempre que lo haya (todas salvo IW, que poda)."""
+        return self.algorithm != "iw"
 
     @property
     def is_optimal(self) -> bool:
@@ -127,32 +150,36 @@ PRESETS: dict[str, SearchConfig] = {
         SearchConfig("gbfs-add", "gbfs", "hadd"),
         SearchConfig("wastar-add-3", "wastar", "hadd", weight=3.0),
         SearchConfig("gbfs-goalcount-rnd", "gbfs", "goalcount", tie_breaking="random", seed=1),
+        SearchConfig("bfws-ff", "gbfs", "ff", novelty=2),
+        SearchConfig("bfws-ff-pref", "gbfs", "ff", preferred_operators=True, novelty=2),
+        SearchConfig("bfws-goalcount", "gbfs", "goalcount", novelty=2),
+        SearchConfig("iw1", "iw", "blind", novelty=1),
+        SearchConfig("iw2", "iw", "blind", novelty=2),
         SearchConfig("astar-hmax", "astar", "hmax"),
         SearchConfig("astar-blind", "astar", "blind"),
     )
 }
 
 #: Portfolios por número de núcleos. Cada uno contiene al anterior y añade las
-#: configuraciones que más diversidad aportan (búsqueda inmediata o perezosa, exploración,
-#: heurística):
+#: configuraciones que más aportan. Elegidos en la iteración 3b con los tiers 1 a 3 y las
+#: instancias de driverlog y zenotravel temporales hasta la 17 (ver motor-busqueda.md):
 #:
-#: * 1 núcleo: la configuración individual más robusta. La exploración por tipos evita que
-#:   la búsqueda voraz se atasque en mesetas y zonas con muchos callejones sin salida;
-#: * 2 núcleos: + la búsqueda perezosa sin exploración, la más rápida en tareas grandes y
-#:   fáciles;
-#: * 4 núcleos: + la más barata y aleatoria (objetivos pendientes) y la perezosa con
-#:   exploración, con otra semilla;
-#: * 5 núcleos: + WA* con h_add, que tiende a planes más cortos.
+#: * 1 núcleo: BFWS con h_FF y acciones útiles, la configuración individual más robusta y
+#:   rápida en esas pruebas;
+#: * 2 núcleos: + la búsqueda perezosa, la más rápida en tareas grandes y fáciles;
+#: * 4 núcleos: + la perezosa con exploración por tipos (otra semilla) y la más barata y
+#:   aleatoria (objetivos pendientes);
+#: * 5 núcleos: + GBFS con exploración por tipos, la más rápida en slitherlink.
 PORTFOLIOS: dict[int, tuple[str, ...]] = {
-    1: ("gbfs-ff-pref-tb",),
-    2: ("gbfs-ff-pref-tb", "lazy-ff-pref"),
-    4: ("gbfs-ff-pref-tb", "lazy-ff-pref", "gbfs-goalcount-rnd", "lazy-ff-pref-tb"),
+    1: ("bfws-ff-pref",),
+    2: ("bfws-ff-pref", "lazy-ff-pref"),
+    4: ("bfws-ff-pref", "lazy-ff-pref", "lazy-ff-pref-tb", "gbfs-goalcount-rnd"),
     5: (
-        "gbfs-ff-pref-tb",
+        "bfws-ff-pref",
         "lazy-ff-pref",
-        "gbfs-goalcount-rnd",
         "lazy-ff-pref-tb",
-        "wastar-add-3",
+        "gbfs-goalcount-rnd",
+        "gbfs-ff-pref-tb",
     ),
 }
 
