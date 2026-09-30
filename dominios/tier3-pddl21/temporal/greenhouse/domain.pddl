@@ -1,0 +1,23 @@
+; Dominio no oficial, creado ad hoc para PyPlanner: reúne casos límite de expresividad
+; de PDDL 2.1 temporal (ver dominios/README.md).
+(define (domain greenhouse)
+  (:requirements :typing :durative-actions :numeric-fluents :continuous-effects
+                 :duration-inequalities :conditional-effects :negative-preconditions)
+  (:types tank)
+  (:predicates (raining) (sensor-on) (logged) (idle))
+  (:functions (water ?t - tank) (reserve) (budget))
+  (:durative-action irrigate :parameters ()
+    :duration (and (>= ?duration 1) (<= ?duration (reserve)))
+    :condition (and (at start (idle)) (over all (>= (reserve) 0)))
+    :effect (and (at start (not (idle))) (at end (idle))
+                 (at start (decrease (budget) ?duration))
+                 (forall (?t - tank) (increase (water ?t) (* #t 1)))
+                 (decrease (reserve) (* #t 1))))
+  (:durative-action collect-rain :parameters ()
+    :duration (= ?duration 4)
+    :condition (at start (not (logged)))
+    :effect (and (increase (reserve) (* #t 1))
+                 (when (at start (raining)) (increase (reserve) (* #t 1)))
+                 (when (and (at start (sensor-on)) (over all (sensor-on))) (at end (logged)))
+                 (when (at end (sensor-on)) (at end (increase (reserve) 1)))))
+  (:action switch-off :parameters () :precondition (sensor-on) :effect (not (sensor-on))))

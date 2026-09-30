@@ -140,6 +140,7 @@ def ground_with_context(
     domain: Domain,
     problem: Problem,
     extra_reads: Mapping[str, tuple[Expression, ...]] | None = None,
+    extra_targeted: frozenset[str] = frozenset(),
 ) -> tuple[GroundTask, GroundingContext]:
     """Como :func:`ground`, para un dominio sin acciones durativas, pero devuelve también
     el contexto de grounding.
@@ -148,6 +149,8 @@ def ground_with_context(
         extra_reads: expresiones que lee cada esquema además de sus condiciones (por nombre
             de esquema). Sus funciones cuentan para la relevancia, y sus términos pasan a
             ser variables del estado.
+        extra_targeted: funciones que se modifican fuera de los efectos de las acciones
+            (con efectos continuos): no son estáticas.
     """
     extra_reads = extra_reads or {}
     declarations = {o.name: o.types for o in (*domain.constants, *problem.objects)}
@@ -157,7 +160,7 @@ def ground_with_context(
     )
     static_predicates = frozenset(p.name for p in domain.predicates) - fluent_predicates
     init_facts = {(a.predicate, _args(a)) for a in problem.init}
-    targeted = frozenset(
+    targeted = extra_targeted | frozenset(
         effect.fluent.function
         for action in domain.actions
         for effect in _numeric_effects(action.effect)

@@ -292,14 +292,17 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
 
 - **Parser:** ✅ hecho (esquema JSON v4; ver [formato-json.md](formato-json.md#acciones-durativas-v4)).
   `?duration` solo en la duración y en los efectos numéricos, como en la gramática y en VAL.
-- **Motor:** 🚧 primera parte hecha (ver
+- **Motor:** ✅ hecho (ver
   [motor-busqueda.md](motor-busqueda.md#motor-temporal-iteración-3b)): acciones de inicio y
   fin, órdenes al estilo POPF, red temporal con duraciones fijas o con desigualdades,
-  invariantes, efectos numéricos discretos, `?duration` con duración fija, efectos
-  condicionales de inicio a fin y planes temporales. Resuelve el tier 3 temporal,
-  validado con VAL. **Pendiente:** efectos continuos y `?duration` con duraciones no fijas
-  (programación lineal, al estilo COLIN) y efectos condicionales con condiciones
-  `over all`.
+  invariantes, efectos numéricos, efectos condicionales de inicio a fin, planes temporales
+  y programación lineal al estilo COLIN (HiGHS, con SciPy como dependencia) para los
+  efectos continuos y `?duration` con duraciones no fijas. Resuelve el tier 3 temporal,
+  validado con VAL, y un dominio de certificación hecho a mano con las combinaciones poco
+  habituales (efectos continuos en `forall` y `when`, `when` con `over all`, `?duration` no
+  fijo al empezar, duraciones que dependen de variables continuas). Quedan fuera, con un
+  error claro, los límites de la programación lineal (disyunciones sobre variables
+  continuas, que exigirían programación lineal entera, y expresiones no lineales).
 - **Parser:**
   - `:durative-action` y `:duration`;
   - condiciones `at start`, `at end` y `over all`;
@@ -393,6 +396,18 @@ Nada por ahora.
 ## Trabajo opcional (al final del proyecto, fuera de las iteraciones)
 
 - Técnicas opcionales del repertorio (ver la tabla de "Motor de búsqueda").
+- **Más allá de la programación lineal** (después de la iteración 6). El motor temporal
+  resuelve los efectos continuos lineales con un programa lineal por estado; lo que este
+  no puede expresar se rechaza con un error claro. Dos líneas posibles:
+  - **expresiones no lineales por discretización del tiempo**, reutilizando la maquinaria
+    de PDDL+ de la iteración 6 (paso δ, validación con un δ más fino);
+  - **disyunciones sobre variables continuas** (condiciones de efectos condicionales,
+    invariantes disyuntivas) con **programación lineal entera** (HiGHS, ya disponible con
+    `scipy.optimize.milp`).
+
+  El coste en eficiencia es importante (el espacio de estados crece con 1/δ; la
+  programación entera puede ser exponencial), así que se activarían solo en los dominios
+  que lo necesiten, como la programación lineal ahora: el resto no pagaría nada.
 - **Lotes adaptativos y evaluación híbrida** (línea de trabajo prometedora, prevista al
   final de la 3b). El tamaño de
   lote deja de ser fijo: la búsqueda lo ajusta en cada momento según lo necesite, y cada

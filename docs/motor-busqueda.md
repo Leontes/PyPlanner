@@ -145,12 +145,15 @@ cada paso. El código está en `grounding/temporal.py`.
   tempranos son la planificación del plan.
 - **Duraciones.** Fijas (`=`) o con desigualdades; con funciones, se evalúan al empezar (o
   al terminar, con `(at end ...)`). `?duration` en los efectos se sustituye por la duración
-  cuando es fija y no depende de funciones que cambian.
+  cuando es fija y no depende de funciones que cambian; si no, la decide el programa
+  lineal (ver abajo).
 - **Invariantes.** Las condiciones `over all` se comprueban tras cada paso en todas las
   acciones en curso. Sus hechos y variables cuentan como leídos por el inicio y por el
   fin, así que los pasos que los cambian quedan fuera del intervalo.
 - **Efectos condicionales** con la condición al empezar y el efecto al terminar: un hecho
-  auxiliar recuerda, al empezar, si la condición se cumplía.
+  auxiliar recuerda, al empezar, si la condición se cumplía. Con condiciones `over all`, el
+  hecho es un **vigilante**: se activa al empezar si se cumplen las condiciones y el motor
+  lo apaga en cuanto la condición `over all` deja de cumplirse durante la acción.
 - **ε = 0,01.** VAL agrupa como simultáneos los sucesos más cercanos que su tolerancia (por
   defecto 0,01), así que con ε = 0,001 (el valor de POPF) solo valida con
   `Validate -t 0.001`. Con 0,01 el plan vale con la configuración por defecto, a cambio de
@@ -159,9 +162,40 @@ cada paso. El código está en `grounding/temporal.py`.
   búsqueda cuenta pasos (coste unitario); no optimiza la duración.
 - **Salida.** `t: (acción args) [d]` en IPC, con `; makespan = …`; en JSON, `time` y
   `duration` en cada paso y `makespan` en el plan.
-- **Pendiente** (error claro): efectos continuos y `?duration` con duraciones no fijas
-  (programación lineal, al estilo COLIN), y efectos condicionales con condiciones
-  `over all`.
+- **Programación lineal** (al estilo de COLIN; `grounding/temporal_lp.py`, con HiGHS a
+  través de SciPy). Las **variables lineales** son las que cambian con efectos continuos
+  (`(increase f (* #t r))`) y las que reciben valores que dependen de `?duration` en
+  acciones con duración no fija. Sus condiciones y efectos salen de las acciones de la
+  búsqueda y se deciden con un programa lineal por estado:
+  - incógnitas: el tiempo de cada paso y el valor de cada variable lineal tras cada cambio;
+    entre dos cambios evoluciona según la suma de los ritmos activos;
+  - restricciones: la red temporal, las condiciones de cada paso, los efectos,
+    `?duration = t_fin − t_inicio` y las invariantes en cada extremo de tramo (una
+    condición lineal sobre valores que cambian linealmente se cumple en un tramo si se
+    cumple en sus extremos);
+  - objetivo: minimizar la suma de los tiempos. Solo se resuelve cuando el paso toca
+    variables lineales o retrasa pasos anteriores.
+
+  El estado guarda el valor de cada variable lineal tras su último cambio, que es lo que
+  ven la heurística y el objetivo. Las condiciones del objetivo sobre variables lineales se
+  comprueban añadiéndolas al programa (se pueden cumplir con otra planificación, p. ej.
+  alargando una acción), y la planificación final las incluye. La heurística usa una
+  versión de la tarea con los efectos continuos integrados al terminar (ritmo × duración)
+  y las condiciones sobre variables lineales. Con variables que cambian de forma continua
+  el espacio de estados es infinito: la búsqueda no puede demostrar que no hay plan.
+  También: efectos continuos dentro de `forall` (se expanden al instanciar) y dentro de
+  `when` con condiciones `at start` (el ritmo se decide al empezar); `?duration` no fijo en
+  efectos `at start` (la duración es una incógnita, entre sus límites, enlazada con
+  `t_fin − t_inicio` al terminar); duraciones que dependen de variables lineales (sus
+  límites son restricciones del programa); y efectos condicionales sobre variables
+  lineales con condiciones clásicas. Un dominio de certificación hecho a mano
+  (`greenhouse`, en `tests/test_temporal_engine.py`) las reúne todas, validado con VAL: no
+  hay benchmarks públicos que las usen.
+- **Límites de la programación lineal** (error claro): condiciones de efectos
+  condicionales sobre variables lineales e invariantes disyuntivas sobre ellas (el efecto
+  dependería de qué solución se elija: haría falta programación lineal entera),
+  invariantes y condiciones no lineales, y `?duration` no fijo en el ritmo de un efecto
+  continuo (ritmo × tiempo no es lineal).
 
 ## Heurísticas
 

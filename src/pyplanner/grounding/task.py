@@ -333,6 +333,12 @@ class GroundTask:
                 ):
                     yield action
 
+    @property
+    def relaxation(self) -> "GroundTask":
+        """La tarea sobre la que se calculan las heurísticas (la propia tarea, salvo en las
+        temporales con variables que cambian de forma continua)."""
+        return self
+
     def apply(self, state: State, action: GroundAction) -> State | None:
         """Aplica una acción; ``None`` si no se puede. Ver :meth:`GroundAction.apply`.
 

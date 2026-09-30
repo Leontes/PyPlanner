@@ -67,6 +67,9 @@ def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuri
         raise HeuristicError(
             f"dispositivo desconocido '{device}' (disponibles: {', '.join(DEVICES)})"
         )
+    # Las tareas temporales con variables continuas tienen una versión propia para la
+    # heurística (mismos hechos, variables e índices de acciones).
+    task = task.relaxation
     if device == "auto":
         device = "numba" if numba_available() else "python"
     if device == "numba" and name not in COMPILED_HEURISTICS:

@@ -11,6 +11,9 @@ requires-python = ">=3.12"
 authors = [{ name = "Leontes", email = "josesegmur@ugr.es" }]
 dependencies = [
     "jsonschema>=4.23",
+    # Programación lineal (HiGHS) del motor temporal: efectos continuos y duraciones no
+    # fijas (iteración 3b).
+    "scipy>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -57,6 +60,11 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# SciPy no trae anotaciones de tipos.
+module = ["scipy", "scipy.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # Los núcleos de Numba no llevan anotaciones: Numba infiere sus propios tipos.

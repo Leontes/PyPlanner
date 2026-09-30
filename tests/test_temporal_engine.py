@@ -17,6 +17,7 @@ from pyplanner.grounding.temporal import (
     TemporalTask,
 )
 from pyplanner.heuristics import create_heuristic
+from pyplanner.loader.ast import FluentTerm
 from pyplanner.plan import Plan, simulate
 from pyplanner.schema import validate_document
 from pyplanner.search import PRESETS, SearchStatus, search
@@ -291,31 +292,244 @@ def test_makespan_metric() -> None:
     ("change", "message"),
     [
         (
-            ("(at end (at ?b))", "(at end (at ?b)) (decrease (fuel) (* #t 1))"),
-            "efectos continuos",
-        ),
-        (
-            ("(= ?duration (distance ?a ?b))", "(<= ?duration (distance ?a ?b))"),
-            "duración fija",
-        ),
-        (
-            ("(when (at start (clean))", "(when (over all (clean))"),
-            "'over all'",
+            ("(at end (at ?b))", "(at end (at ?b)) (increase (fuel) (* #t ?duration))"),
+            "ritmo × tiempo",
         ),
     ],
 )
 def test_unsupported_temporal_features(change: tuple[str, str], message: str) -> None:
-    domain = TRUCK_DOMAIN.replace(*change).replace(
-        ":conditional-effects", ":conditional-effects :continuous-effects :duration-inequalities"
+    domain = (
+        TRUCK_DOMAIN.replace("(= ?duration (distance ?a ?b))", "(<= ?duration 9)")
+        .replace(*change)
+        .replace(
+            ":conditional-effects",
+            ":conditional-effects :duration-inequalities :continuous-effects",
+        )
     )
     with pytest.raises(UnsupportedFeatureError, match=message):
         build(domain, TRUCK_PROBLEM.format(metric=""))
 
 
-def test_duration_of_changing_functions_cannot_be_used_in_effects() -> None:
+def test_duration_equal_to_a_variable_that_the_action_changes() -> None:
+    """``(= ?duration (fuel))`` con ``?duration`` en un efecto sobre ``fuel``: ``fuel`` pasa
+    a ser una variable lineal y la duración, una incógnita igual a su valor al empezar."""
     domain = TRUCK_DOMAIN.replace("(= ?duration (distance ?a ?b))", "(= ?duration (fuel))")
-    with pytest.raises(UnsupportedFeatureError, match="no depende de funciones que cambian"):
-        build(domain, TRUCK_PROBLEM.format(metric=""))
+    task = build(domain, TRUCK_PROBLEM.format(metric=""))
+    assert isinstance(task, TemporalTask) and task.linear is not None
+    plan = solve(task)
+    assert plan.steps[0].duration == pytest.approx(50)
+
+
+# --- Programación lineal: efectos continuos y duraciones no fijas ----------------------
+# Ojo: VAL se cae (violación de segmento) si una función se llama como el dominio; por
+# eso la función es battery_level y no battery.
+
+CHARGE_DOMAIN = """
+(define (domain battery) (:requirements :durative-actions :numeric-fluents :continuous-effects)
+  (:predicates (used) (idle))
+  (:functions (battery_level))
+  (:durative-action charge :parameters () :duration (= ?duration 10)
+    :condition (at start (idle))
+    :effect (and (at start (not (idle))) (at end (idle)) (increase (battery_level) (* #t 2))))
+  (:action use :parameters () :precondition (>= (battery_level) 5) :effect (used)))
+"""
+CHARGE_PROBLEM = """
+(define (problem p) (:domain battery) (:init (idle) (= (battery_level) 0)) (:goal (used)))
+"""
+
+
+@requires_val
+def test_waiting_for_a_continuous_change(tmp_path: Path) -> None:
+    """``use`` necesita 5 de batería: se programa en cuanto la carga llega (2 por unidad)."""
+    task = build(CHARGE_DOMAIN, CHARGE_PROBLEM)
+    assert isinstance(task, TemporalTask) and task.linear is not None
+    plan = solve(task)
+    times = {s.name: s.time for s in plan.steps}
+    assert times == {"charge": 0, "use": pytest.approx(2.5)}
+    output = val(CHARGE_DOMAIN, CHARGE_PROBLEM, plan, tmp_path)
+    assert "Plan valid" in output, output
+
+
+GENERATOR_DOMAIN = """
+(define (domain generator) (:requirements :durative-actions :numeric-fluents :continuous-effects)
+  (:predicates (done) (full))
+  (:functions (fuel))
+  (:durative-action generate :parameters () :duration (= ?duration 10)
+    :condition (over all (>= (fuel) 0))
+    :effect (and (decrease (fuel) (* #t 1)) (at end (done))))
+  (:durative-action refuel :parameters () :duration (= ?duration 6)
+    :condition (at start (full))
+    :effect (and (at start (not (full))) (increase (fuel) (* #t 1)))))
+"""
+GENERATOR_PROBLEM = """
+(define (problem p) (:domain generator) (:init (full) (= (fuel) {fuel})) (:goal (done)))
+"""
+
+
+@requires_val
+def test_continuous_invariant_needs_concurrent_refuelling(tmp_path: Path) -> None:
+    """Con 5 de combustible, generar 10 unidades de tiempo exige repostar a la vez."""
+    problem = GENERATOR_PROBLEM.format(fuel=5)
+    plan = solve(build(GENERATOR_DOMAIN, problem))
+    assert {s.name for s in plan.steps} == {"generate", "refuel"}
+    output = val(GENERATOR_DOMAIN, problem, plan, tmp_path)
+    assert "Plan valid" in output, output
+
+
+def test_continuous_invariant_that_cannot_hold() -> None:
+    """Con 3 de combustible no basta ni repostando (6 unidades como mucho): 3 + 6 < 10.
+
+    El espacio de estados es infinito (el combustible toma valores distintos), así que la
+    búsqueda no puede demostrar que no hay plan: se comprueba que no encuentra ninguno."""
+    task = build(GENERATOR_DOMAIN, GENERATOR_PROBLEM.format(fuel=3))
+    config = PRESETS["gbfs-ff"].with_changes(max_expansions=300)
+    assert search(task, config).status is not SearchStatus.SOLVED
+
+
+WORK_DOMAIN = """
+(define (domain work) (:requirements :durative-actions :numeric-fluents :duration-inequalities)
+  (:predicates (ready))
+  (:functions (progress))
+  (:durative-action work :parameters () :duration (and (>= ?duration 1) (<= ?duration 10))
+    :condition (at start (ready))
+    :effect (and (at start (not (ready))) (at end (ready))
+                 (at end (increase (progress) ?duration)))))
+"""
+WORK_PROBLEM = """
+(define (problem p) (:domain work) (:init (ready) (= (progress) 0)) (:goal (>= (progress) {goal})))
+"""
+
+
+@requires_val
+def test_free_duration_chosen_by_the_linear_program(tmp_path: Path) -> None:
+    """El objetivo obliga a alargar la acción: la duración la elige el programa lineal."""
+    problem = WORK_PROBLEM.format(goal=6)
+    plan = solve(build(WORK_DOMAIN, problem))
+    assert [(s.name, s.duration) for s in plan.steps] == [("work", pytest.approx(6))]
+    output = val(WORK_DOMAIN, problem, plan, tmp_path)
+    assert "Plan valid" in output, output
+
+
+def test_free_duration_needs_two_actions() -> None:
+    """Con un máximo de 10 por acción, 15 exige dos acciones seguidas."""
+    plan = solve(build(WORK_DOMAIN, WORK_PROBLEM.format(goal=15)))
+    durations = [s.duration for s in plan.steps]
+    assert len(durations) == 2 and sum(durations) == pytest.approx(15)  # type: ignore[arg-type]
+
+
+def test_relaxation_integrates_continuous_effects() -> None:
+    """La heurística ve la carga como un efecto al terminar (2 × 10). Sin eso, ``use``
+    (batería ≥ 5) sería inalcanzable en la relajación y el inicio, un callejón sin salida."""
+    task = build(CHARGE_DOMAIN, CHARGE_PROBLEM)
+    relaxation = task.relaxation
+    assert relaxation is not task
+    end = next(a for a in relaxation.actions if a.name == "charge@end")
+    assert [a.op for a in end.numeric] == ["increase"]
+    assert task.actions[end.index].numeric == ()  # en la búsqueda lo decide el programa lineal
+    # Plan relajado: inicio y fin de la carga, y usar.
+    assert create_heuristic("ff", task, "python").evaluate(task.init).value == 3
+
+
+# --- Certificación: combinaciones poco habituales ------------------------------------
+# No hay benchmarks públicos que las usen: el dominio ad hoc greenhouse (dominios/tier3-pddl21/
+# temporal/greenhouse) las reúne todas. Aquí se prueba con más problemas y pieza a pieza.
+
+GREENHOUSE_DOMAIN = (
+    DOMINIOS_DIR / "tier3-pddl21" / "temporal" / "greenhouse" / "domain.pddl"
+).read_text(encoding="utf-8")
+GREENHOUSE_PROBLEM = """
+(define (problem gh1) (:domain greenhouse) (:objects t1 t2 - tank)
+  (:init {init} (idle) (= (water t1) 0) (= (water t2) 0) (= (reserve) 0) (= (budget) 10))
+  (:goal (and {goal})))
+"""
+
+
+def greenhouse(init: str = "(raining) (sensor-on)", goal: str = "(logged)") -> TemporalTask:
+    task = build(GREENHOUSE_DOMAIN, GREENHOUSE_PROBLEM.format(init=init, goal=goal))
+    assert isinstance(task, TemporalTask)
+    return task
+
+
+@requires_val
+@pytest.mark.parametrize(
+    ("init", "goal"),
+    [
+        ("(raining) (sensor-on)", "(logged) (>= (water t1) 6) (>= (water t2) 6) (>= (budget) 0)"),
+        ("(sensor-on)", "(logged) (>= (water t1) 3) (>= (water t2) 3)"),
+        ("(raining)", "(>= (water t1) 5) (>= (budget) 5)"),
+    ],
+    ids=["todo", "sin-lluvia", "sin-sensor"],
+)
+def test_certification_domain(init: str, goal: str, tmp_path: Path) -> None:
+    """Efectos continuos dentro de forall y condicionales, when con over all, ?duration no
+    fijo al empezar, una duración que depende de una variable continua y un efecto
+    condicional sobre una variable continua: planes válidos para VAL."""
+    task = greenhouse(init, goal)
+    plan = solve(task)
+    problem = GREENHOUSE_PROBLEM.format(init=init, goal=goal)
+    output = val(GREENHOUSE_DOMAIN, problem, plan, tmp_path)
+    assert "Plan valid" in output, output
+
+
+def apply_all(task: TemporalTask, names: list[str]) -> TemporalState:
+    state = task.init
+    for name in names:
+        successor = task.apply(state, task.actions[by_name(task, name)])
+        assert successor is not None, name
+        state = successor
+    return state
+
+
+def test_over_all_conditional_effect_is_cancelled_when_the_condition_breaks() -> None:
+    task = greenhouse()
+    kept = apply_all(task, ["(collect-rain@start)", "(collect-rain@end)"])
+    assert "(logged)" in {str(a) for a in task.atoms(kept)}
+    broken = apply_all(task, ["(collect-rain@start)", "(switch-off)", "(collect-rain@end)"])
+    assert "(logged)" not in {str(a) for a in task.atoms(broken)}
+
+
+def test_conditional_continuous_rate_and_conditional_linear_effect() -> None:
+    """Con lluvia, la reserva sube a 2 por unidad (8 en 4 unidades) y el sensor encendido
+    al terminar suma 1; sin lluvia y con el sensor apagado, solo 4."""
+    reserve = greenhouse().variable_index[FluentTerm("reserve")]
+    rain = apply_all(greenhouse(), ["(collect-rain@start)", "(collect-rain@end)"])
+    assert rain.values[reserve] == pytest.approx(9)
+    dry = greenhouse(init="(sensor-on)")
+    state = apply_all(dry, ["(collect-rain@start)", "(switch-off)", "(collect-rain@end)"])
+    assert state.values[reserve] == pytest.approx(4)
+
+
+def test_duration_bounded_by_a_continuous_variable() -> None:
+    """``(<= ?duration (reserve))`` con la reserva a 0: regar es imposible sin recoger."""
+    task = greenhouse()
+    # La duración mínima es 1 y la máxima 0: el programa lineal lo rechaza al empezar.
+    assert task.apply(task.init, task.actions[by_name(task, "(irrigate@start)")]) is None
+    # Tras recoger lluvia 4 unidades (reserva 9), sí se puede.
+    state = apply_all(task, ["(collect-rain@start)", "(collect-rain@end)"])
+    assert task.apply(state, task.actions[by_name(task, "(irrigate@start)")]) is not None
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            ("(when (at end (sensor-on))", "(when (at end (> (reserve) 1))"),
+            "programación lineal entera",
+        ),
+        (
+            ("(over all (>= (reserve) 0))", "(over all (or (>= (reserve) 0) (sensor-on)))"),
+            "invariante disyuntiva",
+        ),
+    ],
+)
+def test_limits_of_linear_programming(change: tuple[str, str], message: str) -> None:
+    """Condiciones que dependen de la solución del programa lineal: harían falta variables
+    enteras (disyunciones)."""
+    domain = GREENHOUSE_DOMAIN.replace(*change).replace(
+        ":negative-preconditions", ":negative-preconditions :disjunctive-preconditions"
+    )
+    with pytest.raises(UnsupportedFeatureError, match=message):
+        build(domain, GREENHOUSE_PROBLEM.format(init="(raining) (sensor-on)", goal="(logged)"))
 
 
 # --- Salida, heurísticas y procesos ---------------------------------------------------

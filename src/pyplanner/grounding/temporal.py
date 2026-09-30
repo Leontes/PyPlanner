@@ -43,20 +43,40 @@ todas las acciones en curso (un inicio que rompe su propia invariante se descart
 Los hechos y variables de una invariante cuentan como leídos por el inicio y por el fin de
 la acción, así que los pasos que los cambian quedan ordenados fuera de su intervalo.
 
-**Todavía no admitido** (error claro, iteración 3b): efectos continuos, ``?duration`` en
-acciones con duración no fija o dependiente de funciones que cambian, y efectos
-condicionales con condiciones ``over all``.
+**Efectos continuos y duraciones no fijas** con ``?duration``: los decide un programa lineal
+por estado (ver :mod:`pyplanner.grounding.temporal_lp`). ``?duration`` no fijo se representa
+con una función ``duration@a`` que el programa interpreta como ``t_fin − t_inicio``.
+
+**Efectos condicionales con condiciones ``over all``**: un hecho auxiliar (vigilante) se
+activa al empezar si se cumplen las condiciones, y se apaga en cuanto la condición
+``over all`` deja de cumplirse mientras dura la acción (ver :class:`_Watch`).
+
+**Límites** (error claro): lo que la programación lineal no puede expresar (disyunciones
+y condiciones de efectos condicionales sobre variables lineales, expresiones no lineales,
+``?duration`` no fijo en el ritmo de un efecto continuo).
 """
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 
 from pyplanner.errors import UnsupportedFeatureError
+from pyplanner.grounding import temporal_lp
 from pyplanner.grounding.grounder import Binding, GroundingContext, ground_with_context
-from pyplanner.grounding.numeric import NumExpr, evaluate, variables_of
+from pyplanner.grounding.numeric import (
+    Const,
+    NumericAssignment,
+    NumericCondition,
+    NumExpr,
+    Op,
+    Var,
+    evaluate,
+    linear,
+    variables_of,
+)
 from pyplanner.grounding.task import Condition, GroundAction, GroundTask, State, bits, mask_of
+from pyplanner.grounding.temporal_lp import LinearModel, LinearState
 from pyplanner.loader.ast import (
     ALL,
     END,
@@ -81,9 +101,11 @@ from pyplanner.loader.ast import (
     Effect,
     Exists,
     Expression,
+    FluentTerm,
     Forall,
     ForallEffect,
     Formula,
+    Function,
     Imply,
     Not,
     NumericEffect,
@@ -112,6 +134,29 @@ INSTANT, START_SNAP, END_SNAP = 0, 1, 2
 
 
 @dataclass(frozen=True)
+class _Continuous:
+    """Efecto continuo de una acción, con las variables de los ``forall`` que lo rodean y
+    la condición ``at start`` de los ``when`` que lo rodean (``None`` si no tiene)."""
+
+    parameters: tuple[Parameter, ...]
+    condition: Formula | None
+    effect: ContinuousEffect
+
+
+@dataclass(frozen=True)
+class _Watch:
+    """Efecto condicional con condiciones ``over all``: el hecho ``flag`` se activa al
+    empezar si se cumplen ``start`` (antes de los efectos de inicio) y ``over_all`` (después),
+    y se apaga en cuanto ``over_all`` deja de cumplirse mientras dura la acción. El efecto
+    al terminar depende de ``flag``."""
+
+    flag: Predicate
+    parameters: tuple[Parameter, ...]
+    start: Formula | None
+    over_all: Formula
+
+
+@dataclass(frozen=True)
 class _Compiled:
     """Una acción durativa compilada: sus dos esquemas clásicos y lo que necesita después."""
 
@@ -122,6 +167,10 @@ class _Compiled:
     invariant: Formula | None
     start_bounds: tuple[DurationConstraint, ...]
     end_bounds: tuple[DurationConstraint, ...]
+    continuous: tuple[_Continuous, ...] = ()
+    #: Función que representa ``?duration`` (duración no fija usada en los efectos).
+    duration: Function | None = None
+    watches: tuple[_Watch, ...] = ()
 
 
 def _compile(action: DurativeAction, changing: frozenset[str]) -> tuple[_Compiled, list[Predicate]]:
@@ -131,14 +180,22 @@ def _compile(action: DurativeAction, changing: frozenset[str]) -> tuple[_Compile
     running = Predicate(f"running@{name}", parameters)
     running_atom = Atom(running.name, tuple(p.variable for p in parameters))
 
-    substitute = _duration_value(action, changing)
     conditions = _split_condition(action.condition)
     flags: list[Predicate] = []
-    effects, continuous = _split_effect(action.effect, action, (), flags)
-    if continuous:
-        raise UnsupportedFeatureError(
-            f"acción durativa '{name}': los efectos continuos todavía no están soportados"
+    watches: list[_Watch] = []
+    effects, continuous = _split_effect(action.effect, action, (), flags, watches)
+    substitute, duration = _duration_value(action, changing, effects, continuous)
+    continuous = [
+        replace(
+            c,
+            effect=ContinuousEffect(
+                c.effect.op,
+                c.effect.fluent,
+                _replace_duration(c.effect.rate, substitute),  # type: ignore[arg-type]
+            ),
         )
+        for c in continuous
+    ]
 
     def conjunction(parts: list[Formula] | list[Effect]) -> And:
         replaced = [_replace_duration(p, substitute) for p in parts]
@@ -162,32 +219,50 @@ def _compile(action: DurativeAction, changing: frozenset[str]) -> tuple[_Compile
     )
     start_bounds = tuple(c for c in action.duration if c.time in (None, START))
     end_bounds = tuple(c for c in action.duration if c.time == END)
-    compiled = _Compiled(action, start, end, running, invariant, start_bounds, end_bounds)
+    watches = [
+        replace(
+            w,
+            start=None if w.start is None else _replace_duration(w.start, substitute),  # type: ignore[arg-type]
+            over_all=_replace_duration(w.over_all, substitute),  # type: ignore[arg-type]
+        )
+        for w in watches
+    ]
+    compiled = _Compiled(
+        action, start, end, running, invariant, start_bounds, end_bounds, tuple(continuous),
+        duration, tuple(watches),
+    )  # fmt: skip
     return compiled, [running, *flags]
 
 
-def _duration_value(action: DurativeAction, changing: frozenset[str]) -> Expression | None:
-    """Expresión por la que se sustituye ``?duration`` en condiciones y efectos, o ``None``
-    si la acción no lo usa.
+def _duration_value(
+    action: DurativeAction,
+    changing: frozenset[str],
+    effects: dict[str, list[Effect]],
+    continuous: list[_Continuous],
+) -> tuple[Expression | None, Function | None]:
+    """Por qué se sustituye ``?duration`` en los efectos (``None`` si no se usa).
 
-    Solo se admite con una duración fija (``(= ?duration e)``) cuyas funciones no cambian:
-    así el valor de ``e`` es el mismo al empezar y al terminar.
+    * Con una duración fija (``(= ?duration e)``) cuyas funciones no cambian, por ``e``: su
+      valor es el mismo al empezar y al terminar.
+    * Si no, por una función nueva ``duration@a`` que el programa lineal interpreta como la
+      duración de la acción, una incógnita más (ver :mod:`pyplanner.grounding.temporal_lp`).
+      No se admite en el ritmo de un efecto continuo: ritmo × tiempo no sería lineal.
     """
-    if not _uses_duration_var(action.condition) and not _uses_duration_var(action.effect):
-        return None
+    in_start = any(_uses_duration_var(e) for e in effects[START])
+    in_rates = any(_uses_duration_var(c.effect.rate) for c in continuous)
+    if not in_start and not in_rates and not any(_uses_duration_var(e) for e in effects[END]):
+        return None, None
     fixed = [c for c in action.duration if c.comparator == "=" and c.time in (None, START)]
-    if len(action.duration) != 1 or not fixed:
+    if len(action.duration) == 1 and fixed and not set(_functions_of(fixed[0].value)) & changing:
+        return fixed[0].value, None
+    if in_rates:
         raise UnsupportedFeatureError(
-            f"acción durativa '{action.name}': ?duration en condiciones o efectos solo está "
-            "soportado con una duración fija (= ?duration <expresión>)"
+            f"acción durativa '{action.name}': ?duration en el ritmo de un efecto continuo solo "
+            "está soportado con una duración fija que no depende de funciones que cambian "
+            "(ritmo × tiempo no es lineal)"
         )
-    value = fixed[0].value
-    if set(_functions_of(value)) & changing:
-        raise UnsupportedFeatureError(
-            f"acción durativa '{action.name}': ?duration en condiciones o efectos solo está "
-            "soportado si la duración no depende de funciones que cambian"
-        )
-    return value
+    function = Function(f"duration@{action.name}", action.parameters)
+    return FluentTerm(function.name, tuple(p.variable for p in action.parameters)), function
 
 
 def _split_condition(condition: DurativeCondition) -> dict[str, list[Formula]]:
@@ -211,32 +286,37 @@ def _split_effect(
     action: DurativeAction,
     quantified: tuple[Parameter, ...],
     flags: list[Predicate],
-) -> tuple[dict[str, list[Effect]], list[ContinuousEffect]]:
+    watches: list[_Watch],
+) -> tuple[dict[str, list[Effect]], list[_Continuous]]:
     """Separa un efecto en sus partes ``at start`` y ``at end`` y sus efectos continuos.
 
     ``quantified``: variables de los ``forall`` que lo rodean (para los hechos auxiliares
-    de los efectos condicionales). ``flags`` recibe los predicados auxiliares nuevos.
+    de los efectos condicionales). ``flags`` y ``watches`` reciben los predicados auxiliares
+    y los efectos condicionales con condiciones ``over all``.
     """
     parts: dict[str, list[Effect]] = {START: [], END: []}
-    continuous: list[ContinuousEffect] = []
+    continuous: list[_Continuous] = []
     if isinstance(effect, TimedEffect):
         parts[effect.time].append(effect.arg)
     elif isinstance(effect, ContinuousEffect):
-        continuous.append(effect)
+        continuous.append(_Continuous((), None, effect))
     elif isinstance(effect, DurativeAnd):
         for arg in effect.args:
-            inner, more = _split_effect(arg, action, quantified, flags)  # type: ignore[arg-type]
+            inner, more = _split_effect(arg, action, quantified, flags, watches)  # type: ignore[arg-type]
             for time, effects in inner.items():
                 parts[time].extend(effects)
             continuous.extend(more)
     elif isinstance(effect, DurativeForallEffect):
-        inner, more = _split_effect(effect.arg, action, (*quantified, *effect.parameters), flags)
+        inner, more = _split_effect(
+            effect.arg, action, (*quantified, *effect.parameters), flags, watches
+        )
         for time, effects in inner.items():
             if effects:
                 parts[time].append(ForallEffect(effect.parameters, And(tuple(effects))))
-        continuous.extend(more)
+        # Los efectos continuos se expanden al instanciar: se guardan sus variables.
+        continuous.extend(replace(c, parameters=(*effect.parameters, *c.parameters)) for c in more)
     else:
-        _split_when(effect, action, quantified, flags, parts, continuous)
+        _split_when(effect, action, quantified, flags, watches, parts, continuous)
     return parts, continuous
 
 
@@ -245,26 +325,48 @@ def _split_when(
     action: DurativeAction,
     quantified: tuple[Parameter, ...],
     flags: list[Predicate],
+    watches: list[_Watch],
     parts: dict[str, list[Effect]],
-    continuous: list[ContinuousEffect],
+    continuous: list[_Continuous],
 ) -> None:
     """Efecto condicional de una acción durativa (ver la documentación del módulo)."""
     conditions = _split_condition(effect.condition)
-    if conditions[ALL]:
-        raise UnsupportedFeatureError(
-            f"acción durativa '{action.name}': los efectos condicionales con condiciones "
-            "'over all' todavía no están soportados"
-        )
-    inner, more = _split_effect(effect.arg, action, quantified, flags)
-    if more:
-        raise UnsupportedFeatureError(
-            f"acción durativa '{action.name}': los efectos continuos todavía no están soportados"
-        )
+    inner, more = _split_effect(effect.arg, action, quantified, flags, watches)
     start_condition = And(tuple(conditions[START]))
+    if more:
+        # Un efecto continuo condicional se decide al empezar (su ritmo es fijo).
+        if conditions[ALL] or conditions[END]:
+            raise UnsupportedFeatureError(
+                f"acción durativa '{action.name}': un efecto continuo condicional solo puede "
+                "depender de condiciones 'at start'"
+            )
+        for item in more:
+            condition = (
+                start_condition
+                if item.condition is None
+                else And((start_condition, item.condition))
+            )
+            continuous.append(replace(item, condition=condition))
     if inner[START]:  # el loader garantiza que solo depende de condiciones 'at start'
         parts[START].append(When(start_condition, And(tuple(inner[START]))))
-    if inner[END]:
-        end_condition: list[Formula] = list(conditions[END])
+    if inner[END] and conditions[ALL]:
+        # Vigilante: hecho auxiliar que se activa al empezar y se apaga si la condición
+        # 'over all' deja de cumplirse (ver _Watch y TemporalTask.apply).
+        parameters = (*action.parameters, *quantified)
+        flag = Predicate(f"cond@{action.name}@{len(flags)}", parameters)
+        flags.append(flag)
+        atom = Atom(flag.name, tuple(p.variable for p in parameters))
+        over_all = And(tuple(conditions[ALL]))
+        watches.append(
+            _Watch(flag, quantified, start_condition if conditions[START] else None, over_all)
+        )
+        # En la relajación y en el grounding, el hecho se alcanza con el efecto de inicio.
+        parts[START].append(When(And((start_condition, over_all)), atom))
+        parts[END].append(Not(atom))
+        end_condition = And((*conditions[END], atom))
+        parts[END].append(When(end_condition, And(tuple(inner[END]))))
+    elif inner[END]:
+        end_condition_parts: list[Formula] = list(conditions[END])
         if conditions[START]:
             # Se recuerda al empezar si la condición 'at start' se cumplía.
             parameters = (*action.parameters, *quantified)
@@ -273,8 +375,8 @@ def _split_when(
             atom = Atom(flag.name, tuple(p.variable for p in parameters))
             parts[START].append(When(start_condition, atom))
             parts[END].append(Not(atom))
-            end_condition.append(atom)
-        parts[END].append(When(And(tuple(end_condition)), And(tuple(inner[END]))))
+            end_condition_parts.append(atom)
+        parts[END].append(When(And(tuple(end_condition_parts)), And(tuple(inner[END]))))
 
 
 def _uses_duration_var(node: object) -> bool:
@@ -383,6 +485,38 @@ class Bound:
 
 
 @dataclass(frozen=True)
+class ContinuousRate:
+    """Efecto continuo instanciado: ``variable`` cambia a ``sign · rate`` por unidad de
+    tiempo mientras dura la acción, si ``condition`` (DNF) se cumple al empezar (``None``:
+    siempre)."""
+
+    variable: int
+    sign: float
+    rate: NumExpr
+    condition: tuple[Condition, ...] | None = None
+
+    def active(self, state: State) -> bool:
+        return self.condition is None or any(c.holds(state) for c in self.condition)
+
+
+@dataclass(frozen=True)
+class Watch:
+    """Vigilante instanciado de un efecto condicional con condiciones ``over all`` (ver
+    :class:`_Watch`)."""
+
+    flag: int
+    start: tuple[Condition, ...] | None
+    over_all: tuple[Condition, ...]
+
+    def starts(self, before: State, after: State) -> bool:
+        start_ok = self.start is None or any(c.holds(before) for c in self.start)
+        return start_ok and any(c.holds(after) for c in self.over_all)
+
+    def holds(self, state: State) -> bool:
+        return any(c.holds(state) for c in self.over_all)
+
+
+@dataclass(frozen=True)
 class DurativeInstance:
     """Una acción durativa instanciada.
 
@@ -404,6 +538,8 @@ class DurativeInstance:
     start_bounds: tuple[Bound, ...]
     end_bounds: tuple[Bound, ...]
     invariant_reads: tuple[int, ...] = ()
+    continuous: tuple[ContinuousRate, ...] = ()
+    watches: tuple[Watch, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -439,9 +575,10 @@ class Timeline:
         changer: último paso que cambió cada hecho o variable.
         readers: pasos que han leído cada hecho o variable desde su último cambio de valor.
         running: acciones en curso: índice → (paso de inicio, duración mínima, máxima).
+        linear: el programa lineal, si la tarea tiene variables lineales.
     """
 
-    __slots__ = ("earliest", "out", "changer", "readers", "running")
+    __slots__ = ("earliest", "out", "changer", "readers", "running", "linear")
 
     def __init__(
         self,
@@ -450,12 +587,14 @@ class Timeline:
         changer: dict[int, int] | None = None,
         readers: dict[int, tuple[int, ...]] | None = None,
         running: dict[int, tuple[int, float, float]] | None = None,
+        linear: LinearState | None = None,
     ) -> None:
         self.earliest = earliest
         self.out = out
         self.changer = changer or {}
         self.readers = readers or {}
         self.running = running or {}
+        self.linear = linear
 
     @property
     def makespan(self) -> float:
@@ -504,12 +643,73 @@ class TemporalTask(GroundTask):
         snaps: información temporal de cada acción de ``actions``.
         metric_is_makespan: ``True`` si la métrica es ``(minimize (total-time))``.
         epsilon: separación entre pasos que dependen uno de otro.
+        linear: modelo del programa lineal (``None`` si no hay variables lineales).
+        relaxation_actions: acciones para la heurística cuando hay variables lineales: con
+            sus condiciones y efectos sobre ellas, y los efectos continuos integrados al
+            terminar (ritmo × duración).
     """
 
     durative: tuple[DurativeInstance, ...] = ()
     snaps: tuple[SnapInfo, ...] = ()
     metric_is_makespan: bool = False
     epsilon: float = EPSILON
+    linear: LinearModel | None = None
+    relaxation_actions: tuple[GroundAction, ...] = ()
+
+    @cached_property
+    def relaxation(self) -> GroundTask:
+        """La tarea sobre la que se calcula la heurística."""
+        if not self.relaxation_actions:
+            return self
+        return GroundTask(
+            self.domain_name,
+            self.problem_name,
+            self.facts,
+            self.relaxation_actions,
+            self.init,
+            self.goal,
+            self.variables,
+        )
+
+    @cached_property
+    def _goal_parts(self) -> tuple[tuple[Condition, tuple[NumericCondition, ...]], ...]:
+        """Cada cláusula del objetivo, separada en su parte clásica y sus condiciones sobre
+        variables lineales."""
+        symbolic = self.linear.symbolic if self.linear is not None else frozenset()
+        parts = []
+        for clause in self.goal:
+            linear_part = tuple(c for c in clause.numeric if variables_of(c.expression) & symbolic)
+            classical = Condition(
+                clause.pos_facts,
+                clause.neg_facts,
+                tuple(c for c in clause.numeric if c not in linear_part),
+            )
+            parts.append((classical, linear_part))
+        return tuple(parts)
+
+    def is_goal(self, state: State) -> bool:
+        """Como en la tarea clásica, pero las condiciones sobre variables lineales se
+        comprueban con el programa lineal (pueden cumplirse con otra planificación)."""
+        if self.linear is None:
+            return super().is_goal(state)
+        return self._goal_rows(state) is not None
+
+    def _goal_rows(self, state: State) -> list[temporal_lp.Row] | None:
+        """Filas de la primera cláusula del objetivo que se puede cumplir, o ``None``."""
+        assert self.linear is not None
+        timeline = state.timeline if isinstance(state, TemporalState) else Timeline()
+        linear = timeline.linear or LinearState()
+        for classical, conditions in self._goal_parts:
+            if not classical.holds(state):
+                continue
+            if not conditions:
+                return []
+            rows = temporal_lp.goal_rows(self.linear, linear, conditions, state.values)
+            if rows is None:
+                continue
+            if temporal_lp.solve(linear, timeline.out, self.linear.initial, rows) is not None:
+                return rows
+        return None
 
     @cached_property
     def running_mask(self) -> int:
@@ -529,20 +729,56 @@ class TemporalTask(GroundTask):
             return None
         running_of = self.running_of
         durative = self.durative
+        if self._has_watches:
+            successor = self._watch(state, successor, action.index)
         for fact in bits(successor.facts & self.running_mask):
             invariant = durative[running_of[fact]].invariant
             if invariant is not None and not any(c.holds(successor) for c in invariant):
                 return None
         timeline = state.timeline if isinstance(state, TemporalState) else Timeline()
-        extended = self._extend(timeline, state, successor, self.snaps[action.index])
+        extended = self._extend(timeline, state, successor, action.index)
         if extended is None:
             return None
-        return TemporalState(successor.facts, successor.values, extended)
+        new_timeline, linear_values = extended
+        values = successor.values
+        if linear_values:
+            updated = list(values)
+            for variable, value in linear_values.items():
+                updated[variable] = value
+            values = tuple(updated)
+        return TemporalState(successor.facts, values, new_timeline)
+
+    @cached_property
+    def _has_watches(self) -> bool:
+        return any(d.watches for d in self.durative)
+
+    def _watch(self, before: State, after: State, action: int) -> State:
+        """Actualiza los hechos de los vigilantes (efectos condicionales con condiciones
+        ``over all``): al empezar se activan si se cumplen sus condiciones, y mientras dura
+        la acción se apagan en cuanto la condición ``over all`` deja de cumplirse."""
+        facts = after.facts
+        snap = self.snaps[action]
+        if snap.kind == START_SNAP:
+            for watch in self.durative[snap.durative].watches:
+                if watch.starts(before, after):
+                    facts |= 1 << watch.flag
+                else:
+                    facts &= ~(1 << watch.flag)
+        for fact in bits(after.facts & self.running_mask):
+            index = self.running_of[fact]
+            if index == snap.durative and snap.kind == START_SNAP:
+                continue
+            for watch in self.durative[index].watches:
+                if facts >> watch.flag & 1 and not watch.holds(after):
+                    facts &= ~(1 << watch.flag)
+        return after if facts == after.facts else State(facts, after.values)
 
     def _extend(
-        self, timeline: Timeline, before: State, after: State, snap: SnapInfo
-    ) -> Timeline | None:
-        """Añade el paso a la línea temporal; ``None`` si la red temporal es inconsistente."""
+        self, timeline: Timeline, before: State, after: State, action: int
+    ) -> tuple[Timeline, dict[int, float]] | None:
+        """Añade el paso a la línea temporal. Devuelve la nueva línea y los valores de las
+        variables lineales según el programa lineal, o ``None`` si es inconsistente."""
+        snap = self.snaps[action]
         epsilon = self.epsilon
         step = len(timeline.earliest)
         incoming: dict[int, float] = {}
@@ -551,9 +787,24 @@ class TemporalTask(GroundTask):
             if i != step and incoming.get(i, -math.inf) < weight:
                 incoming[i] = weight
 
+        model = self.linear
+        reads = snap.reads
+        writes = frozenset(-key - 1 for key in snap.writes if key < 0)
+        if model is not None and timeline.linear is not None:
+            # Un paso que cambia una variable de una invariante lineal en curso la comprueba
+            # (antes y después): lee todas sus variables.
+            extra = {
+                -(v + 1)
+                for d in timeline.linear.invariants
+                if model.invariant_variables[d] & writes
+                for v in model.invariant_variables[d]
+            }
+            if extra:
+                reads = tuple(sorted({*reads, *extra}))
+
         changer = dict(timeline.changer)
         readers = dict(timeline.readers)
-        for key in snap.reads:
+        for key in reads:
             previous = changer.get(key)
             if previous is not None:
                 after_step(previous, epsilon)
@@ -568,17 +819,19 @@ class TemporalTask(GroundTask):
                     after_step(reader, epsilon)
                 readers[key] = ()
             changer[key] = step
-        for key in snap.reads:
+        for key in reads:
             readers[key] = (*readers.get(key, ()), step)
 
         running = timeline.running
         start = -1
         upper = math.inf
+        stn_bounds: tuple[float, float] | None = None
         if snap.kind == START_SNAP:
             instance = self.durative[snap.durative]
             bounds = _bounds(instance.start_bounds, before.values, epsilon)
             if bounds is None:
                 return None
+            stn_bounds = bounds
             running = {**running, snap.durative: (step, *bounds)}
         elif snap.kind == END_SNAP:
             instance = self.durative[snap.durative]
@@ -598,6 +851,7 @@ class TemporalTask(GroundTask):
         out = [*timeline.out, ()]
         for i, weight in incoming.items():
             out[i] = (*out[i], (step, weight))
+        propagated = False
         if start >= 0 and upper < math.inf:
             out[step] = ((start, -upper),)
             if earliest[start] < earliest[step] - upper - _TOLERANCE:
@@ -605,10 +859,51 @@ class TemporalTask(GroundTask):
                 # un ciclo positivo (la duración máxima no se puede cumplir).
                 earliest[start] = earliest[step] - upper
                 _propagate(earliest, out, start, skip=step)
+                propagated = True
                 again = max(earliest[i] + w for i, w in incoming.items())
                 if again > earliest[step] + _TOLERANCE:
                     return None
-        return Timeline(tuple(earliest), tuple(out), changer, readers, running)
+
+        linear = timeline.linear
+        linear_values: dict[int, float] = {}
+        if model is not None:
+            extended = temporal_lp.extend(
+                model,
+                linear or LinearState(),
+                action,
+                step,
+                snap.kind == START_SNAP,
+                snap.kind == END_SNAP,
+                snap.durative,
+                start if snap.kind == END_SNAP else step,
+                before.values,
+                after.values,
+                writes,
+                started=tuple(
+                    (r.variable, r.sign, r.rate)
+                    for r in self.durative[snap.durative].continuous
+                    if r.active(before)
+                )
+                if snap.kind == START_SNAP
+                else (),
+                extra_effects=tuple(
+                    a
+                    for condition, assignments in model.conditional[action]
+                    if condition.holds(before)
+                    for a in assignments
+                ),
+                stn_bounds=stn_bounds,
+            )
+            if extended is None:
+                return None
+            linear, changed = extended
+            if changed or propagated:
+                solution = temporal_lp.solve(linear, out, model.initial)
+                if solution is None:
+                    return None
+                linear_values = temporal_lp.last_values(linear, solution, model.variables)
+        new = Timeline(tuple(earliest), tuple(out), changer, readers, running, linear)
+        return new, linear_values
 
     def schedule(self, plan: Sequence[int]) -> tuple[list[TemporalStep], float]:
         """Planificación de un plan (índices de acciones): los pasos ordenados por tiempo y
@@ -619,7 +914,18 @@ class TemporalTask(GroundTask):
             assert successor is not None, "el plan no es aplicable"
             state = successor
         assert isinstance(state, TemporalState)
-        times = state.timeline.earliest
+        times: Sequence[float] = state.timeline.earliest
+        makespan = state.timeline.makespan
+        if self.linear is not None and state.timeline.linear is not None:
+            # Con variables lineales, la planificación es la solución del programa lineal.
+            goal = self._goal_rows(state)
+            assert goal is not None, "el plan no alcanza el objetivo"
+            solution = temporal_lp.solve(
+                state.timeline.linear, state.timeline.out, self.linear.initial, goal
+            )
+            assert solution is not None, "el programa lineal del plan no tiene solución"
+            times = [solution[("t", j)] for j in range(len(state.timeline.earliest))]
+            makespan = max(times)
         steps: list[tuple[float, int, TemporalStep]] = []
         open_starts: dict[int, tuple[int, float]] = {}
         for position, index in enumerate(plan, start=1):
@@ -636,7 +942,7 @@ class TemporalTask(GroundTask):
                 step = TemporalStep(start_time, instance.name, instance.args, time - start_time)
                 steps.append((start_time, start_position, step))
         steps.sort(key=lambda item: (item[0], item[1]))
-        return [step for _, _, step in steps], state.timeline.makespan
+        return [step for _, _, step in steps], makespan
 
 
 def _bounds(
@@ -684,18 +990,31 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         item, extra = _compile(durative_action, changing)
         compiled.append(item)
         predicates.extend(extra)
+    duration_functions = tuple(c.duration for c in compiled if c.duration is not None)
     snap_domain = replace(
         domain,
         actions=(*domain.actions, *(a for c in compiled for a in (c.start, c.end))),
         predicates=(*domain.predicates, *predicates),
+        functions=(*domain.functions, *duration_functions),
         durative_actions=(),
     )
     extra_reads = {}
     for item in compiled:
-        extra_reads[item.start.name] = tuple(c.value for c in item.start_bounds)
+        # Los ritmos dentro de 'forall' tienen variables sin ligar: solo cuentan sus
+        # funciones para la relevancia (ver más abajo).
+        rates = tuple(c.effect.rate for c in item.continuous if not c.parameters)
+        extra_reads[item.start.name] = (*(c.value for c in item.start_bounds), *rates)
         extra_reads[item.end.name] = tuple(c.value for c in item.end_bounds)
+    # Funciones que cambian sin efectos discretos: las de los efectos continuos y las que
+    # representan ?duration.
+    extra_targeted = frozenset(
+        {c.effect.fluent.function for item in compiled for c in item.continuous}
+        | {f.name for f in duration_functions}
+    )
     # La métrica temporal (total-time) no es aditiva: se busca con coste unitario.
-    task, context = ground_with_context(snap_domain, replace(problem, metric=None), extra_reads)
+    task, context = ground_with_context(
+        snap_domain, replace(problem, metric=None), extra_reads, extra_targeted
+    )
 
     by_name = {item.action.name: item for item in compiled}
     groups: dict[tuple[str, tuple[str, ...]], dict[str, list[GroundAction]]] = {}
@@ -708,9 +1027,11 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
     running_indices = frozenset(
         i for i, fact in enumerate(task.facts) if fact.predicate in running_facts
     )
+    var_index = context.var_index
 
     instances: list[DurativeInstance] = []
     instance_of: dict[tuple[str, tuple[str, ...]], int] = {}
+    duration_vars: dict[int, int] = {}
     for (base, args), snaps in sorted(groups.items()):
         if not snaps[START] or not snaps[END]:
             continue  # nunca puede empezar o nunca puede terminar
@@ -721,32 +1042,55 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         end_bounds = _ground_bounds(item.end_bounds, binding, context)
         if start_bounds is None or end_bounds is None:
             continue  # la duración usa una función estática sin valor
+        continuous_rates = _ground_continuous(item, binding, context)
+        if continuous_rates is None:
+            continue  # un ritmo usa una función estática sin valor
+        watches = _ground_watches(item, args, binding, context, task.fact_index)
         running = task.fact_index[Atom(item.running.name, tuple(Constant(a) for a in args))]
         reads: set[int] = set()
-        for condition in invariant or ():
+        for condition in (*(invariant or ()), *(c for w in watches for c in w.over_all)):
             reads |= _condition_keys(condition)
-        instance_of[(base, args)] = len(instances)
+        instance_index = len(instances)
+        instance_of[(base, args)] = instance_index
+        if item.duration is not None:
+            key = (item.duration.name, args)
+            if key in var_index:
+                duration_vars[var_index[key]] = instance_index
         instances.append(
             DurativeInstance(
-                base, args, running, invariant, start_bounds, end_bounds, tuple(sorted(reads))
+                base,
+                args,
+                running,
+                invariant,
+                start_bounds,
+                end_bounds,
+                tuple(sorted(reads)),
+                continuous_rates,
+                watches,
             )
         )
 
-    actions: list[GroundAction] = []
-    snaps_info: list[SnapInfo] = []
+    kept: list[tuple[GroundAction, int, int]] = []  # (acción, tipo, acción durativa)
     for action in task.actions:
         base, _, kind = action.name.partition("@")
         if not kind:
-            info_kind, durative_index = INSTANT, -1
+            kept.append((replace(action, index=len(kept)), INSTANT, -1))
         elif (base, action.args) in instance_of:
-            info_kind = START_SNAP if kind == "start" else END_SNAP
-            durative_index = instance_of[(base, action.args)]
-        else:
-            continue
-        new = replace(action, index=len(actions))
-        actions.append(new)
+            kind_code = START_SNAP if kind == START else END_SNAP
+            kept.append(
+                (replace(action, index=len(kept)), kind_code, instance_of[(base, action.args)])
+            )
+
+    linear_model, actions, relaxation, instances = _linear_parts(
+        kept, instances, duration_vars, task.init.values
+    )
+    snaps_info = []
+    for original, (_, kind_code, durative_index) in zip((a for a, _, _ in kept), kept, strict=True):
         instance = instances[durative_index] if durative_index >= 0 else None
-        snaps_info.append(_snap_info(new, info_kind, durative_index, instance, running_indices))
+        rate_vars = tuple(r.variable for r in instance.continuous) if instance else ()
+        snaps_info.append(
+            _snap_info(original, kind_code, durative_index, instance, running_indices, rate_vars)
+        )
 
     goal = tuple(
         Condition(
@@ -781,6 +1125,257 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         durative=tuple(instances),
         snaps=tuple(snaps_info),
         metric_is_makespan=is_makespan,
+        linear=linear_model,
+        relaxation_actions=tuple(relaxation),
+    )
+
+
+def _linear_parts(
+    kept: list[tuple[GroundAction, int, int]],
+    instances: list[DurativeInstance],
+    duration_vars: dict[int, int],
+    initial: tuple[float | None, ...],
+) -> tuple[LinearModel | None, list[GroundAction], list[GroundAction], list[DurativeInstance]]:
+    """Separa las condiciones y efectos sobre variables lineales (ver
+    :mod:`pyplanner.grounding.temporal_lp`).
+
+    Returns:
+        El modelo lineal (``None`` si no hay variables lineales), las acciones para la
+        búsqueda (sin esas condiciones y efectos), las acciones para la heurística (vacías
+        si no hay variables lineales) y las acciones durativas (sin las partes lineales de
+        sus invariantes y duraciones).
+    """
+    actions = [action for action, _, _ in kept]
+    durations = frozenset(duration_vars)
+    # Variables lineales: las de los efectos continuos y, por punto fijo, las que reciben
+    # valores que dependen de ?duration o de otras variables lineales.
+    linear_vars = {r.variable for d in instances for r in d.continuous}
+    if not linear_vars and not durations:
+        return None, actions, [], instances
+    changed = True
+    while changed:
+        changed = False
+        for action in actions:
+            for assignment in _assignments(action):
+                if assignment.variable not in linear_vars and variables_of(assignment.value) & (
+                    linear_vars | durations
+                ):
+                    linear_vars.add(assignment.variable)
+                    changed = True
+    symbolic = frozenset(linear_vars) | durations
+
+    def reads_symbolic(conditions: Iterable[Condition]) -> bool:
+        return any(variables_of(c.expression) & symbolic for d in conditions for c in d.numeric)
+
+    def unsupported(what: str, where: object, reason: str = "") -> UnsupportedFeatureError:
+        return UnsupportedFeatureError(
+            f"{where}: {what} sobre variables que cambian de forma continua o dependen de "
+            f"?duration no está soportado{reason}"
+        )
+
+    milp = " (haría falta programación lineal entera)"
+    conditions: list[tuple[NumericCondition, ...]] = []
+    effects: list[tuple[NumericAssignment, ...]] = []
+    conditional: list[tuple[tuple[Condition, tuple[NumericAssignment, ...]], ...]] = []
+    search_actions: list[GroundAction] = []
+    for action, _, _ in kept:
+        lp_conditions = tuple(
+            c for c in action.numeric_pre if variables_of(c.expression) & symbolic
+        )
+        if any(c.linear is None for c in lp_conditions):
+            raise unsupported("una condición no lineal", action)
+        lp_effects = tuple(a for a in action.numeric if a.variable in linear_vars)
+        if any(linear(a.value) is None for a in lp_effects):
+            raise unsupported("un efecto no lineal", action)
+        classical_conditional = []
+        lp_conditional = []
+        for effect in action.conditional:
+            if reads_symbolic([effect.condition]):
+                raise unsupported("la condición de un efecto condicional", action, milp)
+            lp_part = tuple(a for a in effect.numeric if a.variable in linear_vars)
+            if any(linear(a.value) is None for a in lp_part):
+                raise unsupported("un efecto no lineal", action)
+            if lp_part:
+                lp_conditional.append((effect.condition, lp_part))
+            rest = tuple(a for a in effect.numeric if a.variable not in linear_vars)
+            if effect.add_facts or effect.del_facts or rest:
+                classical_conditional.append(replace(effect, numeric=rest))
+        conditions.append(lp_conditions)
+        effects.append(lp_effects)
+        conditional.append(tuple(lp_conditional))
+        search_actions.append(
+            replace(
+                action,
+                numeric_pre=tuple(c for c in action.numeric_pre if c not in lp_conditions),
+                numeric=tuple(a for a in action.numeric if a not in lp_effects),
+                conditional=tuple(classical_conditional),
+            )
+        )
+
+    invariants: list[tuple[NumericCondition, ...]] = []
+    invariant_variables: list[frozenset[int]] = []
+    bounds: list[tuple[tuple[Bound, ...], tuple[Bound, ...]]] = []
+    timed: set[int] = set(duration_vars.values())
+    classical_instances = []
+    for index, instance in enumerate(instances):
+        clauses = instance.invariant or ()
+        lp_invariant = tuple(
+            c for clause in clauses for c in clause.numeric if variables_of(c.expression) & symbolic
+        )
+        if lp_invariant and len(clauses) > 1:
+            raise unsupported("una invariante disyuntiva", instance.name, milp)
+        if any(c.linear is None for c in lp_invariant):
+            raise unsupported("una invariante no lineal", instance.name)
+        for rate in instance.continuous:
+            if variables_of(rate.rate) & symbolic:
+                raise unsupported("un ritmo continuo", instance.name, " (ritmo × tiempo)")
+            if rate.condition is not None and reads_symbolic(rate.condition):
+                raise unsupported("la condición de un efecto continuo", instance.name, milp)
+        for watch in instance.watches:
+            if reads_symbolic((*(watch.start or ()), *watch.over_all)):
+                raise unsupported("la condición de un efecto condicional", instance.name, milp)
+        lp_bounds = tuple(
+            tuple(b for b in group if variables_of(b.value) & symbolic)
+            for group in (instance.start_bounds, instance.end_bounds)
+        )
+        if any(lp_bounds):
+            timed.add(index)
+        invariants.append(lp_invariant)
+        invariant_variables.append(
+            frozenset(v for c in lp_invariant for v in variables_of(c.expression))
+        )
+        bounds.append(lp_bounds)  # type: ignore[arg-type]
+        classical_instances.append(
+            replace(
+                instance,
+                invariant=_classical_invariant(instance.invariant, symbolic),
+                start_bounds=tuple(b for b in instance.start_bounds if b not in lp_bounds[0]),
+                end_bounds=tuple(b for b in instance.end_bounds if b not in lp_bounds[1]),
+            )
+        )
+
+    # Heurística: las acciones completas, con ?duration sustituido por una duración
+    # representativa y los efectos continuos integrados al terminar.
+    relaxation: list[GroundAction] = []
+    for action, kind_code, durative_index in kept:
+        numeric = list(action.numeric)
+        if durative_index >= 0:
+            instance = instances[durative_index]
+            length = _representative_duration(instance)
+            replacements = dict.fromkeys(durations, length)
+            numeric = [
+                NumericAssignment(a.variable, a.op, _replace_vars(a.value, replacements))
+                for a in numeric
+            ]
+            if kind_code == END_SNAP:
+                for rate in instance.continuous:
+                    op = "increase" if rate.sign > 0 else "decrease"
+                    numeric.append(
+                        NumericAssignment(rate.variable, op, Op("*", (rate.rate, length)))
+                    )
+        relaxation.append(replace(action, numeric=tuple(numeric)))
+
+    model = LinearModel(
+        variables=frozenset(linear_vars),
+        durations=duration_vars,
+        conditions=tuple(conditions),
+        effects=tuple(effects),
+        conditional=tuple(conditional),
+        invariants=tuple(invariants),
+        invariant_variables=tuple(invariant_variables),
+        bounds=tuple(bounds),
+        timed=frozenset(timed),
+        initial=initial,
+    )
+    return model, search_actions, relaxation, classical_instances
+
+
+def _ground_continuous(
+    item: _Compiled, binding: Binding, context: GroundingContext
+) -> tuple[ContinuousRate, ...] | None:
+    """Efectos continuos de una acción instanciada (los de ``forall``, expandidos). ``None``
+    si un ritmo usa una función estática sin valor."""
+    rates = []
+    for continuous in item.continuous:
+        for inner in context.normalizer.expand(continuous.parameters, binding):
+            target = context.normalizer.expression(continuous.effect.fluent, inner)
+            if not isinstance(target, Var) or target.key not in context.var_index:
+                continue  # la función no forma parte del estado (p. ej. solo la métrica)
+            try:
+                rate = context.expression(continuous.effect.rate, inner)
+            except KeyError as error:
+                raise UnsupportedFeatureError(
+                    f"acción durativa '{item.action.name}': el ritmo de un efecto continuo "
+                    "dentro de 'forall' solo puede usar funciones que no cambian"
+                ) from error
+            if rate is None:
+                return None
+            condition = (
+                None
+                if continuous.condition is None
+                else context.conditions(continuous.condition, inner)
+            )
+            sign = 1.0 if continuous.effect.op == "increase" else -1.0
+            rates.append(ContinuousRate(context.var_index[target.key], sign, rate, condition))
+    return tuple(rates)
+
+
+def _ground_watches(
+    item: _Compiled,
+    args: tuple[str, ...],
+    binding: Binding,
+    context: GroundingContext,
+    fact_index: Mapping[Atom, int],
+) -> tuple[Watch, ...]:
+    """Vigilantes de una acción instanciada (los de ``forall``, expandidos). Uno cuyo hecho
+    no es alcanzable nunca se activa y se descarta."""
+    watches = []
+    for watch in item.watches:
+        for inner in context.normalizer.expand(watch.parameters, binding):
+            values = (*args, *(inner[p.name] for p in watch.parameters))
+            flag = fact_index.get(Atom(watch.flag.name, tuple(Constant(v) for v in values)))
+            if flag is None:
+                continue
+            start = None if watch.start is None else context.conditions(watch.start, inner)
+            watches.append(Watch(flag, start, context.conditions(watch.over_all, inner)))
+    return tuple(watches)
+
+
+def _assignments(action: GroundAction) -> list[NumericAssignment]:
+    return [*action.numeric, *(a for effect in action.conditional for a in effect.numeric)]
+
+
+def _representative_duration(instance: DurativeInstance) -> NumExpr:
+    """Duración que supone la heurística: la fija, la mínima, la máxima o 1."""
+    for comparator in ("=", ">=", "<="):
+        for bound in instance.start_bounds:
+            if bound.comparator == comparator:
+                return bound.value
+    return Const(1.0)
+
+
+def _replace_vars(expression: NumExpr, replacements: dict[int, NumExpr]) -> NumExpr:
+    if isinstance(expression, Const):
+        return expression
+    if isinstance(expression, Var):
+        return replacements.get(expression.key, expression)
+    return Op(expression.op, tuple(_replace_vars(a, replacements) for a in expression.args))
+
+
+def _classical_invariant(
+    invariant: tuple[Condition, ...] | None, symbolic: frozenset[int]
+) -> tuple[Condition, ...] | None:
+    """La invariante sin sus condiciones sobre variables lineales (las comprueba el
+    programa lineal)."""
+    if invariant is None:
+        return None
+    return tuple(
+        Condition(
+            clause.pos_facts,
+            clause.neg_facts,
+            tuple(c for c in clause.numeric if not variables_of(c.expression) & symbolic),
+        )
+        for clause in invariant
     )
 
 
@@ -809,6 +1404,7 @@ def _snap_info(
     durative: int,
     instance: DurativeInstance | None,
     running: frozenset[int],
+    rate_vars: tuple[int, ...] = (),
 ) -> SnapInfo:
     reads = {*action.pre_facts, *action.neg_facts}
     for condition in action.numeric_pre:
@@ -822,6 +1418,8 @@ def _snap_info(
     for assignment in assignments:
         writes.add(-(assignment.variable + 1))
         reads |= {-(v + 1) for v in variables_of(assignment.value)}
+    if kind in (START_SNAP, END_SNAP):
+        writes |= {-(v + 1) for v in rate_vars}  # empieza o acaba un cambio continuo
     if instance is not None:
         reads |= set(instance.invariant_reads)
         bounds = instance.start_bounds if kind == START_SNAP else instance.end_bounds

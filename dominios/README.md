@@ -15,6 +15,7 @@ puede romper la anterior.
 | 3 | PDDL 2.1 numérico | `numeric/zenotravel` | `:typing :fluents` (*) | IPC 2023 numeric |
 | 3 | PDDL 2.1 temporal | `temporal/driverlog` | `:typing :durative-actions :numeric-fluents` (*) | IPC 2002 (driverlog-time-simple-automatic) |
 | 3 | PDDL 2.1 temporal | `temporal/zenotravel` | `:durative-actions :typing :numeric-fluents` (*) | IPC 2002 (zenotravel-time-simple-automatic) |
+| 3 | PDDL 2.1 temporal | `temporal/greenhouse` | `:typing :durative-actions :numeric-fluents :continuous-effects :duration-inequalities :conditional-effects :negative-preconditions` | **no oficial**: creado ad hoc (†) |
 | 4 | PDDL 2.2 | `derived-predicates/psr-middle` | `:adl :derived-predicates` | IPC 2004 (psr-middle-derived-predicates-adl) |
 | 4 | PDDL 2.2 | `timed-initial-literals/satellite` | `:strips :equality :typing :fluents :durative-actions :timed-initial-literals` | IPC 2004 (satellite-time-time-windows-strips) |
 | 5 | PDDL 3 | `preferences/storage` | `:typing :adl :preferences :constraints` | IPC 2006 (storage-preferences-qualitative) |
@@ -64,6 +65,14 @@ Notas:
   dominios no declaraban. Se ha añadido a la línea `:requirements` del dominio.
 - (*) `generator` usa un efecto continuo (`#t`) en una acción durativa, pero no declaraba
   `:continuous-effects` (solo `:time`, que es para procesos y eventos). Se ha añadido.
+- (†) `greenhouse` **no es un benchmark oficial**. Se ha creado ad hoc para probar casos
+  límite de expresividad de PDDL 2.1 temporal que no aparecen en ningún benchmark público
+  encontrado (ni en las IPC ni en los de COLIN/OPTIC o VAL): efectos continuos dentro de
+  `forall` y de `when`, efectos condicionales con condiciones `over all`, `?duration` no
+  fijo en efectos `at start`, una duración cuyo máximo depende de una variable que cambia
+  de forma continua y un efecto condicional sobre una variable continua. Sus planes se
+  validan con VAL como los del resto. `tests/test_temporal_engine.py` lo usa además con
+  otros problemas y pieza a pieza.
 - Varios dominios usan funcionalidad de tiers anteriores: por ejemplo, `car` usa
   `:timed-initial-literals` y trucks necesita el motor temporal. Es lo esperado, porque
   cada tier incluye a los anteriores.

@@ -59,7 +59,7 @@ pip install -e ".[fast]"        # recomendado: incluye Numba
 
 | Extra | Qué añade | Cuándo |
 |-------|-----------|--------|
-| (ninguno) | el planificador en Python puro | siempre funciona |
+| (ninguno) | el planificador en Python, con jsonschema y SciPy (programación lineal del motor temporal) | siempre funciona |
 | `fast` | Numba: heurísticas y sucesores compilados, unas 10 veces más rápido | recomendado |
 | `gpu` | PyTorch: evaluación de heurísticas por lotes en CPU o GPU | experimentación con lotes grandes |
 | `dev` | pytest, ruff, mypy | desarrollo |
