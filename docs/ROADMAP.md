@@ -30,8 +30,8 @@ En cada iteración hay que:
    `:requirements` (en el dominio o en el problema). Si un fichero usa, por ejemplo,
    `:types` sin declarar `:typing`, se rechaza aunque `:typing` esté soportado. Si no se
    declara ningún requisito, se supone `:strips`. La comprobación se hace en las dos fases,
-   porque el JSON puede venir de otra fuente. La tabla construcción → requisito ya existe
-   en la fase 1 (`_FUTURE_*` en `pddl/parser.py`) y hay que llevarla a un sitio común.
+   porque el JSON puede venir de otra fuente, con las mismas reglas construcción →
+   requisito, que están en un solo sitio (`requirements.py`).
 2. **Motor**: ampliar el grounding, el modelo de estado, la aplicación de acciones y la
    heurística para la nueva semántica.
 3. **Documentación**: docstrings en todo el código público y notas de diseño en `docs/`.
@@ -46,20 +46,31 @@ En cada iteración hay que:
 
 ```
 src/pyplanner/
-  pddl/        fase 1: lexer (s-expresiones) → parser → documento JSON
-  schema/      esquema JSON versionado (JSON Schema): el contrato entre las dos fases
-  loader/      fase 2: JSON → validación semántica → AST tipado (dataclasses inmutables)
-  grounding/   instanciación de acciones y análisis de alcanzabilidad
-  model/       tarea instanciada: estado, acciones, objetivos
-  search/      algoritmos de búsqueda (GBFS, A*, WA*) sobre una interfaz común
-  heuristics/  h_add, h_max, h_FF y sus extensiones numéricas y temporales;
-               interfaz por lotes; backends de referencia y PyTorch (tensor/)
-  portfolio/   ejecución paralela de configuraciones (procesos, cancelación)
-  plan/        representación del plan; salida en formato IPC (la que lee VAL) o en JSON
+  pddl/            fase 1: lexer (s-expresiones) → parser → documento JSON; conversor inverso
+  schema/          esquema JSON versionado (JSON Schema): el contrato entre las dos fases
+  loader/          fase 2: JSON → validación semántica → AST tipado (dataclasses inmutables)
+  requirements.py  requisitos soportados y reglas construcción → requisito (modo estricto)
+  grounding/       instanciación con alcanzabilidad, normalización ADL y numérica
+                   (normalize, numeric), tarea instanciada (task: estado, acciones,
+                   objetivos), axiomas de los predicados derivados (axioms) y motor
+                   temporal (temporal, temporal_lp)
+  heuristics/      blind, goalcount, h_max, h_add y h_FF con sus extensiones numéricas y
+                   temporales (plazos de los TIL); interfaz por lotes; referencia en
+                   Python, Numba (compiled) y PyTorch (tensor), y evaluación híbrida
+  search/          GBFS, A*, WA* e IW sobre una interfaz común: configuraciones, novedad,
+                   sucesores compilados y límite de memoria
+  portfolio/       ejecución paralela de configuraciones (procesos, cancelación)
+  plan/            representación del plan; salida en formato IPC (la que lee VAL) o en JSON
+  planner.py       fachada: grounding, búsqueda o portfolio, y comprobación del plan
+  frontend.py      lectura de dominios y problemas en PDDL o en JSON
   cli.py
 ```
 
-Decisiones propuestas:
+Fuera de `src/`: `dominios/` (benchmarks de los tiers, que recorren los tests),
+`benchmarks/` (colecciones más grandes para medir el rendimiento, fuera de los tests,
+con `scripts/benchmark.py`), `tests/` y `tools/` (VAL compilado en local).
+
+Decisiones (tomadas en la iteración 1):
 - **Parser propio sin dependencias.** PDDL es s-expresiones, así que basta un lexer
   sencillo y un descenso recursivo. Así controlamos los mensajes de error y cada
   construcción del AST corresponde a un requisito.
@@ -271,6 +282,9 @@ Es la iteración más grande, así que se divide en dos.
   estado `State(facts, values)`, funciones estáticas y relevancia, métrica como coste de
   acción, *h^hbd* en Python, Numba y PyTorch con resultados idénticos, y desempate
   (coste, nivel) para los costes 0. Resuelve el tier 3 numérico, validado con VAL.
+- **Tests:** ✅ tier 3 numérico (counters y zenotravel de la IPC 2023) resuelto y validado
+  con VAL con todos los portfolios; parser numérico y de costes de acción, semántica de
+  los efectos numéricos, *h^hbd* y equivalencia exacta entre Python, Numba y PyTorch.
 
 Solo lo necesario para PDDL 2.1, más `:action-costs`. Es una forma restringida de
 fluentes numéricos (`total-cost`, costes fijos por acción), pero la usa casi todo el
@@ -304,6 +318,10 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
   fijo al empezar, duraciones que dependen de variables continuas). Quedan fuera, con un
   error claro, los límites de la programación lineal (disyunciones sobre variables
   continuas, que exigirían programación lineal entera, y expresiones no lineales).
+- **Tests:** ✅ tier 3 temporal (driverlog y zenotravel de la IPC 2002, y greenhouse)
+  resuelto y validado con VAL con todos los portfolios; parser temporal, órdenes, red
+  temporal, invariantes, programación lineal y greenhouse pieza a pieza; búsqueda por
+  novedad, lotes adaptativos y portfolio de arranque mixto.
 - **Parser:**
   - `:durative-action` y `:duration`;
   - condiciones `at start`, `at end` y `over all`;
@@ -435,25 +453,6 @@ Nada por ahora.
   heurística de las tareas temporales en lugar de h_FF, en Python, Numba y PyTorch con
   valores idénticos. Incluye evaluarla frente a h_FF con la parte A en los benchmarks
   temporales: en POPF no es mejor en todos los dominios.
-- **Lotes adaptativos y evaluación híbrida** (hecho al final de la 3b; esta era la
-  propuesta de partida). El tamaño de
-  lote deja de ser fijo: la búsqueda lo ajusta en cada momento según lo necesite, y cada
-  lote se evalúa en CPU con Numba o en GPU con PyTorch según convenga. Hay que estudiar:
-  - **Cómo decidir el tamaño en cada momento.** Candidatos: según el progreso (lote
-    pequeño mientras la h mejora y creciente en las mesetas, donde la guía de la
-    heurística aporta poco), según el coste medido de cada dispositivo (amortizar el coste
-    fijo de cada llamada) o una combinación de ambos.
-  - **Qué política usa para mandar cada lote a un dispositivo.** Por ejemplo, un umbral
-    de tamaño calibrado al empezar (lotes pequeños a Numba y grandes a PyTorch en GPU), o
-    un modelo de coste que se ajuste durante la búsqueda.
-  - **Cómo encaja con el portfolio:** qué miembros la usan y cómo se reparte la GPU (cada
-    proceso con CUDA reserva su propio contexto).
-
-  Punto de partida medido (iteraciones 2 y 3a): Numba cuesta lo mismo por estado sea cual
-  sea el lote (unos 50 µs en slitherlink p02); PyTorch solo compensa con lotes grandes
-  (en GPU, de 256 en adelante); y expandir *k* nodos antes de volver a la heurística guía
-  peor, con resultados muy variables según el tamaño de lote. Conviene compararlo con la
-  búsqueda por novedad, que ataca el mismo problema de las mesetas.
 - **Estudio de la integración de HTN** (planificación jerárquica): viabilidad de aceptar
   dominios HTN (HDDL, el lenguaje del track HTN de las IPC) y de combinar la
   descomposición jerárquica con nuestro motor de búsqueda.
