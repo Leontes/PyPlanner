@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from pyplanner.errors import UnsupportedFeatureError
-from pyplanner.grounding import GroundTask
+from pyplanner.grounding import GroundTask, State
 from pyplanner.grounding.temporal import (
     END_SNAP,
     EPSILON,
@@ -566,3 +566,64 @@ def test_temporal_tasks_and_states_can_be_pickled() -> None:
     state = task.apply(task.init, task.actions[by_name(task, "(light-match@start)")])
     restored = pickle.loads(pickle.dumps(state))
     assert restored == state and restored.timeline.earliest == state.timeline.earliest
+
+
+# --- Órdenes compatibles con VAL (corregidas en la iteración 4) ----------------------
+
+PRODUCE_DOMAIN = """
+(define (domain produce) (:requirements :durative-actions)
+  (:predicates (p) (q) (object ?x))
+  (:durative-action produce :parameters (?x) :duration (= ?duration 5)
+    :condition (at start (object ?x)) :effect (at end (p)))
+  (:durative-action use :parameters () :duration (= ?duration 1)
+    :condition (at start (p)) :effect (at end (q))))
+"""
+PRODUCE_PROBLEM = """
+(define (problem p) (:domain produce) (:objects a b) (:init (object a) (object b))
+  (:goal (q)))
+"""
+
+
+def run_steps(task: TemporalTask, names: list[str]) -> tuple[list[int], TemporalState]:
+    state: State = task.init
+    indices = []
+    for name in names:
+        index = by_name(task, name)
+        successor = task.apply(state, task.actions[index])
+        assert successor is not None, name
+        state = successor
+        indices.append(index)
+    assert isinstance(state, TemporalState)
+    return indices, state
+
+
+def test_an_action_does_not_overlap_with_itself_in_time() -> None:
+    """Un segundo inicio de la misma acción va después de su fin anterior también en el
+    tiempo, no solo en la secuencia (los hechos running@a cuentan para las órdenes)."""
+    task = build(PRODUCE_DOMAIN, PRODUCE_PROBLEM)
+    assert isinstance(task, TemporalTask)
+    names = ["(produce@start a)", "(produce@end a)", "(produce@start a)"]
+    _, state = run_steps(task, names)
+    times = state.timeline.earliest
+    assert times[3] >= times[2] + task.epsilon - 1e-9
+
+
+def test_a_write_that_keeps_the_value_is_separated_from_readers(tmp_path: Path) -> None:
+    """El fin de produce b vuelve a añadir (p), que ya es cierto y que lee el inicio de use:
+    no pueden ser simultáneos (VAL lo rechaza como mutex)."""
+    task = build(PRODUCE_DOMAIN, PRODUCE_PROBLEM)
+    assert isinstance(task, TemporalTask)
+    names = [
+        "(produce@start a)",
+        "(produce@start b)",
+        "(produce@end a)",
+        "(use@start)",
+        "(produce@end b)",
+        "(use@end)",
+    ]
+    indices, state = run_steps(task, names)
+    times = state.timeline.earliest
+    assert times[5] >= times[4] + task.epsilon - 1e-9  # fin de produce b tras el inicio de use
+    if VALIDATE.exists():
+        plan = Plan.from_indices(task, tuple(indices))
+        assert "Plan valid" in val(PRODUCE_DOMAIN, PRODUCE_PROBLEM, plan, tmp_path)

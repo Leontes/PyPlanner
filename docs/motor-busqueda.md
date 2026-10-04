@@ -139,10 +139,17 @@ cada paso. El código está en `grounding/temporal.py`.
   con la longitud del plan: guardarlas todas costaba de 10 a 14 KB por estado en las
   tareas grandes (3,5 GB en zenotravel 17 con solo 3000 expansiones), y así, de 2 a 4.
 - **Órdenes.** Para cada hecho y variable se guarda el último paso que lo cambió y los que
-  lo han leído desde que tiene su valor. Un paso nuevo va, con una separación ε, después
-  del último cambio de lo que lee o modifica y de los que leyeron el valor que cambia. Los
-  pasos independientes no se ordenan: la red temporal los hace simultáneos, y el plan sale
-  en paralelo aunque la búsqueda los eligiera en secuencia.
+  lo han leído desde entonces. Un paso nuevo va, con una separación ε, después del último
+  cambio de lo que lee o modifica y de los que leyeron lo que escribe. Los pasos
+  independientes no se ordenan: la red temporal los hace simultáneos, y el plan sale en
+  paralelo aunque la búsqueda los eligiera en secuencia. Dos detalles corregidos en la
+  iteración 4, cuando los TIL llevaron a la búsqueda a planes que VAL rechazaba:
+  - una escritura que no cambia el valor (añadir un hecho ya cierto) también se separa de
+    los lectores, porque VAL no admite que en un mismo instante una acción lea un hecho y
+    otra lo escriba. Solo cuentan los efectos incondicionales y los condicionales que se
+    disparan;
+  - los hechos `running@a` cuentan como los demás: un nuevo inicio de la misma acción va
+    después de su fin anterior también en el tiempo, no solo en la secuencia.
 - **Red temporal.** Restricciones `t_j ≥ t_i + w`: las órdenes (ε) y la duración de cada
   acción (mínima y máxima). Se mantienen los tiempos más tempranos con propagación
   incremental. Solo una duración máxima puede crear un ciclo positivo, y pasa
@@ -264,8 +271,38 @@ cada paso. El código está en `grounding/temporal.py`.
   del camino nuevo, con su línea temporal. Con los TIL (coste 0) esto pasa a menudo, y
   cambiar el padre de un nodo ya expandido daba planes que no cumplían los plazos al
   repetirlos desde el principio.
-- **Límite conocido.** La heurística no sabe nada del tiempo: no ve que un TIL que borra un
-  hecho obliga a darse prisa, así que la búsqueda descubre los plazos al chocar con ellos.
+- **Plazos en la heurística** (`pyplanner.heuristics.deadlines`). En las tareas con TIL,
+  la heurística va envuelta en `DeadlineHeuristic`, que descarta los estados que no pueden
+  cumplir los plazos y deja el valor y las acciones útiles a la heurística base:
+  - **Instantes más tempranos.** Un Dijkstra sobre la relajación, como h_max, donde el
+    coste es el tiempo absoluto:
+    - los hechos ciertos lo son desde el último paso que los cambió;
+    - el fin de una acción durativa va, como pronto, tras su inicio más la duración
+      mínima (las acciones en curso, desde su inicio real);
+    - los TIL pendientes ocurren en su instante.
+  - **Ventanas.** Los hechos que solo cambian los TIL solo son ciertos en los intervalos
+    que marcan el estado y los TIL pendientes. Una precondición sobre ellos retrasa la
+    acción hasta el primer intervalo que la cumple, y una condición `over all` exige que
+    la acción entera quepa.
+  - **Corrección.** Todo son cotas inferiores, así que nunca se descarta un estado con
+    solución.
+  - **Implementación.** Las entradas de cada estado se preparan con NumPy. El Dijkstra
+    tiene una versión de referencia en Python y otra en Numba
+    (`compiled_deadlines`), con el mismo resultado; para en cuanto alcanza el objetivo.
+    Cuesta más o menos lo mismo que h_FF compilada (de 1 a 2 veces).
+  - **Línea temporal.** Necesita la de cada estado evaluado: la calcula sin guardarla
+    (`TemporalState.peek_timeline`), para no perder el ahorro de memoria de la 3b.
+  - **Aplazada en las búsquedas inmediatas.** Evaluar todos los sucesores con la
+    comprobación doblaba el tiempo en los casos en que no ahorraba expansiones: la
+    mayoría de los sucesores nunca se expanden. La búsqueda inmediata la pide a la
+    heurística (`Heuristic.defer_dead_end_check`) y la hace al sacar cada nodo de la
+    cola. Un nodo descartado así no gasta el turno de su cola (`retry`), así que el orden
+    de los nodos vivos es el mismo que si se hubiera descartado al generarlo, y la
+    búsqueda expande los mismos nodos. La perezosa ya evalúa al sacar de la cola.
+  - **Sin TIL pendientes** no se comprueba nada: ya no hay plazos y la relajación de la
+    heurística base detecta los mismos callejones.
+  - **Pendiente** (trabajo opcional, ver el roadmap). Extraer además un plan relajado que
+    respete los tiempos y usarlo como heurística.
 
 ## Heurísticas
 
@@ -723,6 +760,26 @@ en milisegundos. En p02 las ventanas restringen de verdad: con 60 s y 2,5 GB por
 `bfws-ff-pref` 8,2 s. `gbfs-ff`, `lazy-ff-pref`, `gbfs-goalcount-rnd` y las A* no
 terminan. El portfolio por defecto tarda unos 12 s. La mayoría de los nodos están entre el
 cierre de una antena y el de la otra, donde la heurística no ve que queda poco tiempo.
+
+**Plazos en la heurística** (parte A), medidos en `benchmarks/timed-initial-literals/
+satellite` (p01–p20, 60 s y 2,5 GB por búsqueda, planes validados con VAL):
+
+| Configuración | Sin plazos | Con plazos |
+|---------------|------------|------------|
+| `gbfs-ff-pref` | 4 (973 s) | 5 (917 s) |
+| `bfws-ff-pref` | 3 (1035 s) | 4 (1028 s) |
+| `bfws-ff` | 3 (1039 s) | 4 (1007 s) |
+| `lazy-ff-pref` | 3 (1025 s) | 6 (859 s) |
+| `gbfs-ff-pref-tb` | 4 (999 s) | 4 (990 s) |
+| Alguna de las cinco | 5 (p01–p05) | 8 (además p06, p10 y p14) |
+
+- La comprobación descubre muchos callejones (en p07, 24 000 frente a 3 000 sin plazos) y
+  cuesta más o menos lo mismo que h_FF compilada.
+- No mejora todos los casos pequeños: cambia el recorrido de la búsqueda, y en algunos
+  (`bfws-ff` en p02, de 0,8 a 6,1 s) va peor.
+- Por encima de p06 las búsquedas se ahogan: cada expansión genera unos 270 sucesores en
+  p07 y h_FF no orienta con ventanas. Las perezosas agotan los 2,5 GB. Lo que queda por
+  ganar es de la parte B (plan relajado temporal), que está en el trabajo opcional.
 
 ### Iteración 3b: búsqueda por novedad y portfolios
 

@@ -8,7 +8,7 @@ de referencia sin tocar la búsqueda.
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from pyplanner.grounding import GroundTask, State
@@ -59,3 +59,13 @@ class Heuristic(ABC):
     def evaluate(self, state: State) -> Evaluation:
         """Evalúa un solo estado (lote de tamaño 1)."""
         return self.evaluate_batch([state])[0]
+
+    def defer_dead_end_check(self) -> Callable[[Sequence[State]], list[bool]] | None:
+        """Aplaza la parte de la heurística que solo detecta callejones sin salida, si la
+        tiene, y la devuelve para que la búsqueda la aplique al expandir.
+
+        Las búsquedas inmediatas evalúan todos los sucesores, y la mayoría nunca se
+        expanden: una comprobación cara que solo descarta estados sale más barata al sacar
+        cada nodo de la cola. A partir de la llamada, :meth:`evaluate_batch` ya no la hace.
+        Devuelve ``None`` si no hay nada que aplazar."""
+        return None

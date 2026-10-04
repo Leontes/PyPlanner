@@ -55,10 +55,26 @@ def numba_available() -> bool:
 def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuristic:
     """Crea la heurística ``name`` para ``task`` en el dispositivo indicado.
 
+    En las tareas temporales con literales iniciales temporizados, la heurística va envuelta
+    en :class:`~pyplanner.heuristics.deadlines.DeadlineHeuristic`, que descarta los estados
+    que no pueden cumplir los plazos.
+
     Raises:
         HeuristicError: si la heurística no existe, no tiene implementación para ese
             dispositivo o PyTorch no está instalado.
     """
+    heuristic = _create(name, task, device)
+    from pyplanner.grounding.temporal import TemporalTask
+
+    if isinstance(task, TemporalTask) and task.til_times:
+        from pyplanner.heuristics.deadlines import DeadlineHeuristic
+
+        compiled = numba_available() and device != "python"
+        return DeadlineHeuristic(task, heuristic, compiled=compiled)
+    return heuristic
+
+
+def _create(name: str, task: GroundTask, device: str) -> Heuristic:
     if name not in HEURISTICS:
         raise HeuristicError(
             f"heurística desconocida '{name}' (disponibles: {', '.join(HEURISTICS)})"
@@ -127,13 +143,13 @@ def _hybrid(name: str, task: GroundTask) -> Heuristic:
             if numba_available()
             else "el dispositivo 'hybrid' necesita Numba"
         )
-    fast = create_heuristic(name, task, "numba")
+    fast = _create(name, task, "numba")
     wide = None
     try:
         import torch
 
         if torch.cuda.is_available():
-            wide = create_heuristic(name, task, "cuda")
+            wide = _create(name, task, "cuda")
     except ImportError:
         pass
     return HybridHeuristic(task, fast, wide)

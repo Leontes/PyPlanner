@@ -26,7 +26,12 @@ se guarda el último paso que lo cambió y los que lo han leído desde que tiene
 actual. Un paso nuevo se ordena, con una separación ε, después de:
 
 * el último paso que cambió lo que lee o lo que modifica;
-* los que leyeron el valor anterior de lo que cambia de valor.
+* los que leyeron, desde su último cambio, lo que escribe. Cuenta aunque la escritura no
+  cambie el valor (añadir un hecho ya cierto): VAL no admite que en un mismo instante una
+  acción lea un hecho y otra lo escriba.
+
+Los hechos ``running@a`` cuentan como cualquier otro: un nuevo inicio de la misma acción
+queda después de su fin anterior, como en la secuencia.
 
 Los pasos independientes no se ordenan entre sí, así que la red temporal los puede hacer
 simultáneos: el plan sale en paralelo aunque la búsqueda los haya elegido en secuencia.
@@ -671,6 +676,16 @@ class TemporalState(State):
                 self._origin = None
         return self._timeline
 
+    def peek_timeline(self) -> "Timeline":
+        """La línea temporal sin guardarla si todavía no está calculada (la heurística la
+        consulta en estados generados, y guardarla en todos costaría mucha memoria)."""
+        if self._timeline is not None:
+            return self._timeline
+        if self._origin is None:
+            return Timeline()
+        task, parent, action = self._origin
+        return task.recompute_timeline(parent, self, action)
+
 
 @dataclass(frozen=True)
 class TemporalStep:
@@ -876,12 +891,19 @@ class TemporalTask(GroundTask):
             previous = changer.get(key)
             if previous is not None:
                 after_step(previous, epsilon)
-        flipped = before.facts ^ after.facts
+        # Hechos que el paso escribe de verdad: los que cambian de valor y los de sus efectos
+        # incondicionales y condicionales que se disparan, aunque no cambien el valor (VAL no
+        # admite que en un mismo instante una acción lea un hecho y otra lo escriba).
+        step_action = self.actions[action]
+        written = (before.facts ^ after.facts) | step_action.add | step_action.delete
+        for effect in step_action.conditional:
+            if effect.condition.holds(before):
+                written |= effect.add | effect.delete
         for key in snap.writes:
             previous = changer.get(key)
             if previous is not None:
                 after_step(previous, epsilon)
-            changes = (flipped >> key) & 1 if key >= 0 else True
+            changes = (written >> key) & 1 if key >= 0 else True
             if changes:
                 for reader in readers.get(key, ()):
                     after_step(reader, epsilon)
@@ -1119,10 +1141,6 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
             groups.setdefault((base, action.args), {START: [], END: []})[kind].append(action)
 
     support = _derived_support(task)
-    running_facts = {item.running.name for item in compiled}
-    running_indices = frozenset(
-        i for i, fact in enumerate(task.facts) if fact.predicate in running_facts
-    )
     var_index = context.var_index
 
     instances: list[DurativeInstance] = []
@@ -1187,12 +1205,11 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
     for original, (_, kind_code, durative_index) in zip((a for a, _, _ in kept), kept, strict=True):
         instance = instances[durative_index] if durative_index >= 0 else None
         rate_vars = tuple(r.variable for r in instance.continuous) if instance else ()
-        info = _snap_info(original, kind_code, durative_index, instance, running_indices, rate_vars)
+        info = _snap_info(original, kind_code, durative_index, instance, rate_vars)
         if kind_code == TIL_SNAP:
             info = replace(info, time=til_times[int(original.name.removeprefix(_TIL))])
         if support:
-            expanded = _expand_derived(set(info.reads), support) - running_indices
-            info = replace(info, reads=tuple(sorted(expanded)))
+            info = replace(info, reads=tuple(sorted(_expand_derived(set(info.reads), support))))
         snaps_info.append(info)
     if linear_model is not None:
         for axiom in task.axioms:
@@ -1578,7 +1595,6 @@ def _snap_info(
     kind: int,
     durative: int,
     instance: DurativeInstance | None,
-    running: frozenset[int],
     rate_vars: tuple[int, ...] = (),
 ) -> SnapInfo:
     reads = {*action.pre_facts, *action.neg_facts}
@@ -1600,4 +1616,4 @@ def _snap_info(
         bounds = instance.start_bounds if kind == START_SNAP else instance.end_bounds
         for bound in bounds:
             reads |= {-(v + 1) for v in variables_of(bound.value)}
-    return SnapInfo(kind, durative, tuple(sorted(reads - running)), tuple(sorted(writes - running)))
+    return SnapInfo(kind, durative, tuple(sorted(reads)), tuple(sorted(writes)))

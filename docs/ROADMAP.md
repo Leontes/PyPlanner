@@ -344,7 +344,10 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
     negaciones de hechos derivados se dan por ciertas (como Fast Downward);
   - ✅ los TIL se tratan como eventos obligatorios en el eje temporal del motor de la
     iteración 3b: acciones `til@k` encadenadas, con instante fijo en la red temporal y
-    plazos al estilo de OPTIC para los pasos anteriores.
+    plazos al estilo de OPTIC para los pasos anteriores;
+  - ✅ plazos en la heurística (parte A de la heurística temporal): instantes más
+    tempranos y ventanas de los TIL en la relajación, para descartar estados sin salida.
+    La parte B (plan relajado temporal) queda como trabajo opcional.
 
 ## Iteración 5: PDDL 3
 
@@ -418,6 +421,13 @@ Nada por ahora.
   El coste en eficiencia es importante (el espacio de estados crece con 1/δ; la
   programación entera puede ser exponencial), así que se activarían solo en los dominios
   que lo necesiten, como la programación lineal ahora: el resto no pagaría nada.
+- **Grafo de planificación temporal completo** (opción B de la heurística temporal,
+  decidida en la iteración 4). La iteración 4 añade la parte A: instantes más tempranos y
+  ventanas de los TIL en la relajación, para descartar estados sin salida. La parte B es
+  extraer además un plan relajado que respete los tiempos (como POPF y OPTIC) y usarlo como
+  heurística de las tareas temporales en lugar de h_FF, en Python, Numba y PyTorch con
+  valores idénticos. Incluye evaluarla frente a h_FF con la parte A en los benchmarks
+  temporales: en POPF no es mejor en todos los dominios.
 - **Lotes adaptativos y evaluación híbrida** (hecho al final de la 3b; esta era la
   propuesta de partida). El tamaño de
   lote deja de ser fijo: la búsqueda lo ajusta en cada momento según lo necesite, y cada

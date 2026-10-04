@@ -186,6 +186,11 @@ class RelaxedTask:
         self.operator.append(action.index)
         self._numeric_effects.append(numeric)
 
+    @property
+    def complement(self) -> dict[int, int]:
+        """Nodo complementario ("no-*p*") de cada hecho negable."""
+        return self._complement
+
     # --- Por estado -------------------------------------------------------------------
 
     def true_facts(self, state: State) -> list[int]:

@@ -47,7 +47,7 @@ import heapq
 import itertools
 import random
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 
 from pyplanner.grounding import GroundTask, State
 from pyplanner.heuristics import Evaluation, Heuristic, create_heuristic
@@ -142,6 +142,7 @@ class _OpenLists:
         self.types = _TypeBuckets(config.seed) if config.exploration == "type-based" else None
         self._slots = len(self.queues) + (1 if self.types is not None else 0)
         self._turn = 0
+        self._last = 0
         if config.tie_breaking == "random":
             rng = random.Random(config.seed)
             self._tie: Iterator[float] = iter(rng.random, None)
@@ -172,11 +173,18 @@ class _OpenLists:
                 queue = self.queues[slot]
                 if queue:
                     self._turn = (slot + 1) % self._slots
+                    self._last = slot
                     return heapq.heappop(queue)[2]
             elif self.types:
                 self._turn = (slot + 1) % self._slots
+                self._last = slot
                 return self.types.pop()
         return None
+
+    def retry(self) -> None:
+        """La próxima entrada sale de la misma cola que la última: la que salió no cuenta
+        como turno (un nodo descartado al expandir, que nunca debió estar en la cola)."""
+        self._turn = self._last
 
     def __bool__(self) -> bool:
         return any(self.queues) or bool(self.types)
@@ -227,6 +235,9 @@ class _BestFirstSearch:
         self._temporal = type(task).apply is not GroundTask.apply
         self._best_h = float("inf")
         self._stalled = 0
+        self._dead_end_check: Callable[[Sequence[State]], list[bool]] | None = None
+        #: Nodos descartados al expandir por la comprobación aplazada.
+        self._discarded: set[int] = set()
 
     # --- Nodos ----------------------------------------------------------------------
 
@@ -365,6 +376,9 @@ class EagerSearch(_BestFirstSearch):
         self.measure_novelty(root)
         self.push(root, preferred=False)
         reopen = self.config.algorithm in ("astar", "wastar")
+        # La comprobación de callejones que se puede aplazar (los plazos de los TIL) se hace
+        # al sacar cada nodo de la cola: la mayoría de los sucesores nunca se expanden.
+        self._dead_end_check = self.heuristic.defer_dead_end_check()
 
         while True:
             reason = self.interrupted()
@@ -448,6 +462,8 @@ class EagerSearch(_BestFirstSearch):
                 break
             (node,) = item
             if self.closed[node]:
+                if self._discarded and node in self._discarded:
+                    self.open.retry()  # otra entrada de un nodo descartado: no cuenta
                 continue  # entrada obsoleta: el nodo ya se expandió
             if self.task.is_goal(self.states[node]):
                 if not batch:
@@ -455,6 +471,15 @@ class EagerSearch(_BestFirstSearch):
                 self.push(node, preferred=False)  # se acepta en la siguiente iteración
                 break
             self.closed[node] = True
+            check = self._dead_end_check
+            if check is not None and not check([self.states[node]])[0]:
+                # Callejón descubierto al expandir: se descarta sin gastar el turno de su
+                # cola, así que el orden de los nodos vivos es el mismo que si se hubiera
+                # descartado al generarlo.
+                self.stats.dead_ends += 1
+                self._discarded.add(node)
+                self.open.retry()
+                continue
             batch.append(node)
         return batch or None
 
