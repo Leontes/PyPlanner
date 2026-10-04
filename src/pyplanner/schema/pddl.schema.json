@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Leontes/PyPlanner/schema/pddl.schema.json",
   "title": "PyPlanner PDDL-JSON",
-  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos).",
+  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos). Versión 5: PDDL 2.2 (predicados derivados y literales iniciales temporizados).",
   "type": "object",
   "required": [
     "kind"
@@ -56,10 +56,10 @@
   ],
   "$defs": {
     "version": {
-      "description": "Versión del formato (1 a 4). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
+      "description": "Versión del formato (1 a 5). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
       "type": "integer",
       "minimum": 1,
-      "maximum": 4
+      "maximum": 5
     },
     "loc": {
       "description": "Posición opcional en el fichero PDDL original (el fichero va en 'source' a nivel de documento).",
@@ -803,6 +803,12 @@
           "items": {
             "$ref": "#/$defs/durative_action"
           }
+        },
+        "derived": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/derived_rule"
+          }
         }
       },
       "additionalProperties": false
@@ -1465,7 +1471,7 @@
       "additionalProperties": false
     },
     "init_element": {
-      "description": "Elemento del estado inicial: un átomo o el valor inicial de una función.",
+      "description": "Elemento del estado inicial: un átomo, el valor inicial de una función o un literal inicial temporizado (v5).",
       "type": "object",
       "required": [
         "op"
@@ -1474,7 +1480,8 @@
         "op": {
           "enum": [
             "atom",
-            "="
+            "=",
+            "at"
           ]
         }
       },
@@ -1515,6 +1522,63 @@
               },
               "value": {
                 "type": "number"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "at"
+              }
+            }
+          },
+          "then": {
+            "description": "Literal inicial temporizado (at t literal): el literal pasa a ser cierto (o falso, con 'not') en el instante t.",
+            "type": "object",
+            "required": [
+              "op",
+              "time",
+              "literal"
+            ],
+            "properties": {
+              "op": {
+                "const": "at"
+              },
+              "time": {
+                "type": "number",
+                "minimum": 0
+              },
+              "literal": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/atom"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "arg"
+                    ],
+                    "properties": {
+                      "op": {
+                        "const": "not"
+                      },
+                      "arg": {
+                        "$ref": "#/$defs/atom"
+                      },
+                      "loc": {
+                        "$ref": "#/$defs/loc"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
               },
               "loc": {
                 "$ref": "#/$defs/loc"
@@ -1967,6 +2031,29 @@
         },
         "effect": {
           "$ref": "#/$defs/timed_effect"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "derived_rule": {
+      "description": "Regla de un predicado derivado (v5): (:derived (predicado ?x - t ...) condición). El predicado está declarado en 'predicates'; si tiene varias reglas, es cierto cuando lo hace cierto alguna.",
+      "type": "object",
+      "required": [
+        "predicate",
+        "condition"
+      ],
+      "properties": {
+        "predicate": {
+          "$ref": "#/$defs/name"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        },
+        "condition": {
+          "$ref": "#/$defs/formula"
         },
         "loc": {
           "$ref": "#/$defs/loc"

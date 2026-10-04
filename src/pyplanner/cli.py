@@ -143,13 +143,23 @@ def _check(args: argparse.Namespace) -> int:
     durative = (
         f", {len(domain.durative_actions)} acciones durativas" if domain.durative_actions else ""
     )
+    derived = (
+        f", {len(domain.derived)} reglas de {len(domain.derived_predicates)} predicados derivados"
+        if domain.derived
+        else ""
+    )
+    timed = (
+        f", {len(problem.timed_literals)} literales iniciales temporizados"
+        if problem.timed_literals
+        else ""
+    )
     print(
         f"Dominio '{domain.name}': {len(domain.predicates)} predicados, "
-        f"{len(domain.actions)} acciones{durative}, {len(domain.constants)} constantes"
+        f"{len(domain.actions)} acciones{durative}{derived}, {len(domain.constants)} constantes"
     )
     print(
         f"Problema '{problem.name}': {len(problem.objects)} objetos, "
-        f"{len(problem.init)} hechos iniciales"
+        f"{len(problem.init)} hechos iniciales{timed}"
     )
     print(f"Requisitos: {' '.join(sorted(domain.requirements | problem.requirements))}")
     return 0

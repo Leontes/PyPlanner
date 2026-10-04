@@ -47,6 +47,10 @@ def _write_domain(document: Mapping[str, Any]) -> str:
         for function in functions:
             lines.append(f"{_INDENT * 2}{_signature(function)} - number")
         lines.append(f"{_INDENT})")
+    for rule in document.get("derived", []):
+        head = _signature({"name": rule["predicate"], "parameters": rule.get("parameters", [])})
+        lines.append(f"{_INDENT}(:derived {head}")
+        lines.append(f"{_INDENT * 2}{_formula(rule['condition'])})")
     for action in document.get("actions", []):
         lines.append(f"{_INDENT}(:action {action['name']}")
         lines.append(f"{_INDENT * 2}:parameters ({_typed_list(action.get('parameters', []))})")
@@ -78,6 +82,9 @@ def _write_problem(document: Mapping[str, Any]) -> str:
         if element["op"] == "=":
             value = _number(element["value"])
             lines.append(f"{_INDENT * 2}(= {_expression(element['fluent'])} {value})")
+        elif element["op"] == "at":
+            time = _number(element["time"])
+            lines.append(f"{_INDENT * 2}(at {time} {_formula(element['literal'])})")
         else:
             lines.append(f"{_INDENT * 2}{_formula(element)}")
     lines.append(f"{_INDENT})")

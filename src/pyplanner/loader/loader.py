@@ -21,6 +21,13 @@ eso hace cuatro comprobaciones, en este orden:
      ``(increase|decrease f (* #t e))``, y efectos ``at start`` que no dependen de
      condiciones posteriores (``at end`` u ``over all``);
    * objetos declarados y con un tipo compatible con el del predicado;
+   * predicados derivados (iteración 4): declarados en ``:predicates``, con la aridad y
+     tipos compatibles en la cabeza de cada regla, ausentes de los efectos y del estado
+     inicial, y **estratificables**: ninguno depende negativamente (bajo un número impar
+     de negaciones, contando el antecedente de ``imply``) de sí mismo, directa o
+     indirectamente;
+   * literales iniciales temporizados (iteración 4): solo en dominios temporales, sobre
+     predicados no derivados y sin dar a un hecho dos valores en el mismo instante;
    * problema asociado a su dominio.
 
 Los errores indican la ruta dentro del JSON y, si el documento trae posiciones (``loc``),
@@ -49,6 +56,7 @@ from pyplanner.loader.ast import (
     Comparison,
     Constant,
     ContinuousEffect,
+    DerivedRule,
     Domain,
     DurationConstraint,
     DurationVar,
@@ -81,6 +89,7 @@ from pyplanner.loader.ast import (
     Term,
     TimedCondition,
     TimedEffect,
+    TimedLiteral,
     TotalTime,
     Variable,
     When,
@@ -135,6 +144,12 @@ def load_domain(document: JSON) -> Domain:
     # Dominio provisional (sin acciones) para consultar la jerarquía de tipos al comprobar.
     ctx.domain = Domain(document["name"].lower(), requirements, types, constants, (), ())
     scope = _Scope(predicates, {c.name: c.types for c in constants}, functions=functions)
+    derived = tuple(
+        ctx.derived_rule(node, f"derived[{i}]", scope)
+        for i, node in enumerate(document.get("derived", []))
+    )
+    ctx.derived = frozenset(rule.predicate for rule in derived)
+    ctx.check_stratified(derived, document.get("derived", []))
     actions: dict[str, Action] = {}
     for i, node in enumerate(document.get("actions", [])):
         path = f"actions[{i}]"
@@ -167,6 +182,7 @@ def load_domain(document: JSON) -> Domain:
         actions=tuple(actions.values()),
         functions=tuple(functions.values()),
         durative_actions=tuple(durative_actions.values()),
+        derived=derived,
     )
 
 
@@ -197,6 +213,7 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
     ctx.check_declared(document, requirements)
 
     ctx.domain = domain
+    ctx.derived = domain.derived_predicates
     ctx.known_types = {OBJECT, *(name for name, _ in domain.types)}
     constant_types = {c.name: c.types for c in domain.constants}
     objects = tuple(
@@ -212,6 +229,7 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
 
     init: set[Atom] = set()
     values: dict[FluentTerm, float] = {}
+    timed: dict[tuple[float, Atom], TimedLiteral] = {}
     for i, node in enumerate(document.get("init", [])):
         path = f"init[{i}]"
         if node["op"] == "=":
@@ -219,8 +237,18 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
             if fluent in values:
                 ctx.fail(f"la función {fluent} tiene dos valores iniciales", node, path)
             values[fluent] = float(node["value"])
+        elif node["op"] == "at":
+            literal = ctx.timed_literal(node, path, scope)
+            previous = timed.setdefault((literal.time, literal.atom), literal)
+            if previous.positive != literal.positive:
+                ctx.fail(
+                    f"el hecho {literal.atom} se añade y se borra en el mismo instante "
+                    f"({literal.time:g})",
+                    node,
+                    path,
+                )
         else:
-            init.add(ctx.atom(node, path, scope))
+            init.add(ctx.basic_atom(node, path, scope, "el estado inicial"))
     goal = ctx.formula(document["goal"], "goal", scope)
     metric = None
     if "metric" in document:
@@ -237,6 +265,7 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
         goal=goal,
         values=tuple(sorted(values.items(), key=lambda item: str(item[0]))),
         metric=metric,
+        timed_literals=tuple(sorted(timed.values(), key=lambda lit: (lit.time, str(lit.atom)))),
     )
 
 
@@ -283,6 +312,9 @@ class _Context:
         self.source: str | None = document.get("source")
         self.known_types: set[str] = {OBJECT}
         self.domain: Domain | None = None
+        #: Predicados derivados del dominio: no pueden aparecer en efectos ni en el estado
+        #: inicial.
+        self.derived: frozenset[str] = frozenset()
 
     def fail(
         self,
@@ -420,7 +452,7 @@ class _Context:
                 )
             )
         if op == "not":
-            return Not(self.atom(node["arg"], f"{path}.arg", scope))
+            return Not(self.basic_atom(node["arg"], f"{path}.arg", scope, "un efecto"))
         if op == "forall":
             parameters, inner = self.quantified(node, path, scope)
             return ForallEffect(parameters, self.effect(node["arg"], f"{path}.arg", inner))
@@ -433,7 +465,7 @@ class _Context:
                 self.fluent(node["fluent"], f"{path}.fluent", scope),
                 self.expression(node["value"], f"{path}.value", scope),
             )
-        return self.atom(node, path, scope)
+        return self.basic_atom(node, path, scope, "un efecto")
 
     def expression(
         self, node: JSON, path: str, scope: _Scope, *, metric: bool = False
@@ -487,6 +519,93 @@ class _Context:
         terms = tuple(self.term(arg.lower(), node, path, scope) for arg in args)
         self.check_argument_types(name, terms, function.parameters, scope, node, path)
         return FluentTerm(name, terms)
+
+    # --- PDDL 2.2 (iteración 4) -----------------------------------------------------
+
+    def derived_rule(self, node: JSON, path: str, scope: _Scope) -> DerivedRule:
+        """Una regla ``:derived``: la cabeza es un predicado declarado, con la misma aridad
+        y parámetros de tipos compatibles con los suyos."""
+        assert self.domain is not None
+        name = node["predicate"].lower()
+        predicate = scope.predicates.get(name)
+        if predicate is None:
+            self.fail(
+                f"predicado derivado '{name}' no declarado en :predicates",
+                node,
+                f"{path}.predicate",
+            )
+        parameters = self.parameters(node.get("parameters", []), path)
+        if len(parameters) != predicate.arity:
+            self.fail(
+                f"'{name}' espera {predicate.arity} argumentos y la regla declara "
+                f"{len(parameters)}",
+                node,
+                f"{path}.parameters",
+            )
+        for i, (own, declared) in enumerate(zip(parameters, predicate.parameters, strict=True)):
+            if not self.domain.is_subtype(own.types, declared.types):
+                self.fail(
+                    f"el parámetro '{own.name}' ({' | '.join(own.types)}) no es del tipo "
+                    f"{' | '.join(declared.types)} del argumento {i + 1} de '{name}'",
+                    node,
+                    f"{path}.parameters[{i}]",
+                )
+        condition = self.formula(node["condition"], f"{path}.condition", scope.bind(parameters))
+        return DerivedRule(name, parameters, condition)
+
+    def check_stratified(self, rules: tuple[DerivedRule, ...], nodes: list[JSON]) -> None:
+        """Las reglas tienen que ser estratificables: ningún predicado derivado puede
+        depender negativamente de sí mismo, ni directa ni indirectamente.
+
+        Sin esa condición, el valor de los predicados derivados no está bien definido (por
+        ejemplo, ``p`` si no ``p``).
+        """
+        edges: dict[str, set[str]] = {}
+        negative: list[tuple[int, str, str]] = []
+        for i, rule in enumerate(rules):
+            for used, negated in _derived_uses(rule.condition, self.derived, False):
+                edges.setdefault(rule.predicate, set()).add(used)
+                if negated:
+                    negative.append((i, rule.predicate, used))
+        for i, head, used in negative:
+            if _reaches(edges, used, head):
+                cycle = "" if used == head else f", que a su vez depende de '{head}'"
+                self.fail(
+                    "los predicados derivados no son estratificables: "
+                    f"'{head}' depende negativamente de '{used}'{cycle}",
+                    nodes[i],
+                    f"derived[{i}].condition",
+                )
+
+    def basic_atom(self, node: JSON, path: str, scope: _Scope, where: str) -> Atom:
+        """Un átomo de un predicado no derivado (en un efecto o en el estado inicial)."""
+        atom = self.atom(node, path, scope)
+        if atom.predicate in self.derived:
+            self.fail(
+                f"el predicado derivado '{atom.predicate}' no puede aparecer en {where}: su "
+                "valor se deduce de sus reglas",
+                node,
+                path,
+            )
+        return atom
+
+    def timed_literal(self, node: JSON, path: str, scope: _Scope) -> TimedLiteral:
+        assert self.domain is not None
+        if ":durative-actions" not in self.domain.requirements:
+            self.fail(
+                "los literales iniciales temporizados solo tienen sentido en un dominio "
+                "temporal (:durative-actions)",
+                node,
+                path,
+            )
+        literal = node["literal"]
+        where = "un literal inicial temporizado"
+        if literal["op"] == "not":
+            atom = self.basic_atom(literal["arg"], f"{path}.literal.arg", scope, where)
+            return TimedLiteral(float(node["time"]), atom, positive=False)
+        return TimedLiteral(
+            float(node["time"]), self.basic_atom(literal, f"{path}.literal", scope, where)
+        )
 
     # --- Acciones durativas (iteración 3b) -------------------------------------------
 
@@ -642,6 +761,40 @@ class _Context:
 
 #: Momento de cada operador temporal del JSON.
 _TIMES = {"at-start": START, "at-end": END, "over-all": ALL}
+
+
+def _derived_uses(
+    formula: Formula, derived: frozenset[str], negated: bool
+) -> Iterable[tuple[str, bool]]:
+    """Predicados derivados que aparecen en ``formula``, y si aparecen negados (bajo un
+    número impar de negaciones, contando el antecedente de ``imply``)."""
+    if isinstance(formula, Atom):
+        if formula.predicate in derived:
+            yield formula.predicate, negated
+    elif isinstance(formula, Not):
+        yield from _derived_uses(formula.arg, derived, not negated)
+    elif isinstance(formula, Imply):
+        yield from _derived_uses(formula.left, derived, not negated)
+        yield from _derived_uses(formula.right, derived, negated)
+    elif isinstance(formula, And | Or):
+        for arg in formula.args:
+            yield from _derived_uses(arg, derived, negated)  # type: ignore[arg-type]
+    elif isinstance(formula, Exists | Forall):
+        yield from _derived_uses(formula.arg, derived, negated)
+
+
+def _reaches(edges: Mapping[str, set[str]], start: str, goal: str) -> bool:
+    """``True`` si hay un camino (quizá vacío) de ``start`` a ``goal``."""
+    seen, pending = {start}, [start]
+    while pending:
+        current = pending.pop()
+        if current == goal:
+            return True
+        for following in edges.get(current, ()):
+            if following not in seen:
+                seen.add(following)
+                pending.append(following)
+    return False
 
 
 def _uses_duration(expression: Expression) -> bool:

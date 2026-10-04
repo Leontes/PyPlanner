@@ -332,7 +332,11 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
 ## Iteración 4: PDDL 2.2
 
 **Requisitos:** `:derived-predicates` y `:timed-initial-literals`.
-- **Parser:** `:derived` en el dominio y literales `(at t hecho)` en `:init`.
+- **Parser:** ✅ hecho (esquema JSON v5; ver [formato-json.md](formato-json.md)):
+  - reglas `:derived`, varias por predicado y recursivas, con comprobación de
+    estratificación y prohibidas en efectos y en el estado inicial;
+  - literales `(at t literal)` en `:init`, solo en dominios temporales;
+  - el grounding los rechaza hasta que el motor los soporte.
 - **Motor:**
   - evaluación de los axiomas por estratos, con punto fijo en cada estado;
   - soporte de los axiomas en la heurística;

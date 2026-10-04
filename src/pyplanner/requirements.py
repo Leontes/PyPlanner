@@ -25,7 +25,10 @@ PDDL 2.1:
 * restricciones de duración con ``<=`` o ``>=``, varias restricciones o una evaluada en
   ``(at start|end ...)`` → ``:duration-inequalities``;
 * efectos continuos (``increase``/``decrease`` con ``#t``, fuera de ``at start/end``) →
-  ``:continuous-effects``.
+  ``:continuous-effects``;
+* reglas ``:derived`` → ``:derived-predicates`` (su condición, además, los de cualquier
+  fórmula);
+* literales ``(at <t> <literal>)`` en ``:init`` → ``:timed-initial-literals``.
 
 ``(not <átomo>)`` en un efecto es un borrado STRIPS y no necesita nada.
 """
@@ -121,6 +124,9 @@ SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
         ":durative-actions",
         ":duration-inequalities",
         ":continuous-effects",
+        # Iteración 4 (PDDL 2.2)
+        ":derived-predicates",
+        ":timed-initial-literals",
     }
 )
 
@@ -220,10 +226,22 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
             yield from _timed_condition_uses(action["condition"], f"{path}.condition")
         if "effect" in action:
             yield from _timed_effect_uses(action["effect"], f"{path}.effect")
+    for i, rule in enumerate(document.get("derived", [])):
+        path = f"derived[{i}]"
+        yield RequirementUse(":derived-predicates", "un predicado derivado", path, _loc(rule))
+        yield from _typed_items(rule.get("parameters", []), f"{path}.parameters")
+        yield from _formula_uses(rule["condition"], f"{path}.condition")
     for i, element in enumerate(document.get("init", [])):
         if element["op"] == "=":
             yield RequirementUse(
                 ":numeric-fluents", "un valor inicial numérico", f"init[{i}]", _loc(element), _COSTS
+            )
+        elif element["op"] == "at":
+            yield RequirementUse(
+                ":timed-initial-literals",
+                "un literal inicial temporizado",
+                f"init[{i}]",
+                _loc(element),
             )
     if "goal" in document:
         yield from _formula_uses(document["goal"], "goal")

@@ -1,4 +1,4 @@
-# Formato JSON de entrada (versión 4)
+# Formato JSON de entrada (versión 5)
 
 El planificador recibe los dominios y problemas en JSON. Este documento es el contrato para
 cualquier componente que quiera generar ese JSON sin pasar por PDDL. El esquema formal
@@ -27,7 +27,8 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
   - v1: STRIPS;
   - v2: PDDL 1.2, subconjunto ADL;
   - v3: PDDL 2.1 numérico y costes de acción (`:action-costs`);
-  - v4 (actual): PDDL 2.1 temporal (acciones durativas).
+  - v4: PDDL 2.1 temporal (acciones durativas);
+  - v5 (actual): PDDL 2.2 (predicados derivados y literales iniciales temporizados).
 
   Cada versión solo **añade** construcciones, así que un documento v1 sigue siendo
   válido.
@@ -53,6 +54,7 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 | `functions` | no | funciones numéricas, con la misma forma que `predicates` (v3) |
 | `actions` | no | ver abajo |
 | `durative_actions` | no | acciones durativas (v4); ver [Acciones durativas](#acciones-durativas-v4) |
+| `derived` | no | reglas de predicados derivados (v5); ver [PDDL 2.2](#pddl-22-v5) |
 
 Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fórmula) y
 `effect` (un efecto). Si falta alguno de los dos, se toma como vacío. Las acciones y las
@@ -67,7 +69,7 @@ acciones durativas comparten espacio de nombres.
 | `goal` | sí | fórmula |
 | `requirements` | no | se suman a los del dominio |
 | `objects` | no | como `constants`. Si repiten una constante del dominio, se ignoran |
-| `init` | no | lista de átomos sin variables y de valores iniciales `{"op": "=", "fluent": …, "value": 3.5}` (v3) |
+| `init` | no | lista de átomos sin variables, de valores iniciales `{"op": "=", "fluent": …, "value": 3.5}` (v3) y de literales iniciales temporizados `{"op": "at", "time": 10, "literal": …}` (v5) |
 | `metric` | no | `{"direction": "minimize" \| "maximize", "expression": …}` (v3) |
 
 ## Tipos (v2)
@@ -99,6 +101,8 @@ Las reglas están en `pyplanner/requirements.py`:
 | `durative_actions` | `:durative-actions` |
 | duración con `<=` o `>=`, varias restricciones o `time` | `:duration-inequalities` |
 | efecto continuo | `:continuous-effects` |
+| `derived` | `:derived-predicates` |
+| literal inicial temporizado (`at` en `init`) | `:timed-initial-literals` |
 
 - `not` en un efecto es un borrado STRIPS y no necesita nada.
 - `:adl` y `:quantified-preconditions` equivalen a sus requisitos componentes, y
@@ -207,6 +211,39 @@ Una acción durativa tiene `name`, `parameters`, `duration` y, opcionalmente, `c
   lista.
 - El conversor inverso escribe una condición o un efecto ausentes como `(and)`, porque VAL
   no acepta `:condition ()`.
+
+## PDDL 2.2 (v5)
+
+**Predicados derivados.** Cada regla `(:derived (p ?x - t …) <fórmula>)` es un elemento de
+`derived`:
+
+```json
+{"predicate": "fed", "parameters": [{"name": "?l", "type": "line"}],
+ "condition": {"op": "exists", "parameters": [{"name": "?x", "type": "device"}],
+               "arg": {"op": "atom", "predicate": "closed", "args": ["?x"]}}}
+```
+
+- El predicado se declara también en `predicates`. La regla tiene su misma aridad, y cada
+  parámetro, un tipo compatible con el declarado.
+- Varias reglas del mismo predicado se suman: el átomo es cierto si lo hace cierto alguna.
+- La condición es una fórmula cualquiera, con las variables de la cabeza ligadas, y puede
+  usar otros predicados derivados (también el suyo: reglas recursivas).
+- Un predicado derivado puede aparecer en precondiciones, condiciones y objetivos, pero
+  **no en efectos ni en `init`**: su valor se deduce siempre de los demás hechos.
+- Las reglas tienen que ser **estratificables**: ningún predicado derivado puede depender
+  negativamente de sí mismo, directa o indirectamente. Una dependencia es negativa si el
+  átomo está bajo un número impar de `not` (el antecedente de `imply` cuenta como uno).
+
+**Literales iniciales temporizados** (TIL). `(at 10 (visible a s))` en `:init` es
+`{"op": "at", "time": 10, "literal": <átomo>}`, y `(at 20 (not (visible a s)))` lleva
+`{"op": "not", "arg": <átomo>}` como `literal`.
+
+- En el instante `time` (≥ 0), el hecho pasa a ser cierto (o falso, con `not`) sin que lo
+  cause ninguna acción.
+- Solo en dominios temporales (`:durative-actions`): en un plan secuencial no hay tiempo.
+- No pueden afectar a predicados derivados, ni dar a un hecho los dos valores en el mismo
+  instante. Repetir un mismo literal no tiene efecto.
+- En PDDL, `(at <número> …)` es siempre un TIL: un objeto no puede llamarse como un número.
 
 ## Ejemplo
 

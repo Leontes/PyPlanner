@@ -10,7 +10,7 @@ Hay dos clases de error:
 
 * :class:`~pyplanner.errors.PDDLSyntaxError` si el texto no es PDDL bien formado.
 * :class:`~pyplanner.errors.UnsupportedFeatureError` si es PDDL válido pero usa algo que el
-  planificador todavía no soporta (por ejemplo, predicados derivados o preferencias).
+  planificador todavía no soporta (por ejemplo, preferencias).
 * :class:`~pyplanner.errors.UndeclaredRequirementError` si un **dominio** usa una
   construcción sin declarar su requisito (modo estricto, ver :mod:`pyplanner.requirements`).
   Los problemas se comprueban en la fase 2, porque sus requisitos dependen del dominio.
@@ -45,7 +45,6 @@ _NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 # Secciones y operadores de versiones posteriores de PDDL, con el requisito que los introduce.
 # Sirven para dar un error de "no soportado" en lugar de uno de sintaxis.
 _FUTURE_DOMAIN_SECTIONS = {
-    ":derived": ":derived-predicates",
     ":process": ":time",
     ":event": ":time",
     ":constraints": ":constraints",
@@ -194,11 +193,12 @@ class _Parser:
             functions=[],
             actions=[],
             durative_actions=[],
+            derived=[],
         )
         seen: set[str] = set()
         for keyword, section in sections:
             key = keyword.value
-            if key not in (":action", ":durative-action"):
+            if key not in (":action", ":durative-action", ":derived"):
                 self._check_unique_section(key, keyword, seen)
             body = section.items[1:]
             if key == ":requirements":
@@ -215,6 +215,8 @@ class _Parser:
                 document["actions"].append(self._action(section))
             elif key == ":durative-action":
                 document["durative_actions"].append(self._durative_action(section))
+            elif key == ":derived":
+                document["derived"].append(self._derived(section))
             else:
                 self._unknown_section(keyword, _FUTURE_DOMAIN_SECTIONS, "dominio")
         return document
@@ -272,6 +274,20 @@ class _Parser:
                 )
         if not has_duration:
             raise PDDLSyntaxError("falta :duration en la acción durativa", section.location)
+        return self._with_loc(node, section)
+
+    def _derived(self, section: SList) -> JSONDict:
+        """``(:derived (p ?x - t ...) <fórmula>)``: una regla del predicado derivado ``p``."""
+        rest = section.items[1:]
+        self._arity(section, rest, 2, "(:derived (<predicado> <variables>) <fórmula>)")
+        head = self._list(rest[0], "la cabeza (<predicado> <variables>) del predicado derivado")
+        if not head.items:
+            raise PDDLSyntaxError("cabeza de predicado derivado vacía", head.location)
+        node: JSONDict = {
+            "predicate": self._name(head.items[0], "el nombre del predicado derivado"),
+            "parameters": self._parameters(head.items[1:]),
+            "condition": self._formula(rest[1]),
+        }
         return self._with_loc(node, section)
 
     def _action_name(self, section: SList) -> str:
@@ -347,10 +363,34 @@ class _Parser:
                 and isinstance(element.items[1], Symbol)
                 and _NUMBER.match(element.items[1].value)
             ):
-                self._unsupported(
-                    "literales iniciales temporizados", ":timed-initial-literals", head
-                )
+                # Un objeto no puede llamarse como un número, así que (at <número> ...) es
+                # siempre un literal inicial temporizado y nunca un átomo del predicado at.
+                time = self._number(element.items[1])
+                if time < 0:
+                    raise PDDLSyntaxError(
+                        "un literal inicial temporizado no puede ocurrir antes del instante 0",
+                        element.items[1].location,
+                    )
+                node = {
+                    "op": "at",
+                    "time": time,
+                    "literal": self._literal(element.items[2]),
+                }
+                return self._with_loc(node, element)
         return self._atom(element)
+
+    def _literal(self, expr: SExpr) -> JSONDict:
+        """Un átomo o ``(not <átomo>)`` (el hecho de un literal inicial temporizado)."""
+        literal = self._list(expr, "un literal")
+        if literal.items and self._is_symbol(literal.items[0], "not"):
+            self._arity(literal, literal.items[1:], 1, "(not <átomo>)")
+            negated = self._list(literal.items[1], "un átomo")
+            if negated.items and self._is_symbol_in(negated.items[0], _OPERATORS):
+                raise PDDLSyntaxError("(not ...) solo puede negar un átomo", negated.location)
+            return self._with_loc({"op": "not", "arg": self._atom(negated)}, literal)
+        if literal.items and self._is_symbol_in(literal.items[0], _OPERATORS):
+            raise PDDLSyntaxError("se esperaba un átomo o (not <átomo>)", literal.location)
+        return self._atom(literal)
 
     # --- Fórmulas y efectos ------------------------------------------------------------
 

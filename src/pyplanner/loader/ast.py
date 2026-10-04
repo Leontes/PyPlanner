@@ -436,6 +436,26 @@ class Predicate:
 
 
 @dataclass(frozen=True)
+class DerivedRule:
+    """Regla de un predicado derivado (PDDL 2.2): ``(:derived (predicate parameters...)
+    condition)``.
+
+    El átomo ``(predicate parameters...)`` es cierto en un estado si ``condition`` lo es para
+    esos valores de los parámetros. Si el predicado tiene varias reglas, basta con una. Los
+    predicados derivados no aparecen en efectos ni en el estado inicial: su valor se deduce
+    siempre de los demás hechos.
+    """
+
+    predicate: str
+    parameters: tuple[Parameter, ...]
+    condition: Formula
+
+    def __str__(self) -> str:
+        head = " ".join([self.predicate, *(p.name for p in self.parameters)])
+        return f"(:derived ({head}) {self.condition})"
+
+
+@dataclass(frozen=True)
 class Function:
     """Declaración de una función numérica: nombre y parámetros con tipo."""
 
@@ -487,6 +507,12 @@ class Domain:
     actions: tuple[Action, ...]
     functions: tuple[Function, ...] = ()
     durative_actions: tuple[DurativeAction, ...] = ()
+    derived: tuple[DerivedRule, ...] = ()
+
+    @cached_property
+    def derived_predicates(self) -> frozenset[str]:
+        """Nombres de los predicados derivados (los que tienen alguna regla)."""
+        return frozenset(rule.predicate for rule in self.derived)
 
     @cached_property
     def _parents(self) -> dict[str, str]:
@@ -524,6 +550,20 @@ class Domain:
 
 
 @dataclass(frozen=True)
+class TimedLiteral:
+    """Literal inicial temporizado (PDDL 2.2): en el instante ``time``, ``atom`` pasa a ser
+    cierto (``positive``) o falso, sin que lo cause ninguna acción."""
+
+    time: float
+    atom: Atom
+    positive: bool = True
+
+    def __str__(self) -> str:
+        literal = str(self.atom) if self.positive else f"(not {self.atom})"
+        return f"(at {self.time:g} {literal})"
+
+
+@dataclass(frozen=True)
 class Problem:
     """Un problema PDDL, ya comprobado contra su dominio.
 
@@ -533,6 +573,7 @@ class Problem:
         values: valores iniciales de las funciones (términos sin variables). Una función sin
             valor inicial está indefinida.
         metric: métrica de calidad del plan, si la hay.
+        timed_literals: literales iniciales temporizados, ordenados por instante.
     """
 
     name: str
@@ -543,3 +584,4 @@ class Problem:
     goal: Formula
     values: tuple[tuple[FluentTerm, float], ...] = ()
     metric: Metric | None = None
+    timed_literals: tuple[TimedLiteral, ...] = ()

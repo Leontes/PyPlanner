@@ -33,6 +33,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from itertools import product
 
+from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding.normalize import (
     TRUE,
     Clause,
@@ -103,6 +104,12 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
             disyuntiva, o si usa algo que el motor temporal todavía no admite.
     """
+    if domain.derived:
+        raise UnsupportedFeatureError("el motor de búsqueda todavía no admite predicados derivados")
+    if problem.timed_literals:
+        raise UnsupportedFeatureError(
+            "el motor de búsqueda todavía no admite literales iniciales temporizados"
+        )
     if domain.durative_actions:
         from pyplanner.grounding.temporal import ground_temporal
 

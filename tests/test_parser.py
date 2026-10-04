@@ -46,6 +46,7 @@ def test_domain_document() -> None:
             {"name": "rest", "parameters": [], "effect": atom("free")},
         ],
         "durative_actions": [],
+        "derived": [],
     }
 
 
@@ -148,11 +149,11 @@ def test_syntax_errors(text: str, message: str) -> None:
     [
         ("(define (domain d) (:requirements :time))", ":time"),
         ("(define (domain d) (:functions (f) - object))", ":object-fluents"),
-        ("(define (domain d) (:derived (p) (q)))", ":derived-predicates"),
+        ("(define (domain d) (:requirements :preferences))", ":preferences"),
         ("(define (domain d) (:process p))", ":time"),
         (
-            "(define (problem p) (:domain d) (:init (at 10 (p))) (:goal (q)))",
-            ":timed-initial-literals",
+            "(define (problem p) (:domain d) (:goal (preference g (q))))",
+            ":preferences",
         ),
         (
             "(define (problem p) (:domain d) (:goal (q)) (:constraints (always (q))))",
