@@ -10,10 +10,8 @@ from pyplanner.errors import (
     SchemaValidationError,
     SemanticError,
     UndeclaredRequirementError,
-    UnsupportedFeatureError,
 )
 from pyplanner.frontend import read_domain, read_problem
-from pyplanner.grounding import ground
 from pyplanner.loader import load_domain, load_problem
 from pyplanner.loader.ast import (
     Atom,
@@ -342,10 +340,3 @@ def test_tier4_benchmarks_load(directory: str, name: str) -> None:
     loaded = read_domain(path / "domain.pddl")
     result = read_problem(path / f"{name}.pddl", loaded)
     assert loaded.derived or result.timed_literals
-
-
-def test_the_engine_rejects_timed_literals_for_now() -> None:
-    path = DOMINIOS_DIR / "tier4-pddl22" / "timed-initial-literals" / "satellite"
-    loaded = read_domain(path / "domain.pddl")
-    with pytest.raises(UnsupportedFeatureError, match="literales iniciales temporizados"):
-        ground(loaded, read_problem(path / "p01.pddl", loaded))

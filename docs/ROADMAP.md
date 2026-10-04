@@ -342,8 +342,9 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
     el motor temporal, donde leer un hecho derivado ordena tras lo que lo determina);
   - ✅ soporte de los axiomas en la heurística: acciones relajadas de coste 0, y las
     negaciones de hechos derivados se dan por ciertas (como Fast Downward);
-  - los TIL se tratan como eventos obligatorios en el eje temporal del motor de la
-    iteración 3b.
+  - ✅ los TIL se tratan como eventos obligatorios en el eje temporal del motor de la
+    iteración 3b: acciones `til@k` encadenadas, con instante fijo en la red temporal y
+    plazos al estilo de OPTIC para los pasos anteriores.
 
 ## Iteración 5: PDDL 3
 

@@ -222,6 +222,9 @@ class _BestFirstSearch:
         # menos por sucesor); las temporales redefinen GroundTask.apply, y con axiomas hay que
         # recalcular los hechos derivados.
         self._direct_apply = type(task).apply is GroundTask.apply and not task.axioms
+        # En las tareas temporales, dos estados iguales pueden tener distinta línea temporal
+        # (memoización al estilo de POPF): ver la actualización de padres en EagerSearch.run.
+        self._temporal = type(task).apply is not GroundTask.apply
         self._best_h = float("inf")
         self._stalled = 0
 
@@ -395,7 +398,14 @@ class EagerSearch(_BestFirstSearch):
                         child = self.new_node(successor, new_g, node, action.index)
                         pending.append(child)
                         pending_preferred[child] = is_preferred
-                    elif new_g < self.g[known]:
+                    elif new_g < self.g[known] and not (self._temporal and self.closed[known]):
+                        # Con un camino mejor se cambia el padre. En una tarea temporal, solo
+                        # si el nodo no se ha expandido, y cambiando también el estado: su línea
+                        # temporal (y la de sus hijos) tiene que ser la del camino del plan.
+                        # Con un nodo ya expandido se pierde la mejora: sus hijos se
+                        # calcularon con la línea temporal del camino anterior.
+                        if self._temporal:
+                            self.states[known] = successor
                         self.g[known] = new_g
                         self.parent[known] = node
                         self.action[known] = action.index

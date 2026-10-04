@@ -239,6 +239,34 @@ cada paso. El código está en `grounding/temporal.py`.
   continuos o `?duration` no fijo) da un error claro: el programa lineal no puede decidir
   su valor.
 
+## Literales iniciales temporizados (iteración 4)
+
+- **Compilación.** Cada instante distinto *t_k* de los TIL es una acción clásica `til@k` de
+  coste 0 que aplica sus literales. Se encadenan con hechos `til-done@k`, así que la
+  búsqueda los aplica en orden y cuando le conviene. Se hace a nivel de AST, como las
+  acciones de inicio y fin: así el grounder trata como no estáticos los hechos que solo
+  cambian los TIL (`visible` en satellite) y la heurística los ve como acciones relajadas.
+  Un problema con TIL es siempre una tarea temporal, aunque el dominio no tenga acciones
+  durativas.
+- **Instante fijo.** En la red temporal, el paso de `til@k` tiene una arista desde el
+  origen con peso *t_k* y otra de vuelta con peso −*t_k*. Si las órdenes lo obligan a ir
+  más tarde, el sucesor se descarta. Si un retraso propagado por una duración máxima llega
+  a mover el origen, también.
+- **Plazos, como en OPTIC.** Todo paso que la secuencia pone antes de un TIL tiene que
+  ocurrir no más tarde que él: arista de vuelta al origen con peso −*t* del próximo TIL
+  pendiente. Sin esto, el estado seguiría creyendo cierto un hecho que un TIL ya ha borrado,
+  porque el tiempo pasa aunque la búsqueda no aplique el TIL. Las órdenes al estilo de POPF
+  hacen el resto: un TIL que borra un hecho queda después de los pasos que lo leyeron.
+- **Plan.** Los TIL no aparecen en el plan de salida.
+- **Memoización y padres.** En una tarea temporal, dos estados iguales pueden tener distinta
+  línea temporal. Al encontrar un camino mejor a un estado conocido, la búsqueda inmediata
+  solo cambia su padre si todavía no lo ha expandido, y entonces guarda también el estado
+  del camino nuevo, con su línea temporal. Con los TIL (coste 0) esto pasa a menudo, y
+  cambiar el padre de un nodo ya expandido daba planes que no cumplían los plazos al
+  repetirlos desde el principio.
+- **Límite conocido.** La heurística no sabe nada del tiempo: no ve que un TIL que borra un
+  hecho obliga a darse prisa, así que la búsqueda descubre los plazos al chocar con ellos.
+
 ## Heurísticas
 
 | Nombre | Admisible | Acciones útiles | Numba | PyTorch |
@@ -686,6 +714,15 @@ psr-middle p01 y p02 (IPC 2004): unos 400 axiomas en un solo estrato y 28 accion
 grounding en 0,25 s. Todas las configuraciones predefinidas los resuelven en
 milisegundos, salvo IW(1), que es incompleta. Los tiempos de la CLI en los tiers 1 y 2 son
 los mismos que antes de añadir los axiomas (medidos en las mismas condiciones).
+
+### Iteración 4: literales iniciales temporizados
+
+satellite p01 y p02 (IPC 2004, ventanas de visibilidad de las antenas). p01 se resuelve
+en milisegundos. En p02 las ventanas restringen de verdad: con 60 s y 2,5 GB por búsqueda,
+`bfws-ff` tarda 0,6 s, `bfws-ff-pref-hybrid` 2,6 s, `gbfs-ff-pref` 3,7 s y
+`bfws-ff-pref` 8,2 s. `gbfs-ff`, `lazy-ff-pref`, `gbfs-goalcount-rnd` y las A* no
+terminan. El portfolio por defecto tarda unos 12 s. La mayoría de los nodos están entre el
+cierre de una antena y el de la otra, donde la heurística no ve que queda poco tiempo.
 
 ### Iteración 3b: búsqueda por novedad y portfolios
 

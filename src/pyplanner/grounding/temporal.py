@@ -58,6 +58,20 @@ realidad todos los hechos y variables de los que depende (a través de sus axiom
 transitiva): queda ordenado después del último paso que cambió cualquiera de ellos. Es
 correcto, aunque puede ordenar más de lo estrictamente necesario.
 
+**Literales iniciales temporizados** (TIL, iteración 4): cada instante distinto *t_k* de los
+TIL se compila en una acción clásica ``til@k`` de coste 0 que aplica sus literales. Se
+encadenan con hechos ``til-done@k`` (``til@k`` exige ``til-done@(k-1)`` y que no haya
+ocurrido ya), así que la búsqueda los aplica en orden, cuando le conviene. En la red
+temporal, su paso queda fijado en *t_k*: una arista desde el origen con peso *t_k* y otra de
+vuelta con peso −*t_k*. Si las órdenes lo obligan a ir más tarde, el sucesor se descarta.
+Como en OPTIC, todo paso que la secuencia pone antes de un TIL tiene que ocurrir no más
+tarde que él (arista de vuelta al origen): si no, el estado seguiría creyendo cierto un
+hecho que el TIL ya ha borrado, porque el tiempo pasa aunque la búsqueda no aplique el TIL.
+Las órdenes al estilo de POPF hacen el resto: un TIL que borra un hecho queda después de
+los pasos que lo leyeron, así que esos pasos tienen que ocurrir antes de *t_k*. Compilarlos
+a nivel de AST también hace que el grounder trate como no estáticos los hechos que solo
+cambian los TIL. Los TIL no aparecen en el plan.
+
 **Límites** (error claro): lo que la programación lineal no puede expresar (disyunciones
 y condiciones de efectos condicionales sobre variables lineales, expresiones no lineales,
 ``?duration`` no fijo en el ritmo de un efecto continuo).
@@ -133,8 +147,12 @@ EPSILON = 0.01
 #: Tolerancia numérica de la red temporal.
 _TOLERANCE = 1e-9
 
-#: Tipos de paso: acción instantánea, inicio y fin de una acción durativa.
-INSTANT, START_SNAP, END_SNAP = 0, 1, 2
+#: Tipos de paso: acción instantánea, inicio y fin de una acción durativa, y literales
+#: iniciales temporizados de un instante.
+INSTANT, START_SNAP, END_SNAP, TIL_SNAP = 0, 1, 2, 3
+#: Prefijo de las acciones de los literales iniciales temporizados (``til@k``). Un nombre
+#: PDDL no puede contener ``@``, así que no choca con ninguna acción del dominio.
+_TIL = "til@"
 
 
 # --- Compilación en acciones de inicio y fin ----------------------------------------
@@ -557,17 +575,20 @@ class SnapInfo:
     ``-(v + 1)``, para guardarlos en los mismos diccionarios.
 
     Attributes:
-        kind: :data:`INSTANT`, :data:`START_SNAP` o :data:`END_SNAP`.
-        durative: índice de la :class:`DurativeInstance` (``-1`` en las instantáneas).
+        kind: :data:`INSTANT`, :data:`START_SNAP`, :data:`END_SNAP` o :data:`TIL_SNAP`.
+        durative: índice de la :class:`DurativeInstance` (``-1`` en las instantáneas y los
+            TIL).
         reads: hechos y variables que lee (precondiciones, condiciones de efectos,
             valores de los efectos numéricos, invariantes y duraciones).
         writes: hechos y variables que puede cambiar.
+        time: instante de los TIL (en los demás pasos no se usa).
     """
 
     kind: int
     durative: int
     reads: tuple[int, ...]
     writes: tuple[int, ...]
+    time: float = 0.0
 
 
 class Timeline:
@@ -676,6 +697,9 @@ class TemporalTask(GroundTask):
         relaxation_actions: acciones para la heurística cuando hay variables lineales: con
             sus condiciones y efectos sobre ellas, y los efectos continuos integrados al
             terminar (ritmo × duración).
+        til_times: instantes de los TIL, en orden (el de la acción ``til@k`` es el *k*).
+        til_done_mask: hechos ``til-done@k`` (cuántos son ciertos dice cuántos TIL han
+            ocurrido).
     """
 
     durative: tuple[DurativeInstance, ...] = ()
@@ -684,6 +708,8 @@ class TemporalTask(GroundTask):
     epsilon: float = EPSILON
     linear: LinearModel | None = None
     relaxation_actions: tuple[GroundAction, ...] = ()
+    til_times: tuple[float, ...] = ()
+    til_done_mask: int = 0
 
     @cached_property
     def relaxation(self) -> GroundTask:
@@ -886,6 +912,8 @@ class TemporalTask(GroundTask):
                 return None
             after_step(start, lower)
             running = {k: v for k, v in running.items() if k != snap.durative}
+        elif snap.kind == TIL_SNAP:
+            after_step(0, snap.time)
 
         earliest = [*timeline.earliest, 0.0]
         time = max((earliest[i] + w for i, w in incoming.items()), default=0.0)
@@ -893,15 +921,24 @@ class TemporalTask(GroundTask):
         out = [*timeline.out, ()]
         for i, weight in incoming.items():
             out[i] = (*out[i], (step, weight))
+        # Un TIL ocurre en su instante, y cualquier otro paso, no más tarde que el próximo
+        # TIL pendiente (el que va después en la secuencia).
+        deadline = snap.time if snap.kind == TIL_SNAP else self._next_til(before)
+        if deadline < math.inf:
+            if earliest[step] > deadline + _TOLERANCE:
+                return None
+            out[step] = ((0, -deadline),)
         propagated = False
         if start >= 0 and upper < math.inf:
-            out[step] = ((start, -upper),)
+            out[step] = (*out[step], (start, -upper))
             if earliest[start] < earliest[step] - upper - _TOLERANCE:
                 # El inicio tiene que retrasarse: se propaga, y si eso retrasa el fin, hay
                 # un ciclo positivo (la duración máxima no se puede cumplir).
                 earliest[start] = earliest[step] - upper
                 _propagate(earliest, out, start, skip=step)
                 propagated = True
+                if earliest[0] > _TOLERANCE:
+                    return None  # el retraso choca con el instante de un TIL
                 again = max(earliest[i] + w for i, w in incoming.items())
                 if again > earliest[step] + _TOLERANCE:
                     return None
@@ -947,6 +984,15 @@ class TemporalTask(GroundTask):
         new = Timeline(tuple(earliest), tuple(out), changer, readers, running, linear)
         return new, linear_values
 
+    def _next_til(self, state: State) -> float:
+        """Instante del próximo TIL pendiente en ``state`` (``inf`` si no queda ninguno).
+
+        Los TIL se aplican en orden, así que los que han ocurrido son los primeros."""
+        if not self.til_times:
+            return math.inf
+        k = (state.facts & self.til_done_mask).bit_count()
+        return self.til_times[k] if k < len(self.til_times) else math.inf
+
     def schedule(self, plan: Sequence[int]) -> tuple[list[TemporalStep], float]:
         """Planificación de un plan (índices de acciones): los pasos ordenados por tiempo y
         la duración total. El plan tiene que ser válido."""
@@ -974,6 +1020,8 @@ class TemporalTask(GroundTask):
             snap = self.snaps[index]
             action = self.actions[index]
             time = times[position]
+            if snap.kind == TIL_SNAP:
+                continue  # los TIL no son acciones del plan
             if snap.kind == INSTANT:
                 steps.append((time, position, TemporalStep(time, action.name, action.args, None)))
             elif snap.kind == START_SNAP:
@@ -1033,10 +1081,15 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         compiled.append(item)
         predicates.extend(extra)
     duration_functions = tuple(c.duration for c in compiled if c.duration is not None)
+    til_actions, til_predicates, til_times = _timed_literal_actions(problem)
     snap_domain = replace(
         domain,
-        actions=(*domain.actions, *(a for c in compiled for a in (c.start, c.end))),
-        predicates=(*domain.predicates, *predicates),
+        actions=(
+            *domain.actions,
+            *(a for c in compiled for a in (c.start, c.end)),
+            *til_actions,
+        ),
+        predicates=(*domain.predicates, *predicates, *til_predicates),
         functions=(*domain.functions, *duration_functions),
         durative_actions=(),
     )
@@ -1117,7 +1170,9 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
     kept: list[tuple[GroundAction, int, int]] = []  # (acción, tipo, acción durativa)
     for action in task.actions:
         base, _, kind = action.name.partition("@")
-        if not kind:
+        if action.name.startswith(_TIL):
+            kept.append((replace(action, index=len(kept), cost=0.0), TIL_SNAP, -1))
+        elif not kind:
             kept.append((replace(action, index=len(kept)), INSTANT, -1))
         elif (base, action.args) in instance_of:
             kind_code = START_SNAP if kind == START else END_SNAP
@@ -1133,6 +1188,8 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         instance = instances[durative_index] if durative_index >= 0 else None
         rate_vars = tuple(r.variable for r in instance.continuous) if instance else ()
         info = _snap_info(original, kind_code, durative_index, instance, running_indices, rate_vars)
+        if kind_code == TIL_SNAP:
+            info = replace(info, time=til_times[int(original.name.removeprefix(_TIL))])
         if support:
             expanded = _expand_derived(set(info.reads), support) - running_indices
             info = replace(info, reads=tuple(sorted(expanded)))
@@ -1184,7 +1241,35 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         linear=linear_model,
         relaxation_actions=tuple(relaxation),
         axioms=task.axioms,
+        til_times=tuple(til_times),
+        til_done_mask=mask_of(
+            task.fact_index[Atom(f"til-done@{k}")]
+            for k in range(len(til_times))
+            if Atom(f"til-done@{k}") in task.fact_index
+        ),
     )
+
+
+def _timed_literal_actions(
+    problem: Problem,
+) -> tuple[list[Action], list[Predicate], list[float]]:
+    """Una acción ``til@k`` por cada instante distinto de los TIL, con sus hechos
+    ``til-done@k`` (ver la documentación del módulo), y los instantes."""
+    times = sorted({literal.time for literal in problem.timed_literals})
+    actions: list[Action] = []
+    predicates: list[Predicate] = []
+    for k, time in enumerate(times):
+        done = Atom(f"til-done@{k}")
+        predicates.append(Predicate(done.predicate))
+        precondition: list[Formula] = [Not(done)]
+        if k:
+            precondition.append(Atom(f"til-done@{k - 1}"))
+        effects: list[Effect] = [done]
+        for literal in problem.timed_literals:
+            if literal.time == time:
+                effects.append(literal.atom if literal.positive else Not(literal.atom))
+        actions.append(Action(f"{_TIL}{k}", (), And(tuple(precondition)), And(tuple(effects))))
+    return actions, predicates, times
 
 
 def _derived_support(task: GroundTask) -> dict[int, frozenset[int]]:
