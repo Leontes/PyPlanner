@@ -14,7 +14,7 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 | v0.1 | 1 | STRIPS | ✅ |
 | v0.2 | 2 | PDDL 1.2, subconjunto ADL: tipos, precondiciones negativas y disyuntivas, cuantificadores, igualdad y efectos condicionales | ✅ |
 | v0.3 | 3 | PDDL 2.1: fluentes numéricos (con `:action-costs`) y acciones durativas | ✅ |
-| v0.4 | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | pendiente |
+| v0.4 | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | ✅ |
 | v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | pendiente |
 | v0.6 | 6 | PDDL+: procesos y eventos | pendiente |
 
@@ -35,9 +35,15 @@ claro.
 - **Fluentes numéricos y costes de acción:** estado con valores numéricos, funciones
   estáticas sustituidas, métrica como coste de acción cuando es posible y heurísticas
   numéricas (*h^hbd*).
+- **Planificación temporal:** acciones durativas divididas en inicio y fin, órdenes al
+  estilo de POPF sobre una red temporal y programación lineal (al estilo de COLIN) para
+  los efectos continuos.
+- **PDDL 2.2:** predicados derivados (axiomas evaluados por estratos en cada estado) y
+  literales iniciales temporizados, con plazos y ventanas en la heurística para descartar
+  los estados que ya no llegan a tiempo.
 - **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles.
 - **Búsquedas:** GBFS, A* y WA*, con evaluación inmediata o perezosa, acciones útiles,
-  exploración por tipos y evaluación por lotes.
+  exploración por tipos, búsqueda por novedad (IW y BFWS) y evaluación por lotes.
 - **Rendimiento:** heurísticas y generación de sucesores compiladas con Numba, con
   resultados idénticos a la implementación de referencia en Python. También hay evaluación
   por lotes en GPU con PyTorch.
@@ -126,6 +132,8 @@ Para integrarlo en otro sistema:
 - [docs/motor-busqueda.md](docs/motor-busqueda.md): cómo funciona el motor, sus
   configuraciones y las medidas de rendimiento.
 - [dominios/README.md](dominios/README.md): los benchmarks y su procedencia.
+- [benchmarks/README.md](benchmarks/README.md): colecciones más grandes para medir el
+  rendimiento (`scripts/benchmark.py`), fuera de los tests.
 
 ## Estructura
 

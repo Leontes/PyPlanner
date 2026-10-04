@@ -9,7 +9,7 @@ proyecto avanza en 6 iteraciones y cada una amplía el lenguaje que se acepta:
 | 1 | STRIPS | v0.1 | ✅ |
 | 2 | PDDL 1.2 (subconjunto ADL) | v0.2 | ✅ |
 | 3 | PDDL 2.1 (3a numérico con `:action-costs`, 3b temporal) | v0.3 | ✅ |
-| 4 | PDDL 2.2 (predicados derivados y TIL) | v0.4 | |
+| 4 | PDDL 2.2 (predicados derivados y TIL) | v0.4 | ✅ |
 | 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | |
 | 6 | PDDL+ (procesos y eventos) | v0.6 | |
 
@@ -335,9 +335,8 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
 - **Parser:** ✅ hecho (esquema JSON v5; ver [formato-json.md](formato-json.md)):
   - reglas `:derived`, varias por predicado y recursivas, con comprobación de
     estratificación y prohibidas en efectos y en el estado inicial;
-  - literales `(at t literal)` en `:init`, solo en dominios temporales;
-  - el grounding los rechaza hasta que el motor los soporte.
-- **Motor:**
+  - literales `(at t literal)` en `:init`, solo en dominios temporales.
+- **Motor:** ✅ hecho (ver [motor-busqueda.md](motor-busqueda.md#predicados-derivados-iteración-4)):
   - ✅ evaluación de los axiomas por estratos, con punto fijo en cada estado (también en
     el motor temporal, donde leer un hecho derivado ordena tras lo que lo determina);
   - ✅ soporte de los axiomas en la heurística: acciones relajadas de coste 0, y las
@@ -348,6 +347,14 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
   - ✅ plazos en la heurística (parte A de la heurística temporal): instantes más
     tempranos y ventanas de los TIL en la relajación, para descartar estados sin salida.
     La parte B (plan relajado temporal) queda como trabajo opcional.
+- **Tests:** ✅ tier 4 (psr-middle con predicados derivados y satellite con ventanas de
+  visibilidad) resuelto y validado con VAL con todos los portfolios. Medidas aparte en
+  `benchmarks/` (satellite p01–p20).
+- **Correcciones del motor temporal de la 3b** que destaparon los TIL (ver
+  [motor-busqueda.md](motor-busqueda.md#motor-temporal-iteración-3b)): la búsqueda solo
+  cambia el padre de un nodo temporal sin expandir, y las órdenes separan de los lectores
+  toda escritura real (también las que no cambian el valor) y cuentan los hechos
+  `running@a`.
 
 ## Iteración 5: PDDL 3
 
