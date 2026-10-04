@@ -27,6 +27,13 @@ Después:
   efecto condicional se quitan los literales que ya garantiza la precondición, y si no le
   queda ninguno pasa a ser incondicional;
 * si ninguna cláusula del objetivo es alcanzable, el objetivo queda vacío (imposible).
+
+**Predicados derivados** (iteración 4). Cada regla ``:derived`` se instancia como un
+esquema más del punto fijo: su condición hace de precondición y su cabeza, de añadido. Cada
+cláusula alcanzable de su condición da un :class:`~pyplanner.grounding.task.Axiom`, con el
+estrato de su predicado. Los predicados derivados nunca son estáticos (ninguna acción los
+modifica, pero cambian con los hechos de los que dependen), y el estado inicial trae ya
+calculados sus hechos.
 """
 
 from collections.abc import Iterator, Mapping
@@ -54,6 +61,7 @@ from pyplanner.grounding.numeric import (
     variables_of,
 )
 from pyplanner.grounding.task import (
+    Axiom,
     Condition,
     ConditionalEffect,
     GroundAction,
@@ -104,8 +112,6 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
             disyuntiva, o si usa algo que el motor temporal todavía no admite.
     """
-    if domain.derived:
-        raise UnsupportedFeatureError("el motor de búsqueda todavía no admite predicados derivados")
     if problem.timed_literals:
         raise UnsupportedFeatureError(
             "el motor de búsqueda todavía no admite literales iniciales temporizados"
@@ -162,7 +168,7 @@ def ground_with_context(
     extra_reads = extra_reads or {}
     declarations = {o.name: o.types for o in (*domain.constants, *problem.objects)}
     universe = _TypedUniverse(domain, declarations)
-    fluent_predicates = frozenset(
+    fluent_predicates = domain.derived_predicates | frozenset(
         predicate for action in domain.actions for predicate in _modified(action.effect)
     )
     static_predicates = frozenset(p.name for p in domain.predicates) - fluent_predicates
@@ -183,6 +189,19 @@ def ground_with_context(
         {k: v for k, v in initial_values.items() if k[0] in static_functions},
     )
     schemas = [_Schema(action) for action in domain.actions]
+    # Cada regla de un predicado derivado, como un esquema que "añade" su cabeza. Los
+    # nombres no chocan con los de las acciones porque empiezan por ':'.
+    schemas += [
+        _Schema(
+            Action(
+                f":derived{i}",
+                rule.parameters,
+                rule.condition,
+                Atom(rule.predicate, tuple(p.variable for p in rule.parameters)),
+            )
+        )
+        for i, rule in enumerate(domain.derived)
+    ]
 
     reachable: dict[str, set[tuple[str, ...]]] = {}
     reached: set[Fact] = set()
@@ -211,11 +230,13 @@ def ground_with_context(
     index = {fact: i for i, fact in enumerate(facts)}
     goal_dnf = _sorted_clauses(normalizer.dnf(problem.goal, {}))
     live = {key: inst for key, inst in instances.items() if inst.reachable_clauses(reached)}
+    axiom_instances = {key: inst for key, inst in live.items() if key[0].startswith(":")}
+    live = {key: inst for key, inst in live.items() if key not in axiom_instances}
 
     # Variables numéricas: los términos de funciones relevantes que aparecen en las acciones
     # alcanzables o en el objetivo.
     keys: set[Fact] = set()
-    for instance in live.values():
+    for instance in (*live.values(), *axiom_instances.values()):
         keys |= instance.numeric_keys()
     for clause in goal_dnf:
         for condition in clause.numeric:
@@ -253,21 +274,61 @@ def ground_with_context(
             if action is not None:
                 actions.append(action)
 
+    axioms = _build_axioms(domain, axiom_instances, reached, index, var_index)
     goal = [_condition(clause, index, var_index) for clause in goal_dnf if clause.pos <= reached]
     init_values = tuple(initial_values.get(key) for key in variables)
+    init = State(mask_of([index[f] for f in init_facts if f in index]), init_values)
+    if axioms:
+        from pyplanner.grounding.axioms import AxiomEvaluator
+
+        init = AxiomEvaluator(axioms).evaluate(init)
     task = GroundTask(
         domain_name=domain.name,
         problem_name=problem.name,
         facts=tuple(Atom(pred, tuple(Constant(a) for a in args)) for pred, args in facts),
         actions=tuple(actions),
-        init=State(mask_of([index[f] for f in init_facts if f in index]), init_values),
+        init=init,
         goal=tuple(dict.fromkeys(goal)),
         variables=tuple(FluentTerm(f, tuple(Constant(a) for a in args)) for f, args in variables),
         metric_is_cost=metric_is_cost,
         metric_offset=metric.offset if metric_is_cost else None,
         notes=tuple(notes),
+        axioms=axioms,
     )
     return task, GroundingContext(normalizer, index, var_index)
+
+
+def _build_axioms(
+    domain: Domain,
+    instances: Mapping[tuple[str, tuple[str, ...]], "_Instance"],
+    reached: set[Fact],
+    index: Mapping[Fact, int],
+    var_index: Mapping[Fact, int],
+) -> tuple[Axiom, ...]:
+    """Un axioma por cada cláusula alcanzable de cada regla instanciada, ordenados por
+    estrato, hecho derivado y condición."""
+    strata = domain.derived_strata
+    axioms: set[Axiom] = set()
+    for (name, args), instance in instances.items():
+        predicate = domain.derived[int(name.removeprefix(":derived"))].predicate
+        head = index[(predicate, args)]
+        for clause in instance.reachable_clauses(reached):
+            condition = _condition(clause, index, var_index)
+            if head in condition.pos_facts:
+                continue  # se apoya en sí mismo: no deduce nada nuevo
+            axioms.add(Axiom(head, condition, strata[predicate]))
+    return tuple(
+        sorted(
+            axioms,
+            key=lambda a: (
+                a.stratum,
+                a.head,
+                a.condition.pos_facts,
+                a.condition.neg_facts,
+                tuple(map(str, a.condition.numeric)),
+            ),
+        )
+    )
 
 
 def _normalize(normalizer: Normalizer, schema: "_Schema", binding: Binding) -> "_Instance":
@@ -587,6 +648,8 @@ def _relevant_functions(
     coste serían estados distintos y no se detectarían los repetidos.
     """
     read: set[str] = set(_functions_in(problem.goal))
+    for rule in domain.derived:
+        read |= set(_functions_in(rule.condition))
     for expressions in extra_reads.values():
         for expression in expressions:
             read |= set(_functions_in(expression))

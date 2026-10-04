@@ -21,15 +21,23 @@ Tras la normalización (ver :mod:`pyplanner.grounding.normalize`), todo es conju
 * una acción tiene una precondición, efectos incondicionales (de hechos y numéricos) y
   efectos condicionales;
 * el objetivo es una **disyunción** de condiciones (casi siempre, una sola).
+
+**Predicados derivados** (iteración 4). Sus hechos están en ``facts`` como los demás, pero
+ninguna acción los cambia: los deducen los **axiomas** (:class:`Axiom`) a partir del resto
+del estado. :meth:`GroundTask.apply` los recalcula en cada sucesor (ver
+:mod:`pyplanner.grounding.axioms`), y el estado inicial ya los trae calculados.
 """
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from pyplanner.grounding.numeric import NumericAssignment, NumericCondition
 from pyplanner.loader.ast import Atom, FluentTerm
+
+if TYPE_CHECKING:
+    from pyplanner.grounding.axioms import AxiomEvaluator
 
 
 class State(NamedTuple):
@@ -47,7 +55,7 @@ def bits(mask: int) -> Iterator[int]:
         mask ^= low
 
 
-def mask_of(indices: Iterator[int] | Sequence[int]) -> int:
+def mask_of(indices: Iterable[int]) -> int:
     """Construye el bitset con los índices dados."""
     mask = 0
     for index in indices:
@@ -96,6 +104,20 @@ class ConditionalEffect:
     def __post_init__(self) -> None:
         object.__setattr__(self, "add", mask_of(self.add_facts))
         object.__setattr__(self, "delete", mask_of(self.del_facts))
+
+
+@dataclass(frozen=True)
+class Axiom:
+    """Axioma instanciado: el hecho derivado ``head`` es cierto si ``condition`` lo es.
+
+    Un hecho derivado es cierto si lo hace cierto alguno de sus axiomas. ``stratum`` es el
+    estrato de su predicado: los axiomas se evalúan por estratos crecientes, y la
+    condición solo niega hechos básicos o de estratos anteriores.
+    """
+
+    head: int
+    condition: Condition
+    stratum: int
 
 
 @dataclass(frozen=True)
@@ -264,6 +286,7 @@ class GroundTask:
         metric_offset: valor de la métrica en el estado inicial, si ``metric_is_cost``. El
             valor de la métrica de un plan es ``metric_offset`` más su coste.
         notes: avisos del grounding (por ejemplo, por qué la métrica no se usa como coste).
+        axioms: axiomas de los predicados derivados, ordenados por estrato.
     """
 
     domain_name: str
@@ -276,6 +299,19 @@ class GroundTask:
     metric_is_cost: bool = False
     metric_offset: float | None = None
     notes: tuple[str, ...] = ()
+    axioms: tuple[Axiom, ...] = ()
+
+    @cached_property
+    def derived_mask(self) -> int:
+        """Bitset de los hechos derivados (las cabezas de los axiomas)."""
+        return mask_of({axiom.head for axiom in self.axioms})
+
+    @cached_property
+    def axiom_evaluator(self) -> "AxiomEvaluator":
+        """Evaluador de los axiomas (ver :mod:`pyplanner.grounding.axioms`)."""
+        from pyplanner.grounding.axioms import AxiomEvaluator
+
+        return AxiomEvaluator(self.axioms)
 
     @cached_property
     def fact_index(self) -> dict[Atom, int]:
@@ -343,8 +379,13 @@ class GroundTask:
         """Aplica una acción; ``None`` si no se puede. Ver :meth:`GroundAction.apply`.
 
         Las tareas temporales (:class:`pyplanner.grounding.temporal.TemporalTask`) lo
-        redefinen para comprobar además la red temporal y las invariantes."""
-        return action.apply(state)
+        redefinen para comprobar además la red temporal y las invariantes.
+
+        Si hay predicados derivados, recalcula sus hechos en el sucesor."""
+        successor = action.apply(state)
+        if successor is None or not self.axioms:
+            return successor
+        return self.axiom_evaluator.evaluate(successor)
 
     def atoms(self, state: State) -> list[Atom]:
         """Los hechos ciertos en ``state`` (para depurar y mostrar)."""

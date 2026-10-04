@@ -344,8 +344,8 @@ def test_tier4_benchmarks_load(directory: str, name: str) -> None:
     assert loaded.derived or result.timed_literals
 
 
-def test_the_engine_rejects_pddl22_for_now() -> None:
-    path = DOMINIOS_DIR / "tier4-pddl22" / "derived-predicates" / "psr-middle"
+def test_the_engine_rejects_timed_literals_for_now() -> None:
+    path = DOMINIOS_DIR / "tier4-pddl22" / "timed-initial-literals" / "satellite"
     loaded = read_domain(path / "domain.pddl")
-    with pytest.raises(UnsupportedFeatureError, match="predicados derivados"):
+    with pytest.raises(UnsupportedFeatureError, match="literales iniciales temporizados"):
         ground(loaded, read_problem(path / "p01.pddl", loaded))

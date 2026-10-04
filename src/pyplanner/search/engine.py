@@ -218,9 +218,10 @@ class _BestFirstSearch:
         self._iterations = 0
         self._message = ""
         self.batch_size = config.batch_size
-        # En las tareas clásicas se aplica la acción directamente (una llamada menos por
-        # sucesor); las temporales redefinen GroundTask.apply.
-        self._direct_apply = type(task).apply is GroundTask.apply
+        # En las tareas clásicas sin axiomas se aplica la acción directamente (una llamada
+        # menos por sucesor); las temporales redefinen GroundTask.apply, y con axiomas hay que
+        # recalcular los hechos derivados.
+        self._direct_apply = type(task).apply is GroundTask.apply and not task.axioms
         self._best_h = float("inf")
         self._stalled = 0
 

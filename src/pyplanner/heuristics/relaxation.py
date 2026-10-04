@@ -30,6 +30,13 @@ para cada objetivo pendiente elige su mejor *soportador* y repite con sus precon
   heurística nunca declara un callejón sin salida que no lo es. Los efectos que empeoran una
   condición se ignoran, como los borrados.
 * **Objetivo disyuntivo.** El valor es el mínimo entre las cláusulas.
+* **Predicados derivados** (iteración 4). Cada axioma es una acción relajada de coste 0
+  que añade su hecho derivado. Todas comparten un **operador ficticio** (el de índice
+  ``len(task.actions)``, de coste 0), que nunca es una acción útil. Las condiciones que
+  **niegan** un hecho derivado se dan por ciertas, como hace Fast Downward por defecto: su
+  complementario no lo "añade" ninguna acción, sino que depende de que dejen de cumplirse
+  todos sus axiomas, y tratarlo como un hecho más declararía callejones sin salida que no
+  lo son.
 
 **Desempates deterministas e independientes del orden.** El Dijkstra ordena los hechos
 por (coste, nivel), donde el nivel de una acción es 1 + el máximo nivel de sus
@@ -81,10 +88,14 @@ class RelaxedTask:
     def __init__(self, task: GroundTask) -> None:
         self.task = task
         self.num_base = len(task.facts)
+        derived = task.derived_mask
         negated = sorted(
-            {f for a in task.actions for f in a.neg_facts}
+            f
+            for f in {f for a in task.actions for f in a.neg_facts}
             | {f for a in task.actions for e in a.conditional for f in e.condition.neg_facts}
             | {f for clause in task.goal for f in clause.neg_facts}
+            | {f for axiom in task.axioms for f in axiom.condition.neg_facts}
+            if not derived >> f & 1
         )
         self.negated = tuple(negated)
         self.negated_mask = mask_of(negated)
@@ -100,7 +111,9 @@ class RelaxedTask:
         def literals(
             pos: Sequence[int], neg: Sequence[int], nums: Sequence[NumericCondition]
         ) -> tuple[int, ...]:
-            return tuple(sorted({*pos, *(self._complement[f] for f in neg), *map(node, nums)}))
+            complement = self._complement
+            negative = (complement[f] for f in neg if f in complement)  # sin los derivados
+            return tuple(sorted({*pos, *negative, *map(node, nums)}))
 
         def adds(add: Sequence[int], deletes: Sequence[int]) -> tuple[int, ...]:
             complement = self._complement
@@ -120,11 +133,21 @@ class RelaxedTask:
                 )
                 pre = tuple(sorted({*base_pre, *condition}))
                 self._append(pre, adds(effect.add_facts, effect.del_facts), action, effect.numeric)
+        #: Operador ficticio de los axiomas (-1 si no hay), y número de operadores.
+        self.axiom_operator = len(task.actions) if task.axioms else -1
+        self.num_operators = len(task.actions) + bool(task.axioms)
+        for axiom in task.axioms:
+            body = axiom.condition
+            self.pre.append(literals(body.pos_facts, body.neg_facts, body.numeric))
+            self.add.append((axiom.head,))
+            self.cost.append(0.0)
+            self.operator.append(self.axiom_operator)
+            self._numeric_effects.append(())
         self.goal = [literals(c.pos_facts, c.neg_facts, c.numeric) for c in task.goal]
         self.numeric = list(numeric)
         self.num_facts = self.numeric_offset + len(self.numeric)
         self.num_actions = len(self.pre)
-        self.operator_cost = [a.cost for a in task.actions]
+        self.operator_cost = [a.cost for a in task.actions] + [0.0] * bool(task.axioms)
         self.goal_facts = frozenset(f for clause in self.goal for f in clause)
 
         # Aristas numéricas.
@@ -311,7 +334,7 @@ class RelaxedTask:
             operator = self.operator[a]
             if times > per_operator.get(operator, 0.0):
                 per_operator[operator] = times
-            if all(cost[p] == 0 for p in self.pre[a]):
+            if operator != self.axiom_operator and all(cost[p] == 0 for p in self.pre[a]):
                 preferred.add(operator)
         # Suma en orden de operador: el mismo orden de sumas que en Numba.
         value = sum(self.operator_cost[o] * times for o, times in sorted(per_operator.items()))

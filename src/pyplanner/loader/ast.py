@@ -14,6 +14,7 @@ varios si se declaró con ``(either ...)``. Sin ``:typing``, todo es de tipo ``o
 raíz de la jerarquía.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -435,6 +436,26 @@ class Predicate:
         return len(self.parameters)
 
 
+def derived_uses(
+    formula: "Formula", derived: frozenset[str], negated: bool = False
+) -> Iterator[tuple[str, bool]]:
+    """Predicados derivados que aparecen en ``formula``, y si aparecen negados (bajo un
+    número impar de negaciones, contando el antecedente de ``imply``)."""
+    if isinstance(formula, Atom):
+        if formula.predicate in derived:
+            yield formula.predicate, negated
+    elif isinstance(formula, Not):
+        yield from derived_uses(formula.arg, derived, not negated)
+    elif isinstance(formula, Imply):
+        yield from derived_uses(formula.left, derived, not negated)
+        yield from derived_uses(formula.right, derived, negated)
+    elif isinstance(formula, And | Or):
+        for arg in formula.args:
+            yield from derived_uses(arg, derived, negated)  # type: ignore[arg-type]
+    elif isinstance(formula, Exists | Forall):
+        yield from derived_uses(formula.arg, derived, negated)
+
+
 @dataclass(frozen=True)
 class DerivedRule:
     """Regla de un predicado derivado (PDDL 2.2): ``(:derived (predicate parameters...)
@@ -513,6 +534,27 @@ class Domain:
     def derived_predicates(self) -> frozenset[str]:
         """Nombres de los predicados derivados (los que tienen alguna regla)."""
         return frozenset(rule.predicate for rule in self.derived)
+
+    @cached_property
+    def derived_strata(self) -> dict[str, int]:
+        """Estrato de cada predicado derivado: el menor que respeta sus dependencias.
+
+        Un predicado está en un estrato mayor o igual que los que usa en positivo, y
+        estrictamente mayor que los que usa negados. Se supone que las reglas son
+        estratificables (lo comprueba la fase 2 del parser).
+        """
+        derived = self.derived_predicates
+        strata = dict.fromkeys(sorted(derived), 0)
+        changed = True
+        while changed:
+            changed = False
+            for rule in self.derived:
+                for used, negated in derived_uses(rule.condition, derived):
+                    needed = strata[used] + negated
+                    if strata[rule.predicate] < needed:
+                        strata[rule.predicate] = needed
+                        changed = True
+        return strata
 
     @cached_property
     def _parents(self) -> dict[str, str]:

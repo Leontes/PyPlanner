@@ -2,6 +2,7 @@
 
 from pyplanner.grounding.grounder import ground
 from pyplanner.grounding.task import (
+    Axiom,
     Condition,
     ConditionalEffect,
     GroundAction,
@@ -12,6 +13,7 @@ from pyplanner.grounding.task import (
 )
 
 __all__ = [
+    "Axiom",
     "Condition",
     "ConditionalEffect",
     "GroundAction",

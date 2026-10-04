@@ -51,6 +51,13 @@ con una función ``duration@a`` que el programa interpreta como ``t_fin − t_in
 activa al empezar si se cumplen las condiciones, y se apaga en cuanto la condición
 ``over all`` deja de cumplirse mientras dura la acción (ver :class:`_Watch`).
 
+**Predicados derivados** (iteración 4): los axiomas se instancian con el resto de la tarea
+y se recalculan tras cada paso, antes de comprobar las invariantes. Ninguna acción escribe
+un hecho derivado, así que para las órdenes un paso que lee un hecho derivado lee en
+realidad todos los hechos y variables de los que depende (a través de sus axiomas, de forma
+transitiva): queda ordenado después del último paso que cambió cualquiera de ellos. Es
+correcto, aunque puede ordenar más de lo estrictamente necesario.
+
 **Límites** (error claro): lo que la programación lineal no puede expresar (disyunciones
 y condiciones de efectos condicionales sobre variables lineales, expresiones no lineales,
 ``?duration`` no fijo en el ritmo de un efecto continuo).
@@ -691,6 +698,7 @@ class TemporalTask(GroundTask):
             self.init,
             self.goal,
             self.variables,
+            axioms=self.axioms,
         )
 
     @cached_property
@@ -749,6 +757,8 @@ class TemporalTask(GroundTask):
         successor = action.apply(state)
         if successor is None:
             return None
+        if self.axioms:
+            successor = self.axiom_evaluator.evaluate(successor)
         running_of = self.running_of
         durative = self.durative
         if self._has_watches:
@@ -1055,6 +1065,7 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         if kind in (START, END):
             groups.setdefault((base, action.args), {START: [], END: []})[kind].append(action)
 
+    support = _derived_support(task)
     running_facts = {item.running.name for item in compiled}
     running_indices = frozenset(
         i for i, fact in enumerate(task.facts) if fact.predicate in running_facts
@@ -1082,6 +1093,7 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         reads: set[int] = set()
         for condition in (*(invariant or ()), *(c for w in watches for c in w.over_all)):
             reads |= _condition_keys(condition)
+        reads = _expand_derived(reads, support)
         instance_index = len(instances)
         instance_of[(base, args)] = instance_index
         if item.duration is not None:
@@ -1120,9 +1132,21 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
     for original, (_, kind_code, durative_index) in zip((a for a, _, _ in kept), kept, strict=True):
         instance = instances[durative_index] if durative_index >= 0 else None
         rate_vars = tuple(r.variable for r in instance.continuous) if instance else ()
-        snaps_info.append(
-            _snap_info(original, kind_code, durative_index, instance, running_indices, rate_vars)
-        )
+        info = _snap_info(original, kind_code, durative_index, instance, running_indices, rate_vars)
+        if support:
+            expanded = _expand_derived(set(info.reads), support) - running_indices
+            info = replace(info, reads=tuple(sorted(expanded)))
+        snaps_info.append(info)
+    if linear_model is not None:
+        for axiom in task.axioms:
+            if any(
+                variables_of(c.expression) & linear_model.symbolic for c in axiom.condition.numeric
+            ):
+                raise UnsupportedFeatureError(
+                    f"el predicado derivado {task.facts[axiom.head]} depende de una variable "
+                    "que cambia de forma continua o con ?duration: el programa lineal no puede "
+                    "decidir su valor"
+                )
 
     goal = tuple(
         Condition(
@@ -1159,7 +1183,41 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         metric_is_makespan=is_makespan,
         linear=linear_model,
         relaxation_actions=tuple(relaxation),
+        axioms=task.axioms,
     )
+
+
+def _derived_support(task: GroundTask) -> dict[int, frozenset[int]]:
+    """Hechos básicos y variables (con la codificación de :class:`SnapInfo`) de los que
+    depende cada hecho derivado, directamente o a través de otros hechos derivados."""
+    derived = task.derived_mask
+    direct: dict[int, set[int]] = {}
+    for axiom in task.axioms:
+        direct.setdefault(axiom.head, set()).update(_condition_keys(axiom.condition))
+    support = {
+        head: {k for k in keys if k < 0 or not derived >> k & 1} for head, keys in direct.items()
+    }
+    changed = True
+    while changed:  # reglas recursivas: punto fijo
+        changed = False
+        for head, keys in direct.items():
+            current = support[head]
+            size = len(current)
+            for key in keys:
+                if key >= 0 and derived >> key & 1 and key != head:
+                    current |= support[key]
+            changed |= len(current) != size
+    return {head: frozenset(keys) for head, keys in support.items()}
+
+
+def _expand_derived(keys: set[int], support: Mapping[int, frozenset[int]]) -> set[int]:
+    """``keys`` con cada hecho derivado sustituido por aquello de lo que depende."""
+    if not support:
+        return keys
+    result: set[int] = set()
+    for key in keys:
+        result |= support.get(key, {key})
+    return result
 
 
 def _linear_parts(

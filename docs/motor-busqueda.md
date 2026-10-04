@@ -1,4 +1,4 @@
-# Motor de búsqueda (iteraciones 1 a 3b)
+# Motor de búsqueda (iteraciones 1 a 4)
 
 Cómo está construido el motor y cómo se usa. Las decisiones de fondo (portfolio, lotes,
 GPU, técnicas descartadas) están en el [roadmap](ROADMAP.md#motor-de-búsqueda-diseño-y-repertorio).
@@ -201,6 +201,43 @@ cada paso. El código está en `grounding/temporal.py`.
   dependería de qué solución se elija: haría falta programación lineal entera),
   invariantes y condiciones no lineales, y `?duration` no fijo en el ritmo de un efecto
   continuo (ritmo × tiempo no es lineal).
+
+## Predicados derivados (iteración 4)
+
+- **Grounding.** Cada regla `:derived` se instancia como un esquema más del punto fijo
+  de alcanzabilidad: su condición hace de precondición y su cabeza, de añadido. Cada
+  cláusula alcanzable de la condición (en DNF) da un `Axiom` (hecho derivado, condición,
+  estrato). Los predicados derivados nunca son estáticos.
+- **Estado.** Los hechos derivados están en el mismo bitset que los demás.
+  `GroundTask.apply` los recalcula en cada sucesor con `AxiomEvaluator`
+  (`pyplanner.grounding.axioms`), y el estado inicial ya los trae calculados. Por eso el
+  atajo de la búsqueda que aplica la acción directamente se desactiva si hay axiomas.
+- **Evaluación por estratos.** El estrato de un predicado es el menor que deja los
+  predicados que usa en positivo en su estrato o antes, y los que niega, estrictamente
+  antes. En cada estrato se calcula el punto fijo mínimo con contadores, como el
+  *AxiomEvaluator* de Fast Downward:
+  - la parte de la condición que no cambia dentro del estrato se comprueba una vez;
+  - los hechos del propio estrato (reglas recursivas) bajan un contador;
+  - los axiomas se agrupan por su primer hecho externo positivo, y solo se revisan los de
+    los hechos ciertos.
+
+  La negación es de mundo cerrado: un hecho derivado es falso si ningún axioma lo hace
+  cierto. En psr cuesta unos 50 µs por estado.
+- **Heurísticas.** Cada axioma es una acción relajada de coste 0. Todas comparten un
+  operador ficticio de coste 0 (índice `len(task.actions)`) que nunca es una acción útil,
+  así que los núcleos de Numba y PyTorch no cambian. Las condiciones que **niegan** un
+  hecho derivado se dan por ciertas en la relajación, como hace Fast Downward por defecto.
+  Su complementario no lo añade ninguna acción: depende de que dejen de cumplirse todos
+  sus axiomas, y tratarlo como un hecho más declararía callejones sin salida que no lo
+  son. Es una aproximación: en psr, `(forall (?b) (not (affected ?b)))` no cuenta en la
+  heurística.
+- **Motor temporal.** Los axiomas se recalculan tras cada paso, antes de comprobar
+  invariantes y vigilantes. Ninguna acción escribe un hecho derivado, así que leer uno
+  cuenta, para las órdenes al estilo de POPF, como leer todos los hechos y variables de
+  los que depende de forma transitiva. Es correcto, aunque puede ordenar más de lo
+  necesario. Un predicado derivado que depende de una variable lineal (con efectos
+  continuos o `?duration` no fijo) da un error claro: el programa lineal no puede decidir
+  su valor.
 
 ## Heurísticas
 
@@ -642,6 +679,13 @@ del tier 3 tardan milisegundos.
 - **Se descartó exigir la invariante ya en el inicio** (cuando los efectos `at start` no
   la tocan). Evita generar inicios que la rompen, pero empeoró la búsqueda: 46 resueltos
   frente a 47 y un 20% más de tiempo total.
+
+### Iteración 4: predicados derivados
+
+psr-middle p01 y p02 (IPC 2004): unos 400 axiomas en un solo estrato y 28 acciones;
+grounding en 0,25 s. Todas las configuraciones predefinidas los resuelven en
+milisegundos, salvo IW(1), que es incompleta. Los tiempos de la CLI en los tiers 1 y 2 son
+los mismos que antes de añadir los axiomas (medidos en las mismas condiciones).
 
 ### Iteración 3b: búsqueda por novedad y portfolios
 

@@ -158,10 +158,21 @@ class CompiledRelaxation:
             self.pre_idx,
             self.operator,
             self.operator_cost,
-            len(self.relaxed.task.actions),
+            self.relaxed.num_operators,
         )
         bounds = pointers.tolist()
         flat = preferred[: bounds[-1]].tolist()  # solo la parte usada (el array es lote × hechos)
+        if self.relaxed.axiom_operator >= 0:
+            # El operador ficticio de los axiomas es el último: nunca es una acción útil.
+            axiom = self.relaxed.axiom_operator
+            return [
+                Evaluation(DEAD_END)
+                if value == INF
+                else Evaluation(
+                    value, tuple(o for o in flat[bounds[row] : bounds[row + 1]] if o != axiom)
+                )
+                for row, value in enumerate(result.tolist())
+            ]
         return [
             Evaluation(DEAD_END)
             if value == INF

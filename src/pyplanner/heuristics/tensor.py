@@ -79,7 +79,7 @@ class TensorRelaxation:
         self.num_facts = relaxed.num_facts
         self.num_base_facts = relaxed.num_base
         self.num_bytes = (self.num_base_facts + 7) // 8
-        self.num_operators = len(relaxed.task.actions)
+        self.num_operators = relaxed.num_operators
         self.num_actions = relaxed.num_actions
         self.num_variables = len(relaxed.task.variables)
 
@@ -377,8 +377,10 @@ class TensorRelaxation:
         preferred = torch.nonzero(self._to_operators(plan & (unsatisfied == 0))).tolist()
 
         per_state: list[list[int]] = [[] for _ in range(batch)]
+        axiom = self.relaxed.axiom_operator  # nunca es una acción útil
         for row, operator in preferred:
-            per_state[row].append(operator)
+            if operator != axiom:
+                per_state[row].append(operator)
         return [
             Evaluation(DEAD_END) if is_dead else Evaluation(value, tuple(actions))
             for is_dead, value, actions in zip(

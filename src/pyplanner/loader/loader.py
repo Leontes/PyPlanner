@@ -93,6 +93,7 @@ from pyplanner.loader.ast import (
     TotalTime,
     Variable,
     When,
+    derived_uses,
 )
 from pyplanner.requirements import (
     KNOWN_REQUIREMENTS,
@@ -563,7 +564,7 @@ class _Context:
         edges: dict[str, set[str]] = {}
         negative: list[tuple[int, str, str]] = []
         for i, rule in enumerate(rules):
-            for used, negated in _derived_uses(rule.condition, self.derived, False):
+            for used, negated in derived_uses(rule.condition, self.derived):
                 edges.setdefault(rule.predicate, set()).add(used)
                 if negated:
                     negative.append((i, rule.predicate, used))
@@ -761,26 +762,6 @@ class _Context:
 
 #: Momento de cada operador temporal del JSON.
 _TIMES = {"at-start": START, "at-end": END, "over-all": ALL}
-
-
-def _derived_uses(
-    formula: Formula, derived: frozenset[str], negated: bool
-) -> Iterable[tuple[str, bool]]:
-    """Predicados derivados que aparecen en ``formula``, y si aparecen negados (bajo un
-    número impar de negaciones, contando el antecedente de ``imply``)."""
-    if isinstance(formula, Atom):
-        if formula.predicate in derived:
-            yield formula.predicate, negated
-    elif isinstance(formula, Not):
-        yield from _derived_uses(formula.arg, derived, not negated)
-    elif isinstance(formula, Imply):
-        yield from _derived_uses(formula.left, derived, not negated)
-        yield from _derived_uses(formula.right, derived, negated)
-    elif isinstance(formula, And | Or):
-        for arg in formula.args:
-            yield from _derived_uses(arg, derived, negated)  # type: ignore[arg-type]
-    elif isinstance(formula, Exists | Forall):
-        yield from _derived_uses(formula.arg, derived, negated)
 
 
 def _reaches(edges: Mapping[str, set[str]], start: str, goal: str) -> bool:

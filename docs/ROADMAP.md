@@ -338,8 +338,10 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
   - literales `(at t literal)` en `:init`, solo en dominios temporales;
   - el grounding los rechaza hasta que el motor los soporte.
 - **Motor:**
-  - evaluación de los axiomas por estratos, con punto fijo en cada estado;
-  - soporte de los axiomas en la heurística;
+  - ✅ evaluación de los axiomas por estratos, con punto fijo en cada estado (también en
+    el motor temporal, donde leer un hecho derivado ordena tras lo que lo determina);
+  - ✅ soporte de los axiomas en la heurística: acciones relajadas de coste 0, y las
+    negaciones de hechos derivados se dan por ciertas (como Fast Downward);
   - los TIL se tratan como eventos obligatorios en el eje temporal del motor de la
     iteración 3b.
 
