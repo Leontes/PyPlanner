@@ -1,4 +1,4 @@
-# Motor de búsqueda (iteraciones 1 a 4)
+# Motor de búsqueda (iteraciones 1 a 5)
 
 Cómo está construido el motor y cómo se usa. Las decisiones de fondo (portfolio, lotes,
 GPU, técnicas descartadas) están en el [roadmap](ROADMAP.md#motor-de-búsqueda-diseño-y-repertorio).
@@ -303,6 +303,44 @@ cada paso. El código está en `grounding/temporal.py`.
     heurística base detecta los mismos callejones.
   - **Pendiente** (trabajo opcional, ver el roadmap). Extraer además un plan relajado que
     respete los tiempos y usarlo como heurística.
+
+## Restricciones de trayectoria (iteración 5b)
+
+Las restricciones duras de PDDL 3 (`:constraints` del dominio y del problema) son
+**monitores** del motor (`pyplanner.grounding.monitors`). Cada restricción instanciada (los
+`forall` se expanden sobre los objetos) es un pequeño autómata con hechos propios en el
+estado, que se actualiza tras cada paso con el estado nuevo, como los axiomas pero con
+memoria.
+
+- **Sin tiempo:** `always` descarta el paso que la incumple; `sometime` tiene un hecho
+  `done` que exige el objetivo; `at-most-once` recuerda si φ se ha cumplido y si ha dejado
+  de cumplirse; `sometime-before` recuerda si ψ se ha cumplido en un estado anterior;
+  `sometime-after` deja φ pendiente hasta que se cumpla ψ, y el objetivo exige que no
+  quede nada pendiente; `at end` se añade al objetivo.
+- **Con tiempo:** usan **marcas** de instante. En una tarea temporal, cada instante es un
+  TIL sin literales (su hecho `til-done@k` es la marca): por la regla de OPTIC, los pasos
+  anteriores a un TIL pendiente ocurren no más tarde que él, y la heurística de plazos de
+  la iteración 4 entiende las ventanas que crean. En una tarea clásica, el instante es el
+  número de pasos (como en VAL, la acción k ocurre en el instante k): un contador de pasos,
+  saturado en el último instante que importa, enciende las marcas.
+  - `within t φ`: `done` si φ se cumple antes de la marca;
+  - `hold-after` y `hold-during`: descartan el paso que incumple φ con las marcas
+    adecuadas;
+  - `always-within t φ ψ`: en clásico, un contador de los pasos que lleva pendiente; en
+    temporal, la línea temporal recuerda el paso que disparó φ y, cuando se cumple ψ, la
+    red temporal recibe la arista "ψ no más tarde que t después de φ", como una duración
+    máxima.
+- **Órdenes en el motor temporal.** Un paso que puede cambiar algo vigilado lee y escribe
+  los hechos del monitor (y lee sus marcas), así que esos pasos quedan ordenados en el
+  tiempo como en la secuencia: el resultado de un monitor depende del orden.
+- **Heurística.** Las salidas buenas de los monitores (`done`, quitar lo pendiente) son
+  reglas relajadas de coste 0 con el operador ficticio de los axiomas. Las que solo
+  descartan estados no cuentan, así que la relajación sigue siendo optimista.
+- **Coste.** Un monitor solo se reevalúa si el paso cambia algo de sus fórmulas o de sus
+  marcas.
+- **VAL** valida `within`, `hold-during`, `always-within` y los operadores sin tiempo,
+  pero su `hold-after` no funciona (falla con planes válidos o se cae): esos planes se
+  comprueban con la simulación propia.
 
 ## Heurísticas
 

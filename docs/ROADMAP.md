@@ -390,6 +390,11 @@ dominio compilado).
   de objetos (esquema JSON v6; ver [formato-json.md](formato-json.md#pddl-3-v6)), con la
   gramática de Gerevini y Long (2005); el motor rechaza las restricciones y las
   preferencias hasta la 5b y la 5c.
+- **Restricciones duras (5b):** ✅ monitores en el motor para los diez operadores, en tareas
+  clásicas (el instante es el número de pasos) y temporales (marcas de instante como TIL
+  sin literales; `always-within` añade aristas a la red temporal). Sus salidas buenas son
+  reglas relajadas de la heurística. Resuelve trucks (plazos `within`), validado con VAL
+  (ver [motor-busqueda.md](motor-busqueda.md#restricciones-de-trayectoria-iteración-5b)).
 - **Funciones de objetos (5d):** ✅ adelantada a la 5a: la fase 2 las compila a predicados
   sobre el documento JSON, antes del AST, así que el motor no las ve y funcionan con todo
   lo demás. Planes clásicos y temporales validados con VAL contra el dominio compilado.

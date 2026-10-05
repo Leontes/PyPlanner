@@ -22,7 +22,7 @@ PARSER_TIER = 5
 #: se dividen en partes (la 3 en numérica y temporal). Al cerrar la iteración se sube el
 #: tier y se vacía su entrada.
 PARSER_PARTIAL: dict[int, frozenset[str]] = {}
-SUPPORTED_PARTIAL: dict[int, frozenset[str]] = {}
+SUPPORTED_PARTIAL: dict[int, frozenset[str]] = {5: frozenset({"constraints"})}
 
 _TIER_DIR = re.compile(r"^tier(\d+)-")
 

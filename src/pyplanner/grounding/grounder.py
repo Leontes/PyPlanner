@@ -36,8 +36,9 @@ modifica, pero cambian con los hechos de los que dependen), y el estado inicial 
 calculados sus hechos.
 """
 
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+import math
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from itertools import product
 
 from pyplanner.errors import UnsupportedFeatureError
@@ -77,6 +78,9 @@ from pyplanner.loader.ast import (
     Atom,
     Comparison,
     Constant,
+    Constraint,
+    ConstraintAnd,
+    ConstraintForall,
     Domain,
     Effect,
     Exists,
@@ -89,8 +93,10 @@ from pyplanner.loader.ast import (
     Not,
     NumericEffect,
     Or,
+    Preference,
     Problem,
     TotalTime,
+    TrajectoryConstraint,
     Variable,
     When,
     preferences_in,
@@ -114,17 +120,32 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
             disyuntiva, o si usa algo que el motor temporal todavía no admite.
     """
-    if domain.constraints is not None or problem.constraints is not None:
-        raise UnsupportedFeatureError(
-            "el motor de búsqueda todavía no admite restricciones de trayectoria"
-        )
     if _has_preferences(domain, problem):
         raise UnsupportedFeatureError("el motor de búsqueda todavía no admite preferencias")
     if domain.durative_actions or problem.timed_literals:
         from pyplanner.grounding.temporal import ground_temporal
 
-        return ground_temporal(domain, problem)
+        return ground_temporal(domain, problem, _marker_times(domain, problem))
     return ground_with_context(domain, problem)[0]
+
+
+def _marker_times(domain: Domain, problem: Problem) -> frozenset[float]:
+    """Instantes de las restricciones con tiempo (``within``, ``hold-after`` y
+    ``hold-during``), que en una tarea temporal son TIL sin literales."""
+    times: set[float] = set()
+
+    def visit(node: object) -> None:
+        if isinstance(node, ConstraintAnd):
+            for arg in node.args:
+                visit(arg)
+        elif isinstance(node, ConstraintForall | Preference):
+            visit(node.arg)
+        elif isinstance(node, TrajectoryConstraint) and node.op != "always-within":
+            times.update(node.times)
+
+    visit(domain.constraints)
+    visit(problem.constraints)
+    return frozenset(times)
 
 
 def _has_preferences(domain: Domain, problem: Problem) -> bool:
@@ -167,6 +188,7 @@ def ground_with_context(
     problem: Problem,
     extra_reads: Mapping[str, tuple[Expression, ...]] | None = None,
     extra_targeted: frozenset[str] = frozenset(),
+    time_markers: Mapping[float, str] | None = None,
 ) -> tuple[GroundTask, GroundingContext]:
     """Como :func:`ground`, para un dominio sin acciones durativas, pero devuelve también
     el contexto de grounding.
@@ -177,6 +199,9 @@ def ground_with_context(
             ser variables del estado.
         extra_targeted: funciones que se modifican fuera de los efectos de las acciones
             (con efectos continuos): no son estáticas.
+        time_markers: en una tarea temporal, el hecho que marca que ha pasado cada instante
+            de las restricciones con tiempo (un TIL sin literales). Sin él, la tarea es
+            clásica y el instante de un estado es su número de pasos.
     """
     extra_reads = extra_reads or {}
     declarations = {o.name: o.types for o in (*domain.constants, *problem.objects)}
@@ -308,7 +333,178 @@ def ground_with_context(
         notes=tuple(notes),
         axioms=axioms,
     )
-    return task, GroundingContext(normalizer, index, var_index)
+    context = GroundingContext(normalizer, index, var_index)
+    constraints = [c for c in (domain.constraints, problem.constraints) if c is not None]
+    if constraints:
+        task = _attach_monitors(task, context, constraints, universe.objects_of, time_markers)
+    return task, context
+
+
+def _attach_monitors(
+    task: GroundTask,
+    context: "GroundingContext",
+    constraints: list[Constraint],
+    objects_of: Callable[[tuple[str, ...]], Sequence[str]],
+    time_markers: Mapping[float, str] | None,
+) -> GroundTask:
+    """La tarea con las restricciones de trayectoria como monitores (ver
+    :mod:`pyplanner.grounding.monitors`): sus hechos, sus reglas relajadas y lo que añaden
+    al objetivo. ``time_markers`` son las marcas de los instantes en una tarea temporal; en
+    una clásica, el instante es el número de pasos y se añade un contador."""
+    from pyplanner.grounding.monitors import (
+        Monitor,
+        MonitorEvaluator,
+        MonitorRule,
+        StepClock,
+    )
+
+    instances: list[tuple[TrajectoryConstraint, Binding]] = []
+
+    def visit(node: Constraint, binding: Binding) -> None:
+        if isinstance(node, ConstraintAnd):
+            for arg in node.args:
+                visit(arg, binding)
+        elif isinstance(node, ConstraintForall):
+            names = [p.name for p in node.parameters]
+            domains = [objects_of(p.types) for p in node.parameters]
+            for values in product(*domains):
+                visit(node.arg, {**binding, **dict(zip(names, values, strict=True))})
+        elif isinstance(node, TrajectoryConstraint):
+            instances.append((node, binding))
+        else:
+            raise UnsupportedFeatureError("el motor de búsqueda todavía no admite preferencias")
+
+    for constraint in constraints:
+        visit(constraint, {})
+
+    facts = list(task.facts)
+
+    def new_fact(name: str) -> int:
+        facts.append(Atom(name))
+        return len(facts) - 1
+
+    # Marcas de los instantes: en una tarea temporal, los hechos til-done@k de los TIL; en
+    # una clásica, after@n (n pasos o más), que enciende el contador de pasos.
+    marks: dict[int, int] = {}  # clásica: n → hecho
+
+    def passed(time: float, strict: bool) -> int:
+        """Hecho cierto desde que ha pasado ``time`` (con ``strict``, desde que el instante
+        es mayor que ``time``; si no, mayor o igual)."""
+        if time_markers is not None:
+            return task.fact_index[Atom(time_markers[time])]
+        n = math.floor(time) + 1 if strict else math.ceil(time)
+        if n not in marks:
+            marks[n] = new_fact(f"after@{n}")
+        return marks[n]
+
+    monitors: list[Monitor] = []
+    rules: list[MonitorRule] = []
+    goal_pos: set[int] = set()
+    goal_neg: set[int] = set()
+    at_end: list[tuple[Condition, ...]] = []
+    for k, (node, binding) in enumerate(instances):
+        dnfs = [context.conditions(formula, binding) for formula in node.formulas]
+        label = str(node) + (f" con {binding}" if binding else "")
+        tag = f"{node.op}#{k}"
+        if node.op == "at-end":
+            at_end.append(dnfs[0])
+        elif node.op == "always":
+            monitors.append(Monitor("always", dnfs[0], label=label))
+        elif node.op == "sometime":
+            done = new_fact(f"{tag}-done")
+            monitors.append(Monitor("sometime", dnfs[0], facts=(done,), label=label))
+            rules.extend(MonitorRule(c, add_facts=(done,)) for c in dnfs[0])
+            goal_pos.add(done)
+        elif node.op == "at-most-once":
+            seen, closed = new_fact(f"{tag}-seen"), new_fact(f"{tag}-closed")
+            monitors.append(Monitor("at-most-once", dnfs[0], facts=(seen, closed), label=label))
+        elif node.op == "sometime-before":
+            seen = new_fact(f"{tag}-seen")
+            monitors.append(Monitor(node.op, dnfs[0], dnfs[1], facts=(seen,), label=label))
+        elif node.op == "sometime-after":
+            pending = new_fact(f"{tag}-pending")
+            monitors.append(Monitor(node.op, dnfs[0], dnfs[1], facts=(pending,), label=label))
+            rules.extend(MonitorRule(c, del_facts=(pending,)) for c in dnfs[1])
+            goal_neg.add(pending)
+        elif node.op == "within":
+            done = new_fact(f"{tag}-done")
+            marker = passed(node.times[0], strict=True)
+            monitors.append(
+                Monitor("within", dnfs[0], facts=(done,), markers=(marker,), label=label)
+            )
+            rules.extend(
+                MonitorRule(
+                    Condition(c.pos_facts, tuple(sorted({*c.neg_facts, marker})), c.numeric),
+                    add_facts=(done,),
+                )
+                for c in dnfs[0]
+            )
+            goal_pos.add(done)
+        elif node.op == "hold-after":
+            marker = passed(node.times[0], strict=True)
+            monitors.append(Monitor(node.op, dnfs[0], markers=(marker,), label=label))
+        elif node.op == "hold-during":
+            start, end = passed(node.times[0], strict=False), passed(node.times[1], strict=False)
+            monitors.append(Monitor(node.op, dnfs[0], markers=(start, end), label=label))
+        else:  # always-within
+            pending = new_fact(f"{tag}-pending")
+            bound = node.times[0]
+            if time_markers is None:  # clásica: un contador de los pasos que lleva pendiente
+                kind = "always-within-steps"
+                elapsed = tuple(new_fact(f"{tag}-elapsed@{i}") for i in range(math.floor(bound)))
+                monitor_facts = (pending, *elapsed)
+            else:
+                kind, monitor_facts = "always-within", (pending,)
+            monitors.append(
+                Monitor(kind, dnfs[0], dnfs[1], facts=monitor_facts, bound=bound, label=label)
+            )
+            rules.extend(MonitorRule(c, del_facts=(pending,)) for c in dnfs[1])
+            goal_neg.add(pending)
+
+    clock = None
+    if marks:
+        horizon = max(marks)
+        counter = tuple(new_fact(f"step@{i}") for i in range(horizon + 1))
+        clock = StepClock(counter, tuple(sorted((fact, n) for n, fact in marks.items())))
+
+    goal = [
+        Condition(
+            tuple(sorted({*clause.pos_facts, *goal_pos})),
+            tuple(sorted({*clause.neg_facts, *goal_neg})),
+            clause.numeric,
+        )
+        for clause in task.goal
+    ]
+    for dnf in at_end:
+        goal = [
+            merged for clause in goal for c in dnf if (merged := _conjoin(clause, c)) is not None
+        ]
+    notes = list(task.notes)
+    init = MonitorEvaluator(monitors, clock).initial(task.init)
+    if init is None:
+        init = task.init
+        goal = []
+        notes.append("el estado inicial incumple una restricción de trayectoria: no hay plan")
+    return replace(
+        task,
+        facts=tuple(facts),
+        init=init,
+        goal=tuple(dict.fromkeys(goal)),
+        notes=tuple(notes),
+        monitors=tuple(monitors),
+        monitor_rules=tuple(rules),
+        monitor_clock=clock,
+    )
+
+
+def _conjoin(a: Condition, b: Condition) -> Condition | None:
+    """La conjunción de dos cláusulas, o ``None`` si se contradicen."""
+    pos = {*a.pos_facts, *b.pos_facts}
+    neg = {*a.neg_facts, *b.neg_facts}
+    if pos & neg:
+        return None
+    numeric = tuple(dict.fromkeys((*a.numeric, *b.numeric)))
+    return Condition(tuple(sorted(pos)), tuple(sorted(neg)), numeric)
 
 
 def _build_axioms(

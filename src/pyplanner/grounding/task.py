@@ -38,6 +38,7 @@ from pyplanner.loader.ast import Atom, FluentTerm
 
 if TYPE_CHECKING:
     from pyplanner.grounding.axioms import AxiomEvaluator
+    from pyplanner.grounding.monitors import Monitor, MonitorEvaluator, MonitorRule, StepClock
 
 
 class State(NamedTuple):
@@ -287,6 +288,11 @@ class GroundTask:
             valor de la métrica de un plan es ``metric_offset`` más su coste.
         notes: avisos del grounding (por ejemplo, por qué la métrica no se usa como coste).
         axioms: axiomas de los predicados derivados, ordenados por estrato.
+        monitors: restricciones de trayectoria duras (PDDL 3), que se actualizan tras cada
+            paso (ver :mod:`pyplanner.grounding.monitors`).
+        monitor_rules: sus reglas relajadas, para la heurística.
+        monitor_clock: contador de pasos, si una tarea clásica tiene restricciones con
+            tiempo.
     """
 
     domain_name: str
@@ -300,6 +306,16 @@ class GroundTask:
     metric_offset: float | None = None
     notes: tuple[str, ...] = ()
     axioms: tuple[Axiom, ...] = ()
+    monitors: tuple["Monitor", ...] = ()
+    monitor_rules: tuple["MonitorRule", ...] = ()
+    monitor_clock: "StepClock | None" = None
+
+    @cached_property
+    def monitor_evaluator(self) -> "MonitorEvaluator":
+        """Evaluador de las restricciones de trayectoria."""
+        from pyplanner.grounding.monitors import MonitorEvaluator
+
+        return MonitorEvaluator(self.monitors, self.monitor_clock)
 
     @cached_property
     def derived_mask(self) -> int:
@@ -381,11 +397,17 @@ class GroundTask:
         Las tareas temporales (:class:`pyplanner.grounding.temporal.TemporalTask`) lo
         redefinen para comprobar además la red temporal y las invariantes.
 
-        Si hay predicados derivados, recalcula sus hechos en el sucesor."""
+        Si hay predicados derivados, recalcula sus hechos en el sucesor, y si hay
+        restricciones de trayectoria, actualiza sus monitores (``None`` si el paso incumple
+        alguna)."""
         successor = action.apply(state)
-        if successor is None or not self.axioms:
-            return successor
-        return self.axiom_evaluator.evaluate(successor)
+        if successor is None:
+            return None
+        if self.axioms:
+            successor = self.axiom_evaluator.evaluate(successor)
+        if self.monitors:
+            return self.monitor_evaluator.update(state, successor)
+        return successor
 
     def atoms(self, state: State) -> list[Atom]:
         """Los hechos ciertos en ``state`` (para depurar y mostrar)."""

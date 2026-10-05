@@ -229,7 +229,9 @@ class _BestFirstSearch:
         # En las tareas clásicas sin axiomas se aplica la acción directamente (una llamada
         # menos por sucesor); las temporales redefinen GroundTask.apply, y con axiomas hay que
         # recalcular los hechos derivados.
-        self._direct_apply = type(task).apply is GroundTask.apply and not task.axioms
+        self._direct_apply = (
+            type(task).apply is GroundTask.apply and not task.axioms and not task.monitors
+        )
         # En las tareas temporales, dos estados iguales pueden tener distinta línea temporal
         # (memoización al estilo de POPF): ver la actualización de padres en EagerSearch.run.
         self._temporal = type(task).apply is not GroundTask.apply

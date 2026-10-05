@@ -348,7 +348,7 @@ def test_round_trip_and_schema() -> None:
         assert parse_pddl(write_pddl(document), locations=False) == document
 
 
-def test_trucks_loads_and_the_engine_rejects_it_for_now() -> None:
+def test_trucks_loads() -> None:
     path = DOMINIOS_DIR / "tier5-pddl3" / "constraints" / "trucks"
     domain = read_domain(path / "domain.pddl")
     result = read_problem(path / "p01.pddl", domain)
@@ -372,8 +372,6 @@ def test_trucks_loads_and_the_engine_rejects_it_for_now() -> None:
             ),
         )
     )
-    with pytest.raises(UnsupportedFeatureError, match="restricciones de trayectoria"):
-        ground(domain, result)
 
 
 def test_storage_loads_and_the_engine_rejects_it_for_now() -> None:
@@ -385,5 +383,5 @@ def test_storage_loads_and_the_engine_rejects_it_for_now() -> None:
     names = {p.name for node in (result.goal, result.constraints) for p in preferences_in(node)}
     expected = {"p0a", "p1a", "p1b", "p1c", "p3a", "p3b", "p4a", "p4b", "p5a", "p6a", "p7a"}
     assert names == expected
-    with pytest.raises(UnsupportedFeatureError, match="restricciones de trayectoria"):
+    with pytest.raises(UnsupportedFeatureError, match="preferencias"):
         ground(domain, result)

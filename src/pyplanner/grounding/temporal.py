@@ -86,6 +86,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding import temporal_lp
@@ -102,6 +103,9 @@ from pyplanner.grounding.numeric import (
     variables_of,
 )
 from pyplanner.grounding.task import Condition, GroundAction, GroundTask, State, bits, mask_of
+
+if TYPE_CHECKING:
+    from pyplanner.grounding.monitors import Monitor
 from pyplanner.grounding.temporal_lp import LinearModel, LinearState
 from pyplanner.loader.ast import (
     ALL,
@@ -612,9 +616,11 @@ class Timeline:
         readers: pasos que han leído cada hecho o variable desde su último cambio de valor.
         running: acciones en curso: índice → (paso de inicio, duración mínima, máxima).
         linear: el programa lineal, si la tarea tiene variables lineales.
+        obligations: restricciones ``always-within`` pendientes: monitor → paso en que se
+            disparó φ (el paso en que se cumpla ψ irá como mucho t después).
     """
 
-    __slots__ = ("earliest", "out", "changer", "readers", "running", "linear")
+    __slots__ = ("earliest", "out", "changer", "readers", "running", "linear", "obligations")
 
     def __init__(
         self,
@@ -624,6 +630,7 @@ class Timeline:
         readers: dict[int, tuple[int, ...]] | None = None,
         running: dict[int, tuple[int, float, float]] | None = None,
         linear: LinearState | None = None,
+        obligations: dict[int, int] | None = None,
     ) -> None:
         self.earliest = earliest
         self.out = out
@@ -631,6 +638,7 @@ class Timeline:
         self.readers = readers or {}
         self.running = running or {}
         self.linear = linear
+        self.obligations = obligations or {}
 
     @property
     def makespan(self) -> float:
@@ -743,6 +751,7 @@ class TemporalTask(GroundTask):
             self.goal,
             self.variables,
             axioms=self.axioms,
+            monitor_rules=self.monitor_rules,
         )
 
     @cached_property
@@ -803,6 +812,11 @@ class TemporalTask(GroundTask):
             return None
         if self.axioms:
             successor = self.axiom_evaluator.evaluate(successor)
+        if self.monitors:
+            monitored = self.monitor_evaluator.update(state, successor)
+            if monitored is None:
+                return None  # incumple una restricción de trayectoria
+            successor = monitored
         running_of = self.running_of
         durative = self.durative
         if self._has_watches:
@@ -833,6 +847,32 @@ class TemporalTask(GroundTask):
         extended = self._extend(timeline, parent, state, action)
         assert extended is not None, "la línea temporal de un estado ya comprobado es válida"
         return extended[0]
+
+    @cached_property
+    def _always_within(self) -> tuple[tuple[int, int, float], ...]:
+        """Restricciones ``always-within``: (monitor, hecho ``pending``, plazo)."""
+        return tuple(
+            (i, m.facts[0], m.bound)
+            for i, m in enumerate(self.monitors)
+            if m.kind == "always-within"
+        )
+
+    def _obligations(
+        self, obligations: dict[int, int], before: State, after: State, step: int
+    ) -> tuple[dict[int, int], list[tuple[int, float]]]:
+        """Obligaciones ``always-within`` tras el paso: se abre una cuando φ queda pendiente
+        (en este paso) y, cuando ψ la cumple, el paso queda como mucho a t del que la abrió.
+        Una pendiente desde el estado inicial se abrió en el origen (paso 0)."""
+        updated = obligations
+        deadlines: list[tuple[int, float]] = []
+        for index, pending, bound in self._always_within:
+            was, now = before.facts >> pending & 1, after.facts >> pending & 1
+            if not was and now:
+                updated = {**updated, index: step}
+            elif was and not now:
+                deadlines.append((updated.get(index, 0), bound))
+                updated = {k: v for k, v in updated.items() if k != index}
+        return updated, deadlines
 
     @cached_property
     def _has_watches(self) -> bool:
@@ -953,18 +993,27 @@ class TemporalTask(GroundTask):
             if earliest[step] > deadline + _TOLERANCE:
                 return None
             out[step] = ((0, -deadline),)
-        propagated = False
+        # Aristas de vuelta: el paso va como mucho ``bound`` después de un paso anterior (la
+        # duración máxima de una acción que termina, o el plazo de un always-within).
+        backward: list[tuple[int, float]] = []
         if start >= 0 and upper < math.inf:
-            out[step] = (*out[step], (start, -upper))
-            if earliest[start] < earliest[step] - upper - _TOLERANCE:
-                # El inicio tiene que retrasarse: se propaga, y si eso retrasa el fin, hay
-                # un ciclo positivo (la duración máxima no se puede cumplir).
-                earliest[start] = earliest[step] - upper
-                _propagate(earliest, out, start, skip=step)
+            backward.append((start, upper))
+        obligations = timeline.obligations
+        if self._always_within:
+            obligations, deadlines = self._obligations(obligations, before, after, step)
+            backward.extend(deadlines)
+        propagated = False
+        for origin, bound in backward:
+            out[step] = (*out[step], (origin, -bound))
+            if earliest[origin] < earliest[step] - bound - _TOLERANCE:
+                # El paso anterior tiene que retrasarse: se propaga, y si eso retrasa este
+                # paso, hay un ciclo positivo (el límite no se puede cumplir).
+                earliest[origin] = earliest[step] - bound
+                _propagate(earliest, out, origin, skip=step)
                 propagated = True
                 if earliest[0] > _TOLERANCE:
                     return None  # el retraso choca con el instante de un TIL
-                again = max(earliest[i] + w for i, w in incoming.items())
+                again = max((earliest[i] + w for i, w in incoming.items()), default=0.0)
                 if again > earliest[step] + _TOLERANCE:
                     return None
 
@@ -1006,7 +1055,7 @@ class TemporalTask(GroundTask):
                 if solution is None:
                     return None
                 linear_values = temporal_lp.last_values(linear, solution, model.variables)
-        new = Timeline(tuple(earliest), tuple(out), changer, readers, running, linear)
+        new = Timeline(tuple(earliest), tuple(out), changer, readers, running, linear, obligations)
         return new, linear_values
 
     def _next_til(self, state: State) -> float:
@@ -1096,7 +1145,9 @@ def _propagate(
                 pending.append(successor)
 
 
-def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
+def ground_temporal(
+    domain: Domain, problem: Problem, marker_times: frozenset[float] = frozenset()
+) -> TemporalTask:
     """Instancia un dominio con acciones durativas (ver la documentación del módulo)."""
     changing = _modified_functions(domain)
     compiled: list[_Compiled] = []
@@ -1106,7 +1157,7 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         compiled.append(item)
         predicates.extend(extra)
     duration_functions = tuple(c.duration for c in compiled if c.duration is not None)
-    til_actions, til_predicates, til_times = _timed_literal_actions(problem)
+    til_actions, til_predicates, til_times = _timed_literal_actions(problem, marker_times)
     snap_domain = replace(
         domain,
         actions=(
@@ -1132,8 +1183,11 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         | {f.name for f in duration_functions}
     )
     # La métrica temporal (total-time) no es aditiva: se busca con coste unitario.
+    # Los instantes de las restricciones con tiempo son TIL sin literales: su hecho
+    # til-done@k marca que el instante ya ha pasado (ver pyplanner.grounding.monitors).
+    markers = {time: f"til-done@{til_times.index(time)}" for time in marker_times}
     task, context = ground_with_context(
-        snap_domain, replace(problem, metric=None), extra_reads, extra_targeted
+        snap_domain, replace(problem, metric=None), extra_reads, extra_targeted, markers
     )
 
     by_name = {item.action.name: item for item in compiled}
@@ -1213,6 +1267,8 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
             info = replace(info, time=til_times[int(original.name.removeprefix(_TIL))])
         if support:
             info = replace(info, reads=tuple(sorted(_expand_derived(set(info.reads), support))))
+        if task.monitors:
+            info = _monitor_orders(info, original, task.monitors, support)
         snaps_info.append(info)
     if linear_model is not None:
         for axiom in task.axioms:
@@ -1261,6 +1317,8 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
         linear=linear_model,
         relaxation_actions=tuple(relaxation),
         axioms=task.axioms,
+        monitors=task.monitors,
+        monitor_rules=task.monitor_rules,
         til_times=tuple(til_times),
         til_done_mask=mask_of(
             task.fact_index[Atom(f"til-done@{k}")]
@@ -1270,12 +1328,37 @@ def ground_temporal(domain: Domain, problem: Problem) -> TemporalTask:
     )
 
 
+def _monitor_orders(
+    info: SnapInfo,
+    action: GroundAction,
+    monitors: tuple["Monitor", ...],
+    support: Mapping[int, frozenset[int]],
+) -> SnapInfo:
+    """Un paso que puede cambiar algo de lo que vigila un monitor lee y escribe sus hechos (y
+    lee lo vigilado), así que esos pasos quedan ordenados entre sí como en la secuencia: el
+    resultado de un monitor depende del orden en que cambian sus fórmulas."""
+    written = {*action.add_facts, *action.del_facts}
+    for effect in action.conditional:
+        written |= {*effect.add_facts, *effect.del_facts}
+    variables = {v.variable for v in action.numeric} | {
+        v.variable for effect in action.conditional for v in effect.numeric
+    }
+    reads, writes = set(info.reads), set(info.writes)
+    for monitor in monitors:
+        watched = _expand_derived(set(bits(monitor.mask)), support)
+        if written & watched or variables & set(monitor.variables):
+            reads |= watched | {-(v + 1) for v in monitor.variables} | set(monitor.facts)
+            writes |= set(monitor.facts)
+    return replace(info, reads=tuple(sorted(reads)), writes=tuple(sorted(writes)))
+
+
 def _timed_literal_actions(
-    problem: Problem,
+    problem: Problem, marker_times: frozenset[float] = frozenset()
 ) -> tuple[list[Action], list[Predicate], list[float]]:
-    """Una acción ``til@k`` por cada instante distinto de los TIL, con sus hechos
-    ``til-done@k`` (ver la documentación del módulo), y los instantes."""
-    times = sorted({literal.time for literal in problem.timed_literals})
+    """Una acción ``til@k`` por cada instante distinto de los TIL y de las restricciones con
+    tiempo (``marker_times``, sin literales), con sus hechos ``til-done@k`` (ver la
+    documentación del módulo), y los instantes."""
+    times = sorted({literal.time for literal in problem.timed_literals} | marker_times)
     actions: list[Action] = []
     predicates: list[Predicate] = []
     for k, time in enumerate(times):

@@ -30,6 +30,9 @@ para cada objetivo pendiente elige su mejor *soportador* y repite con sus precon
   heurística nunca declara un callejón sin salida que no lo es. Los efectos que empeoran una
   condición se ignoran, como los borrados.
 * **Objetivo disyuntivo.** El valor es el mínimo entre las cláusulas.
+* **Restricciones de trayectoria** (iteración 5): las reglas de los monitores (``done`` de
+  ``sometime``, quitar ``pending`` de ``sometime-after``) son acciones relajadas de coste 0
+  con el mismo operador ficticio que los axiomas.
 * **Predicados derivados** (iteración 4). Cada axioma es una acción relajada de coste 0
   que añade su hecho derivado. Todas comparten un **operador ficticio** (el de índice
   ``len(task.actions)``, de coste 0), que nunca es una acción útil. Las condiciones que
@@ -95,6 +98,7 @@ class RelaxedTask:
             | {f for a in task.actions for e in a.conditional for f in e.condition.neg_facts}
             | {f for clause in task.goal for f in clause.neg_facts}
             | {f for axiom in task.axioms for f in axiom.condition.neg_facts}
+            | {f for rule in task.monitor_rules for f in rule.condition.neg_facts}
             if not derived >> f & 1
         )
         self.negated = tuple(negated)
@@ -134,8 +138,11 @@ class RelaxedTask:
                 pre = tuple(sorted({*base_pre, *condition}))
                 self._append(pre, adds(effect.add_facts, effect.del_facts), action, effect.numeric)
         #: Operador ficticio de los axiomas (-1 si no hay), y número de operadores.
-        self.axiom_operator = len(task.actions) if task.axioms else -1
-        self.num_operators = len(task.actions) + bool(task.axioms)
+        # Axiomas y reglas de los monitores: acciones relajadas de coste 0 con un operador
+        # ficticio común, que nunca es una acción útil.
+        extra = bool(task.axioms or task.monitor_rules)
+        self.axiom_operator = len(task.actions) if extra else -1
+        self.num_operators = len(task.actions) + extra
         for axiom in task.axioms:
             body = axiom.condition
             self.pre.append(literals(body.pos_facts, body.neg_facts, body.numeric))
@@ -143,11 +150,18 @@ class RelaxedTask:
             self.cost.append(0.0)
             self.operator.append(self.axiom_operator)
             self._numeric_effects.append(())
+        for rule in task.monitor_rules:
+            body = rule.condition
+            self.pre.append(literals(body.pos_facts, body.neg_facts, body.numeric))
+            self.add.append(adds(rule.add_facts, rule.del_facts))
+            self.cost.append(0.0)
+            self.operator.append(self.axiom_operator)
+            self._numeric_effects.append(())
         self.goal = [literals(c.pos_facts, c.neg_facts, c.numeric) for c in task.goal]
         self.numeric = list(numeric)
         self.num_facts = self.numeric_offset + len(self.numeric)
         self.num_actions = len(self.pre)
-        self.operator_cost = [a.cost for a in task.actions] + [0.0] * bool(task.axioms)
+        self.operator_cost = [a.cost for a in task.actions] + [0.0] * extra
         self.goal_facts = frozenset(f for clause in self.goal for f in clause)
 
         # Aristas numéricas.
