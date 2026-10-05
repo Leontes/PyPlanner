@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Leontes/PyPlanner/schema/pddl.schema.json",
   "title": "PyPlanner PDDL-JSON",
-  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos). Versión 5: PDDL 2.2 (predicados derivados y literales iniciales temporizados). Versión 6: PDDL 3 (restricciones de trayectoria, preferencias e is-violated).",
+  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos). Versión 5: PDDL 2.2 (predicados derivados y literales iniciales temporizados). Versión 6: PDDL 3 (restricciones de trayectoria, preferencias, is-violated y funciones de objetos).",
   "type": "object",
   "required": [
     "kind"
@@ -91,13 +91,16 @@
       "pattern": "^\\?[A-Za-z][A-Za-z0-9_-]*$"
     },
     "term": {
-      "description": "Argumento de un átomo: una variable si empieza por '?' y un objeto o constante en otro caso.",
+      "description": "Argumento de un átomo o de una igualdad: una variable si empieza por '?', un objeto o constante en otro caso, o (v6, :object-fluents) un término de una función de objetos.",
       "anyOf": [
         {
           "$ref": "#/$defs/name"
         },
         {
           "$ref": "#/$defs/variable"
+        },
+        {
+          "$ref": "#/$defs/fluent"
         }
       ]
     },
@@ -1457,7 +1460,7 @@
       ]
     },
     "numeric_effect": {
-      "description": "Efecto numérico sobre un término de función.",
+      "description": "Efecto sobre un término de función: numérico, o (v6) 'assign' de una función de objetos, cuyo valor es un objeto, una variable, otro término de función o {'op': 'undefined'}.",
       "type": "object",
       "required": [
         "op",
@@ -1478,7 +1481,32 @@
           "$ref": "#/$defs/fluent"
         },
         "value": {
-          "$ref": "#/$defs/expression"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/expression"
+            },
+            {
+              "$ref": "#/$defs/name"
+            },
+            {
+              "$ref": "#/$defs/variable"
+            },
+            {
+              "type": "object",
+              "required": [
+                "op"
+              ],
+              "properties": {
+                "op": {
+                  "const": "undefined"
+                },
+                "loc": {
+                  "$ref": "#/$defs/loc"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
         },
         "loc": {
           "$ref": "#/$defs/loc"
@@ -1487,7 +1515,7 @@
       "additionalProperties": false
     },
     "function_decl": {
-      "description": "Declaración de una función numérica.",
+      "description": "Declaración de una función: numérica, o (v6, :object-fluents) de objetos si lleva 'type'.",
       "type": "object",
       "required": [
         "name"
@@ -1501,6 +1529,9 @@
         },
         "loc": {
           "$ref": "#/$defs/loc"
+        },
+        "type": {
+          "$ref": "#/$defs/type_spec"
         }
       },
       "additionalProperties": false
@@ -1556,7 +1587,14 @@
                 "$ref": "#/$defs/fluent"
               },
               "value": {
-                "type": "number"
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "$ref": "#/$defs/name"
+                  }
+                ]
               },
               "loc": {
                 "$ref": "#/$defs/loc"

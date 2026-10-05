@@ -120,7 +120,7 @@ def test_formula_operators() -> None:
         ("(exists (?x))", r"\(exists \(<variables>\) <fórmula>\)"),
         ("(forall () (p))", "no declara variables"),
         ("(= ?x)", r"\(= <expresión> <expresión>\)"),
-        ("(= ?x (p))", "'\\?x' no es un número"),
+        ("(= ?x 3)", "'\\?x' no es un número"),
     ],
 )
 def test_formula_errors(formula: str, message: str) -> None:

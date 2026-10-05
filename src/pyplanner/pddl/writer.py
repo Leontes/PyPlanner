@@ -45,7 +45,10 @@ def _write_domain(document: Mapping[str, Any]) -> str:
     if functions:
         lines.append(f"{_INDENT}(:functions")
         for function in functions:
-            lines.append(f"{_INDENT * 2}{_signature(function)} - number")
+            result = function.get("type", "number")
+            if not isinstance(result, str):
+                result = f"(either {' '.join(result)})"
+            lines.append(f"{_INDENT * 2}{_signature(function)} - {result}")
         lines.append(f"{_INDENT})")
     for rule in document.get("derived", []):
         head = _signature({"name": rule["predicate"], "parameters": rule.get("parameters", [])})
@@ -82,7 +85,9 @@ def _write_problem(document: Mapping[str, Any]) -> str:
     lines.append(f"{_INDENT}(:init")
     for element in document.get("init", []):
         if element["op"] == "=":
-            value = _number(element["value"])
+            value = (
+                element["value"] if isinstance(element["value"], str) else _number(element["value"])
+            )
             lines.append(f"{_INDENT * 2}(= {_expression(element['fluent'])} {value})")
         elif element["op"] == "at":
             time = _number(element["time"])
@@ -143,9 +148,9 @@ def _formula(node: Mapping[str, Any]) -> str:
     """Escribe una fórmula."""
     op = node["op"]
     if op == "atom":
-        return f"({' '.join([node['predicate'], *node['args']])})"
+        return f"({' '.join([node['predicate'], *map(_term, node['args'])])})"
     if op == "=":
-        return f"(= {' '.join(node['args'])})"
+        return f"(= {' '.join(map(_term, node['args']))})"
     if op == "not":
         return f"(not {_formula(node['arg'])})"
     if op in ("and", "or", "imply"):
@@ -181,13 +186,18 @@ def _constraint(node: Mapping[str, Any]) -> str:
     return f"({' '.join(parts)})"
 
 
+def _term(term: Any) -> str:
+    """Un objeto, una variable o un término de función de objetos."""
+    return term if isinstance(term, str) else _expression(term)
+
+
 def _expression(node: Mapping[str, Any]) -> str:
     """Escribe una expresión numérica."""
     op = node["op"]
     if op == "num":
         return _number(node["value"])
     if op == "fluent":
-        return f"({' '.join([node['function'], *node['args']])})"
+        return f"({' '.join([node['function'], *map(_term, node['args'])])})"
     if op == "total-time":
         return "(total-time)"
     if op == "duration":
@@ -217,7 +227,14 @@ def _effect(node: Mapping[str, Any]) -> str:
     if op == "when":
         return f"(when {_formula(node['condition'])} {_effect(node['arg'])})"
     if op in ("increase", "decrease", "assign", "scale-up", "scale-down"):
-        return f"({op} {_expression(node['fluent'])} {_expression(node['value'])})"
+        value = node["value"]
+        if isinstance(value, str):
+            text = value  # objeto o variable (funciones de objetos)
+        elif value["op"] == "undefined":
+            text = "undefined"
+        else:
+            text = _expression(value)
+        return f"({op} {_expression(node['fluent'])} {text})"
     raise ValueError(f"operador de efecto desconocido: {op}")
 
 

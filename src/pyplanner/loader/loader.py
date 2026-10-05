@@ -102,6 +102,12 @@ from pyplanner.loader.ast import (
     derived_uses,
     preference_names,
 )
+from pyplanner.loader.object_fluents import (
+    COMPILED_REQUIREMENTS,
+    compile_domain,
+    compile_problem,
+    object_functions,
+)
 from pyplanner.requirements import (
     KNOWN_REQUIREMENTS,
     NUMERIC_EFFECTS,
@@ -130,6 +136,11 @@ def load_domain(document: JSON) -> Domain:
         ctx.fail("se esperaba un documento de dominio", document, "kind")
     requirements = ctx.requirements(document)
     ctx.check_declared(document, document.get("requirements", []))
+    # Las funciones de objetos se compilan a predicados antes de construir el AST.
+    fluents = object_functions(document)
+    if fluents:
+        document = compile_domain(document, fluents)
+        requirements = requirements | expand_requirements(COMPILED_REQUIREMENTS)
 
     types = ctx.types(document.get("types", []))
     ctx.known_types = {OBJECT, *(name for name, _ in types)}
@@ -195,6 +206,7 @@ def load_domain(document: JSON) -> Domain:
         durative_actions=tuple(durative_actions.values()),
         derived=derived,
         constraints=constraints,
+        object_fluents=fluents,
     )
 
 
@@ -222,7 +234,9 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
             "domain",
         )
     requirements = ctx.requirements(document) | domain.requirements
-    ctx.check_declared(document, requirements)
+    ctx.check_declared(document, requirements, frozenset(f.name for f in domain.object_fluents))
+    if domain.object_fluents:
+        document = compile_problem(document, domain.object_fluents)
 
     ctx.domain = domain
     ctx.derived = domain.derived_predicates
@@ -369,8 +383,10 @@ class _Context:
             )
         return expand_requirements(declared)
 
-    def check_declared(self, document: JSON, declared: Iterable[str]) -> None:
-        use = first_undeclared(document, declared)
+    def check_declared(
+        self, document: JSON, declared: Iterable[str], objects: frozenset[str] | None = None
+    ) -> None:
+        use = first_undeclared(document, declared, objects)
         if use is not None:
             self.fail(
                 f"{use.construct} necesita declarar el requisito {use.requirement}",
@@ -487,10 +503,19 @@ class _Context:
             condition = self.formula(node["condition"], f"{path}.condition", scope)
             return When(condition, self.effect(node["arg"], f"{path}.arg", scope))
         if op in NUMERIC_EFFECTS:
+            value = node["value"]
+            if isinstance(value, str) or value["op"] == "undefined":
+                # Un objeto o undefined: solo vale para una función de objetos, y esas ya se
+                # han compilado a predicados.
+                self.fail(
+                    f"la función '{node['fluent']['function']}' es numérica: su valor es un número",
+                    node,
+                    path,
+                )
             return NumericEffect(
                 op,
                 self.fluent(node["fluent"], f"{path}.fluent", scope),
-                self.expression(node["value"], f"{path}.value", scope),
+                self.expression(value, f"{path}.value", scope),
             )
         return self.basic_atom(node, path, scope, "un efecto")
 

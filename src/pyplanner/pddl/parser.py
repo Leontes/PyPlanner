@@ -360,11 +360,15 @@ class _Parser:
         if isinstance(head, Symbol):
             if head.value == "=":
                 rest = element.items[1:]
-                self._arity(element, rest, 2, "(= (<función> <objetos>) <número>)")
+                self._arity(element, rest, 2, "(= (<función> <objetos>) <número u objeto>)")
+                value = rest[1]
                 node = {
                     "op": "=",
                     "fluent": self._fluent(self._list(rest[0], "una función")),
-                    "value": self._number(rest[1]),
+                    # Un número, o un objeto (el valor de una función de objetos).
+                    "value": self._name(value, "un número o un objeto")
+                    if isinstance(value, Symbol) and not _NUMBER.match(value.value)
+                    else self._number(value),
                 }
                 return self._with_loc(node, element)
             if (
@@ -425,7 +429,14 @@ class _Parser:
                 "parameters": self._quantified(rest[0]),
                 "arg": self._formula(rest[1]),
             }
-        elif op == "=" and len(rest) == 2 and all(self._is_term(item) for item in rest):
+        elif (
+            op == "="
+            and len(rest) == 2
+            and any(self._is_term(item) for item in rest)
+            and all(self._is_term(item) or isinstance(item, SList) for item in rest)
+        ):
+            # Igualdad de objetos: con un objeto o una variable a un lado no puede ser una
+            # comparación numérica. El otro lado puede ser una función de objetos.
             node = {"op": "=", "args": [self._term(rest[0]), self._term(rest[1])]}
         elif op in _COMPARATORS:
             self._arity(formula, rest, 2, f"({op} <expresión> <expresión>)")
@@ -619,10 +630,19 @@ class _Parser:
             node = {
                 "op": op,
                 "fluent": self._fluent(self._list(rest[0], "una función")),
-                "value": self._expression(rest[1]),
+                "value": self._assigned(rest[1]) if op == "assign" else self._expression(rest[1]),
             }
             return self._with_loc(node, effect)
         return self._atom(effect)
+
+    def _assigned(self, expr: SExpr) -> JSONDict | str:
+        """Valor de un ``assign``: una expresión numérica, o (con funciones de objetos) un
+        objeto, una variable o ``undefined``."""
+        if self._is_symbol(expr, "undefined"):
+            return self._with_loc({"op": "undefined"}, expr)
+        if self._is_term(expr):
+            return self._term(expr)
+        return self._expression(expr)
 
     # --- Acciones durativas (iteración 3b) ---------------------------------------------
 
@@ -849,19 +869,22 @@ class _Parser:
         return self._with_loc(node, section)
 
     def _functions(self, items: tuple[SExpr, ...]) -> list[JSONDict]:
-        """``(:functions (f ?x - t) (g) - number ...)``: el tipo, si aparece, es ``number``."""
+        """``(:functions (f ?x - t) (g) - number (h) - place ...)``: cada grupo toma el tipo de
+        resultado que lo sigue; sin tipo, o con ``number``, son numéricas. Con un tipo de
+        objetos (``:object-fluents``), el nodo lleva ``type``."""
         functions: list[JSONDict] = []
+        pending: list[JSONDict] = []
         i = 0
         while i < len(items):
             item = items[i]
             if self._is_symbol(item, "-"):
-                if i + 1 >= len(items) or not functions:
+                if i + 1 >= len(items) or not pending:
                     raise PDDLSyntaxError("'-' mal colocado en :functions", item.location)
-                result_type = self._symbol(items[i + 1], "el tipo del resultado")
-                if result_type.value != "number":
-                    self._unsupported(
-                        f"funciones de tipo '{result_type.value}'", ":object-fluents", result_type
-                    )
+                if not self._is_symbol(items[i + 1], "number"):
+                    result_type = self._type_spec(items[i + 1], allow_either=True)
+                    for declared in pending:
+                        declared["type"] = result_type
+                pending = []
                 i += 2
                 continue
             declaration = self._list(item, "una declaración de función (nombre ?x ...)")
@@ -872,6 +895,7 @@ class _Parser:
                 "parameters": self._parameters(declaration.items[1:]),
             }
             functions.append(self._with_loc(node, declaration))
+            pending.append(node)
             i += 1
         return functions
 
@@ -892,8 +916,11 @@ class _Parser:
         args = [self._term(item) for item in atom.items[1:]]
         return self._with_loc({"op": "atom", "predicate": predicate, "args": args}, atom)
 
-    def _term(self, expr: SExpr) -> str:
-        symbol = self._symbol(expr, "un objeto o una variable")
+    def _term(self, expr: SExpr) -> str | JSONDict:
+        """Un objeto, una variable o (con funciones de objetos) un término de función."""
+        if isinstance(expr, SList):
+            return self._fluent(expr)
+        symbol = expr
         if _NAME.match(symbol.value) or _VARIABLE.match(symbol.value):
             return symbol.value
         raise PDDLSyntaxError(f"'{symbol.value}' no es un objeto ni una variable", symbol.location)

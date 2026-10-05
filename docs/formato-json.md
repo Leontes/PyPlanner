@@ -29,7 +29,8 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
   - v3: PDDL 2.1 numérico y costes de acción (`:action-costs`);
   - v4: PDDL 2.1 temporal (acciones durativas);
   - v5: PDDL 2.2 (predicados derivados y literales iniciales temporizados);
-  - v6 (actual): PDDL 3 (restricciones de trayectoria, preferencias e `is-violated`).
+  - v6 (actual): PDDL 3 (restricciones de trayectoria, preferencias, `is-violated` y
+    funciones de objetos).
 
   Cada versión solo **añade** construcciones, así que un documento v1 sigue siendo
   válido.
@@ -108,6 +109,7 @@ Las reglas están en `pyplanner/requirements.py`:
 | literal inicial temporizado (`at` en `init`) | `:timed-initial-literals` |
 | `constraints` y sus operadores modales | `:constraints` |
 | `preference`, `is-violated` | `:preferences` |
+| funciones con `type`, términos de función como argumento, `assign` de un objeto o `undefined`, valores iniciales de objeto | `:object-fluents` |
 | métrica de números, aritmética e `is-violated` | `:numeric-fluents` o `:preferences` |
 
 - `not` en un efecto es un borrado STRIPS y no necesita nada.
@@ -286,6 +288,27 @@ inicial y el que deja cada paso). Los operadores modales no se anidan: van direc
 En un dominio sin acciones durativas, el instante de un estado es el número de pasos del
 plan hasta él. Los instantes son ≥ 0, y en `hold-during`, `from` ≤ `to`. Las restricciones
 del dominio son siempre duras: no admiten preferencias.
+
+**Funciones de objetos** (`:object-fluents`, PDDL 3.1). Una función con `type` (un tipo o
+una lista de tipos) toma objetos como valor: `{"name": "loc", "parameters": […], "type":
+"place"}`. Sin `type`, es numérica.
+
+- Un argumento de un átomo o de una igualdad puede ser un término de función:
+  `{"op": "atom", "predicate": "at", "args": [{"op": "fluent", "function": "loc", "args":
+  ["?r"]}]}`.
+- `{"op": "assign", "fluent": …, "value": …}` toma como valor un objeto, una variable, otro
+  término de función o `{"op": "undefined"}`.
+- Valor inicial: `{"op": "=", "fluent": …, "value": "a"}`.
+- `=` entre un término y un objeto o una variable es una igualdad (`"op": "="`); entre dos
+  funciones, la fase 1 no sabe si son numéricas y la escribe como comparación (`compare`),
+  que la fase 2 interpreta según las declaraciones.
+
+La fase 2 las **compila a predicados** antes de construir el AST (ver
+`pyplanner/loader/object_fluents.py`): `(loc ?r) - place` pasa a ser el predicado `(loc ?r
+?value - place)`, y cada término se sustituye por una variable ligada con `exists` (o con
+`forall` y `when` en los efectos). No se admiten en la métrica, en las duraciones ni en los
+efectos continuos. Como VAL no admite funciones de objetos, los planes se validan contra el
+documento compilado, escrito con el conversor inverso.
 
 **`is-violated`.** `{"op": "is-violated", "name": "p1"}` es el número de incumplimientos de
 la preferencia `p1` (de todas sus instancias), y solo puede aparecer en la métrica. El

@@ -17,6 +17,10 @@ raíz de la jerarquía.
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cached_property
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyplanner.loader.object_fluents import ObjectFunction
 
 #: Tipo raíz de la jerarquía; existe siempre.
 OBJECT = "object"
@@ -629,6 +633,9 @@ class Domain:
     durative_actions: tuple[DurativeAction, ...] = ()
     derived: tuple[DerivedRule, ...] = ()
     constraints: Constraint | None = None
+    #: Funciones de objetos, ya compiladas a predicados (ver
+    #: :mod:`pyplanner.loader.object_fluents`); hacen falta para compilar los problemas.
+    object_fluents: tuple["ObjectFunction", ...] = ()
 
     @cached_property
     def preference_names(self) -> frozenset[str]:

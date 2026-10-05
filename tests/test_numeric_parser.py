@@ -8,7 +8,6 @@ from pyplanner.errors import (
     PDDLSyntaxError,
     SemanticError,
     UndeclaredRequirementError,
-    UnsupportedFeatureError,
 )
 from pyplanner.loader import load_domain, load_problem
 from pyplanner.loader.ast import (
@@ -172,17 +171,6 @@ def test_syntax_errors(text: str, message: str | None) -> None:
 def test_bad_metric_direction() -> None:
     with pytest.raises(PDDLSyntaxError, match="minimize o maximize"):
         parse_problem("(define (problem x) (:domain d) (:goal (q)) (:metric reduce (g)))")
-
-
-@pytest.mark.parametrize(
-    ("text", "requirement"),
-    [
-        ("(:functions (f) - object)", ":object-fluents"),
-    ],
-)
-def test_future_numeric_features(text: str, requirement: str) -> None:
-    with pytest.raises(UnsupportedFeatureError, match=requirement):
-        domain(text)
 
 
 def test_round_trip() -> None:

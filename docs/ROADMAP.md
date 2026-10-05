@@ -386,9 +386,13 @@ con búsqueda *anytime* que devuelve el mejor plan dentro del límite de tiempo;
 de objetos compiladas a predicados (VAL no las admite: los planes se validan contra el
 dominio compilado).
 
-- **Parser:** ✅ restricciones de trayectoria, preferencias e `is-violated` (esquema JSON
-  v6; ver [formato-json.md](formato-json.md#pddl-3-v6)), con la gramática de Gerevini y
-  Long (2005); el motor los rechaza hasta la 5b y la 5c. Pendiente: funciones de objetos.
+- **Parser (5a):** ✅ restricciones de trayectoria, preferencias, `is-violated` y funciones
+  de objetos (esquema JSON v6; ver [formato-json.md](formato-json.md#pddl-3-v6)), con la
+  gramática de Gerevini y Long (2005); el motor rechaza las restricciones y las
+  preferencias hasta la 5b y la 5c.
+- **Funciones de objetos (5d):** ✅ adelantada a la 5a: la fase 2 las compila a predicados
+  sobre el documento JSON, antes del AST, así que el motor no las ve y funcionan con todo
+  lo demás. Planes clásicos y temporales validados con VAL contra el dominio compilado.
 - **Parser (plan inicial):**
   - sección `:constraints` (en dominio y problema) con los operadores modales `always`,
     `sometime`, `at-most-once`, `sometime-before`, `sometime-after`, `at end`, `within`,

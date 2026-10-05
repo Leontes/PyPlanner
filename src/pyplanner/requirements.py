@@ -29,6 +29,9 @@ PDDL 2.1:
 * reglas ``:derived`` → ``:derived-predicates`` (su condición, además, los de cualquier
   fórmula);
 * literales ``(at <t> <literal>)`` en ``:init`` → ``:timed-initial-literals``;
+* funciones de objetos (con tipo de objeto), términos de función como argumento,
+  ``assign`` de un objeto o ``undefined`` y valores iniciales de objeto →
+  ``:object-fluents``;
 * restricciones de trayectoria (``:constraints`` y sus operadores modales) →
   ``:constraints``, y ``forall`` en ellas → ``:universal-preconditions``;
 * ``preference`` (en objetivos, precondiciones, condiciones y restricciones) e
@@ -136,6 +139,7 @@ SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
         # Iteración 5 (PDDL 3)
         ":constraints",
         ":preferences",
+        ":object-fluents",
     }
 )
 
@@ -201,21 +205,30 @@ class RequirementUse:
     alternatives: tuple[str, ...] = ()
 
 
-def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
+def requirement_uses(
+    document: Mapping[str, Any], objects: frozenset[str] | None = None
+) -> Iterator[RequirementUse]:
     """Recorre un documento JSON (dominio o problema) y devuelve cada construcción que
     necesita un requisito, en orden de aparición.
 
-    Se supone que el documento cumple el esquema.
+    ``objects`` son las funciones de objetos (``:object-fluents``): en un dominio se sacan
+    de sus declaraciones; un problema necesita las de su dominio. Se supone que el
+    documento cumple el esquema.
     """
+    if objects is None:
+        objects = frozenset(f["name"] for f in document.get("functions", []) if "type" in f)
     if document.get("types"):
         yield RequirementUse(":typing", "la sección :types", "types", _loc(document["types"][0]))
     for key in ("constants", "objects"):
         yield from _typed_items(document.get(key, []), key)
     for i, function in enumerate(document.get("functions", [])):
         path = f"functions[{i}]"
-        yield RequirementUse(
-            ":numeric-fluents", "la sección :functions", path, _loc(function), _COSTS
-        )
+        if "type" in function:
+            yield RequirementUse(":object-fluents", "una función de objetos", path, _loc(function))
+        else:
+            yield RequirementUse(
+                ":numeric-fluents", "la sección :functions", path, _loc(function), _COSTS
+            )
         yield from _typed_items(function.get("parameters", []), f"{path}.parameters")
     for i, predicate in enumerate(document.get("predicates", [])):
         yield from _typed_items(predicate.get("parameters", []), f"predicates[{i}].parameters")
@@ -223,25 +236,32 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
         path = f"actions[{i}]"
         yield from _typed_items(action.get("parameters", []), f"{path}.parameters")
         if "precondition" in action:
-            yield from _formula_uses(action["precondition"], f"{path}.precondition")
+            yield from _formula_uses(action["precondition"], f"{path}.precondition", objects)
         if "effect" in action:
-            yield from _effect_uses(action["effect"], f"{path}.effect")
+            yield from _effect_uses(action["effect"], f"{path}.effect", objects)
     for i, action in enumerate(document.get("durative_actions", [])):
         path = f"durative_actions[{i}]"
         yield RequirementUse(":durative-actions", "una acción durativa", path, _loc(action))
         yield from _typed_items(action.get("parameters", []), f"{path}.parameters")
         yield from _duration_uses(action["duration"], f"{path}.duration")
         if "condition" in action:
-            yield from _timed_condition_uses(action["condition"], f"{path}.condition")
+            yield from _timed_condition_uses(action["condition"], f"{path}.condition", objects)
         if "effect" in action:
-            yield from _timed_effect_uses(action["effect"], f"{path}.effect")
+            yield from _timed_effect_uses(action["effect"], f"{path}.effect", objects)
     for i, rule in enumerate(document.get("derived", [])):
         path = f"derived[{i}]"
         yield RequirementUse(":derived-predicates", "un predicado derivado", path, _loc(rule))
         yield from _typed_items(rule.get("parameters", []), f"{path}.parameters")
-        yield from _formula_uses(rule["condition"], f"{path}.condition")
+        yield from _formula_uses(rule["condition"], f"{path}.condition", objects)
     for i, element in enumerate(document.get("init", [])):
-        if element["op"] == "=":
+        is_object = element["op"] == "=" and (
+            isinstance(element["value"], str) or element["fluent"]["function"] in objects
+        )
+        if is_object:
+            yield RequirementUse(
+                ":object-fluents", "un valor inicial de objeto", f"init[{i}]", _loc(element)
+            )
+        elif element["op"] == "=":
             yield RequirementUse(
                 ":numeric-fluents", "un valor inicial numérico", f"init[{i}]", _loc(element), _COSTS
             )
@@ -253,9 +273,9 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
                 _loc(element),
             )
     if "goal" in document:
-        yield from _formula_uses(document["goal"], "goal")
+        yield from _formula_uses(document["goal"], "goal", objects)
     if "constraints" in document:
-        yield from _constraint_uses(document["constraints"], "constraints")
+        yield from _constraint_uses(document["constraints"], "constraints", objects)
     if "metric" in document:
         metric = document["metric"]
         expression = metric["expression"]
@@ -268,13 +288,18 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
         yield from _violation_uses(expression, "metric.expression")
 
 
-def first_undeclared(document: Mapping[str, Any], declared: Iterable[str]) -> RequirementUse | None:
+def first_undeclared(
+    document: Mapping[str, Any],
+    declared: Iterable[str],
+    objects: frozenset[str] | None = None,
+) -> RequirementUse | None:
     """La primera construcción de ``document`` cuyo requisito no está en ``declared``.
 
-    ``declared`` se expande antes de comparar (``:adl`` cubre ``:typing``, etc.).
+    ``declared`` se expande antes de comparar (``:adl`` cubre ``:typing``, etc.), y
+    ``objects`` son las funciones de objetos (ver :func:`requirement_uses`).
     """
     expanded = expand_requirements(declared)
-    for use in requirement_uses(document):
+    for use in requirement_uses(document, objects):
         if use.requirement not in expanded and not any(a in expanded for a in use.alternatives):
             return use
     return None
@@ -299,6 +324,24 @@ def _only_violations(node: Mapping[str, Any]) -> bool:
     return False
 
 
+def _term_uses(
+    args: list[Any], path: str, loc: Mapping[str, int] | None
+) -> Iterator[RequirementUse]:
+    """Un término de función como argumento (``(at (loc ?r))``) necesita
+    ``:object-fluents``."""
+    if any(isinstance(arg, Mapping) for arg in args):
+        yield RequirementUse(":object-fluents", "una función de objetos como argumento", path, loc)
+
+
+def _object_equality(node: Mapping[str, Any], objects: frozenset[str]) -> bool:
+    """``True`` si una comparación ``=`` compara dos funciones de objetos (la fase 1 no
+    puede distinguirla de una numérica sin las declaraciones)."""
+    return node["comparator"] == "=" and all(
+        side["op"] == "fluent" and side["function"] in objects
+        for side in (node["left"], node["right"])
+    )
+
+
 def _violation_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
     if node["op"] == "is-violated":
         yield RequirementUse(":preferences", "'is-violated' en la métrica", path, _loc(node))
@@ -317,14 +360,22 @@ def _typed_items(items: list[Mapping[str, Any]], path: str) -> Iterator[Requirem
             yield RequirementUse(":typing", "una declaración con tipo", f"{path}[{i}]", _loc(item))
 
 
-def _formula_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+def _formula_uses(
+    node: Mapping[str, Any], path: str, objects: frozenset[str]
+) -> Iterator[RequirementUse]:
     op = node["op"]
     loc = _loc(node)
     if op == "preference":
         yield RequirementUse(":preferences", "una preferencia", path, loc)
-        yield from _formula_uses(node["arg"], f"{path}.arg")
+        yield from _formula_uses(node["arg"], f"{path}.arg", objects)
+    elif op == "atom":
+        yield from _term_uses(node["args"], path, loc)
     elif op == "=":
         yield RequirementUse(":equality", "'=' en una fórmula", path, loc)
+        yield from _term_uses(node["args"], path, loc)
+    elif op == "compare" and _object_equality(node, objects):
+        yield RequirementUse(":equality", "'=' en una fórmula", path, loc)
+        yield RequirementUse(":object-fluents", "una función de objetos", path, loc)
     elif op == "compare":
         yield RequirementUse(":numeric-fluents", "una comparación numérica", path, loc)
     elif op == "not":
@@ -334,7 +385,7 @@ def _formula_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse
             yield RequirementUse(
                 ":disjunctive-preconditions", "'not' sobre una fórmula compuesta", path, loc
             )
-        yield from _formula_uses(node["arg"], f"{path}.arg")
+        yield from _formula_uses(node["arg"], f"{path}.arg", objects)
     elif op in ("or", "imply"):
         yield RequirementUse(":disjunctive-preconditions", f"'{op}' en una fórmula", path, loc)
     elif op == "exists":
@@ -343,25 +394,35 @@ def _formula_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse
         yield RequirementUse(":universal-preconditions", "'forall' en una fórmula", path, loc)
     if op in ("exists", "forall"):
         yield from _typed_items(node["parameters"], f"{path}.parameters")
-        yield from _formula_uses(node["arg"], f"{path}.arg")
+        yield from _formula_uses(node["arg"], f"{path}.arg", objects)
     elif op in ("and", "or", "imply"):
         for i, arg in enumerate(node["args"]):
-            yield from _formula_uses(arg, f"{path}.args[{i}]")
+            yield from _formula_uses(arg, f"{path}.args[{i}]", objects)
 
 
-def _effect_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+def _effect_uses(
+    node: Mapping[str, Any], path: str, objects: frozenset[str]
+) -> Iterator[RequirementUse]:
     op = node["op"]
     if op == "and":
         for i, arg in enumerate(node["args"]):
-            yield from _effect_uses(arg, f"{path}.args[{i}]")
+            yield from _effect_uses(arg, f"{path}.args[{i}]", objects)
     elif op == "forall":
         yield RequirementUse(":conditional-effects", "'forall' en un efecto", path, _loc(node))
         yield from _typed_items(node["parameters"], f"{path}.parameters")
-        yield from _effect_uses(node["arg"], f"{path}.arg")
+        yield from _effect_uses(node["arg"], f"{path}.arg", objects)
     elif op == "when":
         yield RequirementUse(":conditional-effects", "'when' en un efecto", path, _loc(node))
-        yield from _formula_uses(node["condition"], f"{path}.condition")
-        yield from _effect_uses(node["arg"], f"{path}.arg")
+        yield from _formula_uses(node["condition"], f"{path}.condition", objects)
+        yield from _effect_uses(node["arg"], f"{path}.arg", objects)
+    elif op == "atom":
+        yield from _term_uses(node["args"], path, _loc(node))
+    elif op == "not":
+        yield from _term_uses(node["arg"]["args"], path, _loc(node))
+    elif op in NUMERIC_EFFECTS and node["fluent"]["function"] in objects:
+        yield RequirementUse(
+            ":object-fluents", f"'{op}' de una función de objetos", path, _loc(node)
+        )
     elif op in NUMERIC_EFFECTS:
         value = node["value"]
         cost_only = (
@@ -408,59 +469,65 @@ def _duration_uses(constraints: list[Mapping[str, Any]], path: str) -> Iterator[
             )
 
 
-def _timed_condition_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+def _timed_condition_uses(
+    node: Mapping[str, Any], path: str, objects: frozenset[str]
+) -> Iterator[RequirementUse]:
     op = node["op"]
     if op == "and":
         for i, arg in enumerate(node["args"]):
-            yield from _timed_condition_uses(arg, f"{path}.args[{i}]")
+            yield from _timed_condition_uses(arg, f"{path}.args[{i}]", objects)
     elif op == "forall":
         yield RequirementUse(
             ":universal-preconditions", "'forall' en una condición", path, _loc(node)
         )
         yield from _typed_items(node["parameters"], f"{path}.parameters")
-        yield from _timed_condition_uses(node["arg"], f"{path}.arg")
+        yield from _timed_condition_uses(node["arg"], f"{path}.arg", objects)
     elif op == "preference":
         yield RequirementUse(":preferences", "una preferencia", path, _loc(node))
-        yield from _timed_condition_uses(node["arg"], f"{path}.arg")
+        yield from _timed_condition_uses(node["arg"], f"{path}.arg", objects)
     else:  # at-start, at-end, over-all
-        yield from _formula_uses(node["arg"], f"{path}.arg")
+        yield from _formula_uses(node["arg"], f"{path}.arg", objects)
 
 
-def _constraint_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+def _constraint_uses(
+    node: Mapping[str, Any], path: str, objects: frozenset[str]
+) -> Iterator[RequirementUse]:
     op = node["op"]
     loc = _loc(node)
     if op == "and":
         for i, arg in enumerate(node["args"]):
-            yield from _constraint_uses(arg, f"{path}.args[{i}]")
+            yield from _constraint_uses(arg, f"{path}.args[{i}]", objects)
     elif op == "forall":
         yield RequirementUse(":universal-preconditions", "'forall' en una restricción", path, loc)
         yield from _typed_items(node["parameters"], f"{path}.parameters")
-        yield from _constraint_uses(node["arg"], f"{path}.arg")
+        yield from _constraint_uses(node["arg"], f"{path}.arg", objects)
     elif op == "preference":
         yield RequirementUse(":preferences", "una preferencia", path, loc)
-        yield from _constraint_uses(node["arg"], f"{path}.arg")
+        yield from _constraint_uses(node["arg"], f"{path}.arg", objects)
     else:
         yield RequirementUse(":constraints", f"la restricción '{op}'", path, loc)
         if "arg" in node:
-            yield from _formula_uses(node["arg"], f"{path}.arg")
+            yield from _formula_uses(node["arg"], f"{path}.arg", objects)
         for i, arg in enumerate(node.get("args", ())):
-            yield from _formula_uses(arg, f"{path}.args[{i}]")
+            yield from _formula_uses(arg, f"{path}.args[{i}]", objects)
 
 
-def _timed_effect_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+def _timed_effect_uses(
+    node: Mapping[str, Any], path: str, objects: frozenset[str]
+) -> Iterator[RequirementUse]:
     op = node["op"]
     if op == "and":
         for i, arg in enumerate(node["args"]):
-            yield from _timed_effect_uses(arg, f"{path}.args[{i}]")
+            yield from _timed_effect_uses(arg, f"{path}.args[{i}]", objects)
     elif op == "forall":
         yield RequirementUse(":conditional-effects", "'forall' en un efecto", path, _loc(node))
         yield from _typed_items(node["parameters"], f"{path}.parameters")
-        yield from _timed_effect_uses(node["arg"], f"{path}.arg")
+        yield from _timed_effect_uses(node["arg"], f"{path}.arg", objects)
     elif op == "when":
         yield RequirementUse(":conditional-effects", "'when' en un efecto", path, _loc(node))
-        yield from _timed_condition_uses(node["condition"], f"{path}.condition")
-        yield from _timed_effect_uses(node["arg"], f"{path}.arg")
+        yield from _timed_condition_uses(node["condition"], f"{path}.condition", objects)
+        yield from _timed_effect_uses(node["arg"], f"{path}.arg", objects)
     elif op in ("at-start", "at-end"):
-        yield from _effect_uses(node["arg"], f"{path}.arg")
+        yield from _effect_uses(node["arg"], f"{path}.arg", objects)
     else:  # increase o decrease continuo
         yield RequirementUse(":continuous-effects", "un efecto continuo", path, _loc(node))

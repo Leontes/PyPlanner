@@ -130,7 +130,7 @@ def test_parse_domain_rejects_a_problem() -> None:
         ("(define (domain d) (:action a :effect (and ())))", "efecto vacío"),
         ("(define (domain d) (:action a :effect ((p))))", "se esperaba un operador"),
         ("(define (domain d) (:action a :effect (p 3)))", "no es un objeto ni una variable"),
-        ("(define (domain d) (:action a :effect (p (x))))", "no una lista"),
+        ("(define (domain d) (:action a :effect (p 3)))", "'3' no es un objeto"),
         ("(define (domain d) ())", "sección vacía"),
         ("(define (domain d) (predicates))", "se esperaba una sección"),
         ("(define (domain d) :predicates)", "se esperaba una sección"),
@@ -148,7 +148,6 @@ def test_syntax_errors(text: str, message: str) -> None:
     ("text", "requirement"),
     [
         ("(define (domain d) (:requirements :time))", ":time"),
-        ("(define (domain d) (:functions (f) - object))", ":object-fluents"),
         ("(define (domain d) (:process p))", ":time"),
         ("(define (domain d) (:event e))", ":time"),
     ],
