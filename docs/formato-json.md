@@ -1,4 +1,4 @@
-# Formato JSON de entrada (versión 5)
+# Formato JSON de entrada (versión 6)
 
 El planificador recibe los dominios y problemas en JSON. Este documento es el contrato para
 cualquier componente que quiera generar ese JSON sin pasar por PDDL. El esquema formal
@@ -28,7 +28,8 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
   - v2: PDDL 1.2, subconjunto ADL;
   - v3: PDDL 2.1 numérico y costes de acción (`:action-costs`);
   - v4: PDDL 2.1 temporal (acciones durativas);
-  - v5 (actual): PDDL 2.2 (predicados derivados y literales iniciales temporizados).
+  - v5: PDDL 2.2 (predicados derivados y literales iniciales temporizados);
+  - v6 (actual): PDDL 3 (restricciones de trayectoria, preferencias e `is-violated`).
 
   Cada versión solo **añade** construcciones, así que un documento v1 sigue siendo
   válido.
@@ -55,6 +56,7 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 | `actions` | no | ver abajo |
 | `durative_actions` | no | acciones durativas (v4); ver [Acciones durativas](#acciones-durativas-v4) |
 | `derived` | no | reglas de predicados derivados (v5); ver [PDDL 2.2](#pddl-22-v5) |
+| `constraints` | no | restricciones de trayectoria duras (v6); ver [PDDL 3](#pddl-3-v6) |
 
 Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fórmula) y
 `effect` (un efecto). Si falta alguno de los dos, se toma como vacío. Las acciones y las
@@ -71,6 +73,7 @@ acciones durativas comparten espacio de nombres.
 | `objects` | no | como `constants`. Si repiten una constante del dominio, se ignoran |
 | `init` | no | lista de átomos sin variables, de valores iniciales `{"op": "=", "fluent": …, "value": 3.5}` (v3) y de literales iniciales temporizados `{"op": "at", "time": 10, "literal": …}` (v5) |
 | `metric` | no | `{"direction": "minimize" \| "maximize", "expression": …}` (v3) |
+| `constraints` | no | restricciones de trayectoria, que pueden ser preferencias (v6); ver [PDDL 3](#pddl-3-v6) |
 
 ## Tipos (v2)
 
@@ -103,6 +106,9 @@ Las reglas están en `pyplanner/requirements.py`:
 | efecto continuo | `:continuous-effects` |
 | `derived` | `:derived-predicates` |
 | literal inicial temporizado (`at` en `init`) | `:timed-initial-literals` |
+| `constraints` y sus operadores modales | `:constraints` |
+| `preference`, `is-violated` | `:preferences` |
+| métrica de números, aritmética e `is-violated` | `:numeric-fluents` o `:preferences` |
 
 - `not` en un efecto es un borrado STRIPS y no necesita nada.
 - `:adl` y `:quantified-preconditions` equivalen a sus requisitos componentes, y
@@ -244,6 +250,46 @@ Una acción durativa tiene `name`, `parameters`, `duration` y, opcionalmente, `c
 - No pueden afectar a predicados derivados, ni dar a un hecho los dos valores en el mismo
   instante. Repetir un mismo literal no tiene efecto.
 - En PDDL, `(at <número> …)` es siempre un TIL: un objeto no puede llamarse como un número.
+
+## PDDL 3 (v6)
+
+**Preferencias.** `{"op": "preference", "name": "p1", "arg": …}`; `name` es opcional (una
+preferencia sin nombre no se puede citar en la métrica). Varias preferencias pueden
+compartir nombre, y una dentro de un `forall` lo comparte con todas sus instancias. Solo
+pueden ir:
+
+- en la conjunción exterior (`and`, `forall`) del objetivo y de las precondiciones, con una
+  fórmula como `arg`;
+- en las condiciones de una acción durativa, envolviendo una condición con momento
+  (`at-start`, `at-end` u `over-all`);
+- en las restricciones del problema, envolviendo una restricción.
+
+Nunca dentro de `or`, `not`, `imply`, `exists` ni de otra preferencia.
+
+**Restricciones de trayectoria.** Se cumplen sobre la secuencia de estados del plan (el
+inicial y el que deja cada paso). Los operadores modales no se anidan: van directamente en
+`constraints` o dentro de `and`, `forall` y (solo en el problema) `preference`.
+
+| `op` | Campos | Significado |
+|------|--------|-------------|
+| `at-end` | `arg` | φ en el estado final |
+| `always` | `arg` | φ en todos los estados |
+| `sometime` | `arg` | φ en algún estado |
+| `at-most-once` | `arg` | φ es cierta en un solo tramo de estados seguidos, como mucho |
+| `sometime-after` | `args` [φ, ψ] | si φ en un estado, ψ en ese o en uno posterior |
+| `sometime-before` | `args` [φ, ψ] | si φ en un estado, ψ en uno estrictamente anterior |
+| `within` | `time`, `arg` | φ en algún estado de instante ≤ `time` |
+| `hold-after` | `time`, `arg` | φ en todos los estados de instante > `time` |
+| `hold-during` | `from`, `to`, `arg` | φ en todos los estados de instante en [`from`, `to`) |
+| `always-within` | `time`, `args` [φ, ψ] | cada vez que φ, ψ en un plazo de `time` |
+
+En un dominio sin acciones durativas, el instante de un estado es el número de pasos del
+plan hasta él. Los instantes son ≥ 0, y en `hold-during`, `from` ≤ `to`. Las restricciones
+del dominio son siempre duras: no admiten preferencias.
+
+**`is-violated`.** `{"op": "is-violated", "name": "p1"}` es el número de incumplimientos de
+la preferencia `p1` (de todas sus instancias), y solo puede aparecer en la métrica. El
+nombre tiene que ser el de alguna preferencia del dominio o del problema.
 
 ## Ejemplo
 

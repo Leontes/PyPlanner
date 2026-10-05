@@ -178,7 +178,6 @@ def test_bad_metric_direction() -> None:
     ("text", "requirement"),
     [
         ("(:functions (f) - object)", ":object-fluents"),
-        (f"{BASE} (:action a :precondition (preference p (g)))", ":preferences"),
     ],
 )
 def test_future_numeric_features(text: str, requirement: str) -> None:

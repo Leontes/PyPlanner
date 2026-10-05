@@ -67,6 +67,8 @@ def _write_domain(document: Mapping[str, Any]) -> str:
         lines.append(f"{_INDENT * 2}:condition {_timed(condition, _formula)}")
         lines.append(f"{_INDENT * 2}:effect {_timed(action.get('effect', _EMPTY), _effect)}")
         lines.append(f"{_INDENT})")
+    if "constraints" in document:
+        lines.append(f"{_INDENT}(:constraints {_constraint(document['constraints'])})")
     lines.append(")")
     return "\n".join(lines) + "\n"
 
@@ -89,6 +91,8 @@ def _write_problem(document: Mapping[str, Any]) -> str:
             lines.append(f"{_INDENT * 2}{_formula(element)}")
     lines.append(f"{_INDENT})")
     lines.append(f"{_INDENT}(:goal {_formula(document['goal'])})")
+    if "constraints" in document:
+        lines.append(f"{_INDENT}(:constraints {_constraint(document['constraints'])})")
     if "metric" in document:
         metric = document["metric"]
         expression = _expression(metric["expression"])
@@ -151,7 +155,30 @@ def _formula(node: Mapping[str, Any]) -> str:
     if op == "compare":
         left, right = _expression(node["left"]), _expression(node["right"])
         return f"({node['comparator']} {left} {right})"
+    if op == "preference":
+        return _preference(node, _formula)
     raise ValueError(f"operador de fórmula desconocido: {op}")
+
+
+def _preference(node: Mapping[str, Any], inner: Callable[[Mapping[str, Any]], str]) -> str:
+    name = f" {node['name']}" if "name" in node else ""
+    return f"(preference{name} {inner(node['arg'])})"
+
+
+def _constraint(node: Mapping[str, Any]) -> str:
+    """Escribe una restricción de trayectoria (PDDL 3)."""
+    op = node["op"]
+    if op == "and":
+        return f"({' '.join(['and', *(_constraint(arg) for arg in node['args'])])})"
+    if op == "forall":
+        return f"(forall ({_typed_list(node['parameters'])}) {_constraint(node['arg'])})"
+    if op == "preference":
+        return _preference(node, _constraint)
+    head = "at end" if op == "at-end" else op
+    times = [node["from"], node["to"]] if op == "hold-during" else [node.get("time")]
+    formulas = [node["arg"]] if "arg" in node else node["args"]
+    parts = [head, *(_number(t) for t in times if t is not None), *map(_formula, formulas)]
+    return f"({' '.join(parts)})"
 
 
 def _expression(node: Mapping[str, Any]) -> str:
@@ -167,6 +194,8 @@ def _expression(node: Mapping[str, Any]) -> str:
         return "?duration"
     if op == "#t":
         return "#t"
+    if op == "is-violated":
+        return f"(is-violated {node['name']})"
     return f"({' '.join([op, *(_expression(arg) for arg in node['args'])])})"
 
 
@@ -218,4 +247,6 @@ def _timed(node: Mapping[str, Any], inner: Callable[[Mapping[str, Any]], str]) -
         return f"(forall ({_typed_list(node['parameters'])}) {_timed(node['arg'], inner)})"
     if op == "when":
         return f"(when {_timed(node['condition'], _formula)} {_timed(node['arg'], inner)})"
+    if op == "preference":
+        return _preference(node, lambda arg: _timed(arg, inner))
     return _effect(node)  # efecto continuo

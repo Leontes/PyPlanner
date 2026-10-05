@@ -18,7 +18,7 @@ puede romper la anterior.
 | 3 | PDDL 2.1 temporal | `temporal/greenhouse` | `:typing :durative-actions :numeric-fluents :continuous-effects :duration-inequalities :conditional-effects :negative-preconditions` | **no oficial**: creado ad hoc (†) |
 | 4 | PDDL 2.2 | `derived-predicates/psr-middle` | `:adl :derived-predicates` | IPC 2004 (psr-middle-derived-predicates-adl) |
 | 4 | PDDL 2.2 | `timed-initial-literals/satellite` | `:strips :equality :typing :fluents :durative-actions :timed-initial-literals` | IPC 2004 (satellite-time-time-windows-strips) |
-| 5 | PDDL 3 | `preferences/storage` | `:typing :adl :preferences :constraints` | IPC 2006 (storage-preferences-qualitative) |
+| 5 | PDDL 3 | `preferences/storage` | `:typing :adl :preferences :constraints` | IPC 2006 (storage-preferences-qualitative) (‡) |
 | 5 | PDDL 3 | `constraints/trucks` | `:typing :adl :durative-actions :fluents :constraints` | IPC 2006 (trucks-time-constraints) |
 | 6 | PDDL+ | `car` | `:typing :durative-actions :fluents :time :negative-preconditions :timed-initial-literals` | SMTPlan (car_nodrag) |
 | 6 | PDDL+ | `generator` | `:fluents :durative-actions :duration-inequalities :adl :typing :time :continuous-effects` (*) | SMTPlan (generator_events) |
@@ -30,10 +30,12 @@ instancias de la colección original, que suelen ser las más sencillas.
 
 - Estructura: `tierN-<nombre>/[<subtipo>/]<dominio>/{domain.pddl, pNN.pddl}`.
 - Los ficheros se copian **sin modificar**. Si un dominio necesita retoques, se añade como
-  dominio nuevo y se explica en esta tabla. La única excepción son las erratas en
-  `:requirements` marcadas con (*), que se corrigen en el propio fichero.
+  dominio nuevo y se explica en esta tabla. Hay dos excepciones, que se corrigen en el
+  propio fichero: las erratas en `:requirements`, marcadas con (*), y las discordancias de
+  otro tipo cuando se decide corregirlas, marcadas con (‡).
 - **Toda discordancia de requisitos se trata como una errata del fichero:** se añade a
   mano el requisito que falta, y el modo estricto no hace excepciones.
+- Las discordancias de otro tipo se deciden caso a caso.
 - **Modo estricto:** el planificador exige que toda construcción que se use tenga su
   requisito declarado. Si no se declara `:requirements`, se supone `:strips`.
 - Para añadir problemas basta con copiar más `pNN.pddl`; la batería de tests los
@@ -65,6 +67,10 @@ Notas:
   dominios no declaraban. Se ha añadido a la línea `:requirements` del dominio.
 - (*) `generator` usa un efecto continuo (`#t`) en una acción durativa, pero no declaraba
   `:continuous-effects` (solo `:time`, que es para procesos y eventos). Se ha añadido.
+- (‡) El dominio de `storage` declaraba el tipo `area` dos veces: `area - object` en la
+  primera línea de `:types` y `area crate - surface` en la última. La primera no aporta
+  nada (todo tipo desciende de `object`) y el parser rechaza los tipos repetidos, así que
+  se ha quitado `area` de la primera línea. Los planes valen lo mismo para VAL.
 - (†) `greenhouse` **no es un benchmark oficial**. Se ha creado ad hoc para probar casos
   límite de expresividad de PDDL 2.1 temporal que no aparecen en ningún benchmark público
   encontrado (ni en las IPC ni en los de COLIN/OPTIC o VAL): efectos continuos dentro de

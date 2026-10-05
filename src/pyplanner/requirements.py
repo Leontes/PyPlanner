@@ -28,7 +28,13 @@ PDDL 2.1:
   ``:continuous-effects``;
 * reglas ``:derived`` → ``:derived-predicates`` (su condición, además, los de cualquier
   fórmula);
-* literales ``(at <t> <literal>)`` en ``:init`` → ``:timed-initial-literals``.
+* literales ``(at <t> <literal>)`` en ``:init`` → ``:timed-initial-literals``;
+* restricciones de trayectoria (``:constraints`` y sus operadores modales) →
+  ``:constraints``, y ``forall`` en ellas → ``:universal-preconditions``;
+* ``preference`` (en objetivos, precondiciones, condiciones y restricciones) e
+  ``is-violated`` → ``:preferences``. Una métrica que solo usa números, aritmética e
+  ``is-violated`` también se acepta con ``:preferences`` (es la de las preferencias de la
+  IPC 2006).
 
 ``(not <átomo>)`` en un efecto es un borrado STRIPS y no necesita nada.
 """
@@ -127,6 +133,9 @@ SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
         # Iteración 4 (PDDL 2.2)
         ":derived-predicates",
         ":timed-initial-literals",
+        # Iteración 5 (PDDL 3)
+        ":constraints",
+        ":preferences",
     }
 )
 
@@ -245,13 +254,18 @@ def requirement_uses(document: Mapping[str, Any]) -> Iterator[RequirementUse]:
             )
     if "goal" in document:
         yield from _formula_uses(document["goal"], "goal")
+    if "constraints" in document:
+        yield from _constraint_uses(document["constraints"], "constraints")
     if "metric" in document:
         metric = document["metric"]
         expression = metric["expression"]
         alternatives: tuple[str, ...] = ()
         if metric["direction"] == "minimize" and _is_total_cost(expression):
             alternatives = _COSTS
+        elif _only_violations(expression):
+            alternatives = (":preferences",)
         yield RequirementUse(":numeric-fluents", "la métrica", "metric", _loc(metric), alternatives)
+        yield from _violation_uses(expression, "metric.expression")
 
 
 def first_undeclared(document: Mapping[str, Any], declared: Iterable[str]) -> RequirementUse | None:
@@ -274,6 +288,25 @@ def _is_total_cost(node: Mapping[str, Any]) -> bool:
     return node["op"] == "fluent" and node["function"] == "total-cost" and not node["args"]
 
 
+def _only_violations(node: Mapping[str, Any]) -> bool:
+    """``True`` si la expresión solo tiene números, aritmética e ``is-violated``: una
+    métrica de preferencias, que se acepta con ``:preferences`` (como en la IPC 2006)."""
+    op = node["op"]
+    if op == "is-violated" or op == "num":
+        return True
+    if op in ("+", "-", "*", "/"):
+        return all(_only_violations(arg) for arg in node["args"])
+    return False
+
+
+def _violation_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+    if node["op"] == "is-violated":
+        yield RequirementUse(":preferences", "'is-violated' en la métrica", path, _loc(node))
+    for i, arg in enumerate(node.get("args", ())):
+        if isinstance(arg, Mapping):
+            yield from _violation_uses(arg, f"{path}.args[{i}]")
+
+
 def _loc(node: Any) -> Mapping[str, int] | None:
     return node.get("loc") if isinstance(node, Mapping) else None
 
@@ -287,7 +320,10 @@ def _typed_items(items: list[Mapping[str, Any]], path: str) -> Iterator[Requirem
 def _formula_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
     op = node["op"]
     loc = _loc(node)
-    if op == "=":
+    if op == "preference":
+        yield RequirementUse(":preferences", "una preferencia", path, loc)
+        yield from _formula_uses(node["arg"], f"{path}.arg")
+    elif op == "=":
         yield RequirementUse(":equality", "'=' en una fórmula", path, loc)
     elif op == "compare":
         yield RequirementUse(":numeric-fluents", "una comparación numérica", path, loc)
@@ -383,8 +419,32 @@ def _timed_condition_uses(node: Mapping[str, Any], path: str) -> Iterator[Requir
         )
         yield from _typed_items(node["parameters"], f"{path}.parameters")
         yield from _timed_condition_uses(node["arg"], f"{path}.arg")
+    elif op == "preference":
+        yield RequirementUse(":preferences", "una preferencia", path, _loc(node))
+        yield from _timed_condition_uses(node["arg"], f"{path}.arg")
     else:  # at-start, at-end, over-all
         yield from _formula_uses(node["arg"], f"{path}.arg")
+
+
+def _constraint_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:
+    op = node["op"]
+    loc = _loc(node)
+    if op == "and":
+        for i, arg in enumerate(node["args"]):
+            yield from _constraint_uses(arg, f"{path}.args[{i}]")
+    elif op == "forall":
+        yield RequirementUse(":universal-preconditions", "'forall' en una restricción", path, loc)
+        yield from _typed_items(node["parameters"], f"{path}.parameters")
+        yield from _constraint_uses(node["arg"], f"{path}.arg")
+    elif op == "preference":
+        yield RequirementUse(":preferences", "una preferencia", path, loc)
+        yield from _constraint_uses(node["arg"], f"{path}.arg")
+    else:
+        yield RequirementUse(":constraints", f"la restricción '{op}'", path, loc)
+        if "arg" in node:
+            yield from _formula_uses(node["arg"], f"{path}.arg")
+        for i, arg in enumerate(node.get("args", ())):
+            yield from _formula_uses(arg, f"{path}.args[{i}]")
 
 
 def _timed_effect_uses(node: Mapping[str, Any], path: str) -> Iterator[RequirementUse]:

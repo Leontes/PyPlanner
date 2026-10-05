@@ -222,8 +222,19 @@ class DurationVar:
         return "?duration"
 
 
+@dataclass(frozen=True)
+class IsViolated:
+    """``(is-violated nombre)``: número de veces que se incumple la preferencia ``name``
+    (PDDL 3). Solo aparece en la métrica."""
+
+    name: str
+
+    def __str__(self) -> str:
+        return f"(is-violated {self.name})"
+
+
 #: Expresión numérica.
-Expression = Number | FluentTerm | Arithmetic | TotalTime | DurationVar
+Expression = Number | FluentTerm | Arithmetic | TotalTime | DurationVar | IsViolated
 
 
 @dataclass(frozen=True)
@@ -238,8 +249,29 @@ class Comparison:
         return f"({self.comparator} {self.left} {self.right})"
 
 
-#: Fórmula lógica (precondiciones, objetivos y condiciones de efectos condicionales).
-Formula = Atom | Equals | Not | And | Or | Imply | Exists | Forall | Comparison
+@dataclass(frozen=True)
+class Preference:
+    """Preferencia (PDDL 3): ``arg`` se desea pero no es obligatoria; cada incumplimiento
+    cuenta en la métrica a través de ``(is-violated name)``.
+
+    Puede ir en la conjunción exterior del objetivo o de una precondición (``arg`` es una
+    fórmula), alrededor de una condición con momento de una acción durativa (una
+    :class:`TimedCondition`) o alrededor de una restricción del problema. Sin nombre no se
+    puede citar en la métrica; varias preferencias pueden compartir nombre (y una dentro de
+    un ``forall`` lo comparte con todas sus instancias).
+    """
+
+    name: str | None
+    arg: "Formula | TimedCondition | Constraint"
+
+    def __str__(self) -> str:
+        name = f" {self.name}" if self.name else ""
+        return f"(preference{name} {self.arg})"
+
+
+#: Fórmula lógica (precondiciones, objetivos y condiciones de efectos condicionales). Las
+#: preferencias solo aparecen en la conjunción exterior de objetivos y precondiciones.
+Formula = Atom | Equals | Not | And | Or | Imply | Exists | Forall | Comparison | Preference
 
 
 # --- Efectos ------------------------------------------------------------------------
@@ -398,7 +430,7 @@ class DurativeWhen:
 
 
 #: Condición de una acción durativa.
-DurativeCondition = TimedCondition | DurativeAnd | DurativeForall
+DurativeCondition = TimedCondition | DurativeAnd | DurativeForall | Preference
 #: Efecto de una acción durativa.
 DurativeEffect = TimedEffect | ContinuousEffect | DurativeAnd | DurativeForallEffect | DurativeWhen
 
@@ -418,6 +450,73 @@ class DurativeAction:
     duration: tuple[DurationConstraint, ...]
     condition: DurativeCondition
     effect: DurativeEffect
+
+
+# --- Restricciones de trayectoria (PDDL 3) ------------------------------------------
+
+
+@dataclass(frozen=True)
+class TrajectoryConstraint:
+    """Restricción sobre la secuencia de estados del plan (operador modal de PDDL 3).
+
+    ``op`` es ``at-end``, ``always``, ``sometime``, ``at-most-once``, ``sometime-after``,
+    ``sometime-before``, ``within``, ``hold-after``, ``always-within`` o ``hold-during``;
+    ``formulas`` son sus fórmulas (dos en ``sometime-after``, ``sometime-before`` y
+    ``always-within``: φ y ψ) y ``times``, sus instantes (dos en ``hold-during``). En un
+    dominio sin acciones durativas, el instante de un estado es el número de pasos del plan.
+    """
+
+    op: str
+    formulas: tuple[Formula, ...]
+    times: tuple[float, ...] = ()
+
+    def __str__(self) -> str:
+        op = "at end" if self.op == "at-end" else self.op
+        parts = [op, *(f"{t:g}" for t in self.times), *map(str, self.formulas)]
+        return f"({' '.join(parts)})"
+
+
+@dataclass(frozen=True)
+class ConstraintAnd:
+    """Conjunción de restricciones de trayectoria."""
+
+    args: tuple["Constraint", ...] = ()
+
+    def __str__(self) -> str:
+        return f"({' '.join(['and', *map(str, self.args)])})"
+
+
+@dataclass(frozen=True)
+class ConstraintForall:
+    """Restricción para cada asignación de las variables."""
+
+    parameters: tuple[Parameter, ...]
+    arg: "Constraint"
+
+    def __str__(self) -> str:
+        return f"(forall ({' '.join(p.name for p in self.parameters)}) {self.arg})"
+
+
+#: Restricción de trayectoria (las preferencias solo en las del problema).
+Constraint = TrajectoryConstraint | ConstraintAnd | ConstraintForall | Preference
+
+
+def preferences_in(node: object) -> Iterator[Preference]:
+    """Preferencias de una fórmula, condición o restricción (siempre en su capa exterior)."""
+    if isinstance(node, Preference):
+        yield node
+    elif isinstance(node, And | DurativeAnd | ConstraintAnd):
+        for arg in node.args:
+            yield from preferences_in(arg)
+    elif isinstance(node, Forall | DurativeForall | ConstraintForall):
+        yield from preferences_in(node.arg)
+
+
+def preference_names(node: object) -> Iterator[str]:
+    """Nombres de las preferencias de una fórmula, condición o restricción."""
+    for preference in preferences_in(node):
+        if preference.name is not None:
+            yield preference.name
 
 
 # --- Declaraciones ------------------------------------------------------------------
@@ -529,6 +628,17 @@ class Domain:
     functions: tuple[Function, ...] = ()
     durative_actions: tuple[DurativeAction, ...] = ()
     derived: tuple[DerivedRule, ...] = ()
+    constraints: Constraint | None = None
+
+    @cached_property
+    def preference_names(self) -> frozenset[str]:
+        """Nombres de las preferencias de las precondiciones y condiciones de las acciones."""
+        names: set[str] = set()
+        for action in self.actions:
+            names.update(preference_names(action.precondition))
+        for durative in self.durative_actions:
+            names.update(preference_names(durative.condition))
+        return frozenset(names)
 
     @cached_property
     def derived_predicates(self) -> frozenset[str]:
@@ -616,6 +726,7 @@ class Problem:
             valor inicial está indefinida.
         metric: métrica de calidad del plan, si la hay.
         timed_literals: literales iniciales temporizados, ordenados por instante.
+        constraints: restricciones de trayectoria del problema (PDDL 3), si las hay.
     """
 
     name: str
@@ -627,3 +738,4 @@ class Problem:
     values: tuple[tuple[FluentTerm, float], ...] = ()
     metric: Metric | None = None
     timed_literals: tuple[TimedLiteral, ...] = ()
+    constraints: Constraint | None = None

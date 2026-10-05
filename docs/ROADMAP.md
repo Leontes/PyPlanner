@@ -378,7 +378,18 @@ track clásico de las IPC 2023. El resto de PDDL 3 va a la iteración 5.
 
 **Requisitos:** `:constraints`, `:preferences` y `:object-fluents` (PDDL 3.1; `:action-costs`
 ya está desde la 3a).
-- **Parser:**
+
+Se divide en cuatro partes (decidido el 2026-10-05): 5a parser; 5b restricciones duras como
+monitores en el motor (las de tiempo, sobre la maquinaria de los TIL; en dominios sin
+acciones durativas, el instante es el número de pasos); 5c preferencias compiladas a costes
+con búsqueda *anytime* que devuelve el mejor plan dentro del límite de tiempo; 5d funciones
+de objetos compiladas a predicados (VAL no las admite: los planes se validan contra el
+dominio compilado).
+
+- **Parser:** ✅ restricciones de trayectoria, preferencias e `is-violated` (esquema JSON
+  v6; ver [formato-json.md](formato-json.md#pddl-3-v6)), con la gramática de Gerevini y
+  Long (2005); el motor los rechaza hasta la 5b y la 5c. Pendiente: funciones de objetos.
+- **Parser (plan inicial):**
   - sección `:constraints` (en dominio y problema) con los operadores modales `always`,
     `sometime`, `at-most-once`, `sometime-before`, `sometime-after`, `at end`, `within`,
     `always-within`, `hold-during` y `hold-after`;

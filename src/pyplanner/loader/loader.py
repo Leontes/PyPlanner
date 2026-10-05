@@ -55,6 +55,9 @@ from pyplanner.loader.ast import (
     Atom,
     Comparison,
     Constant,
+    Constraint,
+    ConstraintAnd,
+    ConstraintForall,
     ContinuousEffect,
     DerivedRule,
     Domain,
@@ -77,6 +80,7 @@ from pyplanner.loader.ast import (
     Formula,
     Function,
     Imply,
+    IsViolated,
     Metric,
     Not,
     Number,
@@ -85,15 +89,18 @@ from pyplanner.loader.ast import (
     Or,
     Parameter,
     Predicate,
+    Preference,
     Problem,
     Term,
     TimedCondition,
     TimedEffect,
     TimedLiteral,
     TotalTime,
+    TrajectoryConstraint,
     Variable,
     When,
     derived_uses,
+    preference_names,
 )
 from pyplanner.requirements import (
     KNOWN_REQUIREMENTS,
@@ -173,6 +180,9 @@ def load_domain(document: JSON) -> Domain:
         if name in actions or name in durative_actions:
             ctx.fail(f"acción '{name}' declarada dos veces", node, path)
         durative_actions[name] = ctx.durative_action(node, path, scope)
+    constraints = None
+    if "constraints" in document:
+        constraints = ctx.constraint(document["constraints"], "constraints", scope)
 
     return Domain(
         name=document["name"].lower(),
@@ -184,6 +194,7 @@ def load_domain(document: JSON) -> Domain:
         functions=tuple(functions.values()),
         durative_actions=tuple(durative_actions.values()),
         derived=derived,
+        constraints=constraints,
     )
 
 
@@ -251,9 +262,17 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
         else:
             init.add(ctx.basic_atom(node, path, scope, "el estado inicial"))
     goal = ctx.formula(document["goal"], "goal", scope)
+    constraints = None
+    if "constraints" in document:
+        constraints = ctx.constraint(document["constraints"], "constraints", scope)
     metric = None
     if "metric" in document:
         node = document["metric"]
+        ctx.preferences = (
+            domain.preference_names
+            | frozenset(preference_names(goal))
+            | frozenset(preference_names(constraints))
+        )
         expression = ctx.expression(node["expression"], "metric.expression", scope, metric=True)
         metric = Metric(node["direction"], expression)
 
@@ -267,6 +286,7 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
         values=tuple(sorted(values.items(), key=lambda item: str(item[0]))),
         metric=metric,
         timed_literals=tuple(sorted(timed.values(), key=lambda lit: (lit.time, str(lit.atom)))),
+        constraints=constraints,
     )
 
 
@@ -316,6 +336,8 @@ class _Context:
         #: Predicados derivados del dominio: no pueden aparecer en efectos ni en el estado
         #: inicial.
         self.derived: frozenset[str] = frozenset()
+        #: Nombres de las preferencias, para comprobar los ``is-violated`` de la métrica.
+        self.preferences: frozenset[str] = frozenset()
 
     def fail(
         self,
@@ -415,6 +437,10 @@ class _Context:
 
     def formula(self, node: JSON, path: str, scope: _Scope) -> Formula:
         op = node["op"]
+        if op == "preference":  # el esquema solo la admite en la capa exterior
+            return Preference(
+                _preference_name(node), self.formula(node["arg"], f"{path}.arg", scope)
+            )
         if op in ("and", "or"):
             args = tuple(
                 self.formula(arg, f"{path}.args[{i}]", scope) for i, arg in enumerate(node["args"])
@@ -481,6 +507,17 @@ class _Context:
             if not metric:
                 self.fail("'total-time' solo puede aparecer en la métrica", node, path)
             return TotalTime()
+        if op == "is-violated":
+            name = node["name"].lower()
+            if not metric:
+                self.fail("'is-violated' solo puede aparecer en la métrica", node, path)
+            if name not in self.preferences:
+                self.fail(
+                    f"la preferencia '{name}' no aparece en el dominio ni en el problema",
+                    node,
+                    path,
+                )
+            return IsViolated(name)
         if op == "duration":
             if not scope.durative:
                 self.fail("'?duration' solo puede aparecer en una acción durativa", node, path)
@@ -645,8 +682,48 @@ class _Context:
             return DurativeForall(
                 parameters, self.timed_condition(node["arg"], f"{path}.arg", inner)
             )
+        if op == "preference":  # el esquema garantiza que envuelve una condición con momento
+            arg = self.timed_condition(node["arg"], f"{path}.arg", scope)
+            assert isinstance(arg, TimedCondition)
+            return Preference(_preference_name(node), arg)
         time = _TIMES[op]
         return TimedCondition(time, self.formula(node["arg"], f"{path}.arg", scope.in_condition()))
+
+    # --- Restricciones de trayectoria (PDDL 3) ---------------------------------------
+
+    def constraint(self, node: JSON, path: str, scope: _Scope) -> Constraint:
+        """Una restricción: el esquema ya garantiza la forma (sin anidar operadores modales
+        ni preferencias, y sin preferencias en las del dominio)."""
+        op = node["op"]
+        if op == "and":
+            return ConstraintAnd(
+                tuple(
+                    self.constraint(arg, f"{path}.args[{i}]", scope)
+                    for i, arg in enumerate(node["args"])
+                )
+            )
+        if op == "forall":
+            parameters, inner = self.quantified(node, path, scope)
+            return ConstraintForall(parameters, self.constraint(node["arg"], f"{path}.arg", inner))
+        if op == "preference":
+            arg = self.constraint(node["arg"], f"{path}.arg", scope)
+            return Preference(_preference_name(node), arg)
+        formulas: tuple[Formula, ...]
+        if "arg" in node:
+            formulas = (self.formula(node["arg"], f"{path}.arg", scope),)
+        else:
+            formulas = tuple(
+                self.formula(arg, f"{path}.args[{i}]", scope) for i, arg in enumerate(node["args"])
+            )
+        if op == "hold-during":
+            if node["from"] > node["to"]:
+                self.fail("'hold-during' necesita un intervalo con inicio ≤ fin", node, path)
+            times: tuple[float, ...] = (float(node["from"]), float(node["to"]))
+        elif "time" in node:
+            times = (float(node["time"]),)
+        else:
+            times = ()
+        return TrajectoryConstraint(op, formulas, times)
 
     def timed_effect(self, node: JSON, path: str, scope: _Scope) -> DurativeEffect:
         op = node["op"]
@@ -792,6 +869,9 @@ def _condition_times(condition: DurativeCondition) -> set[str]:
         return {condition.time}
     if isinstance(condition, DurativeForall):
         return _condition_times(condition.arg)
+    if isinstance(condition, Preference):
+        assert isinstance(condition.arg, TimedCondition)
+        return {condition.arg.time}
     return set().union(*(_condition_times(arg) for arg in condition.args))  # type: ignore[arg-type]
 
 
@@ -804,3 +884,10 @@ def _effect_times(effect: DurativeEffect) -> set[str]:
     if isinstance(effect, DurativeForallEffect | DurativeWhen):
         return _effect_times(effect.arg)
     return set().union(*(_effect_times(arg) for arg in effect.args))  # type: ignore[arg-type]
+
+
+def _preference_name(node: JSON) -> str | None:
+    """Nombre de una preferencia, en minúsculas como el resto de nombres (``None`` si no
+    tiene)."""
+    name = node.get("name")
+    return None if name is None else str(name).lower()

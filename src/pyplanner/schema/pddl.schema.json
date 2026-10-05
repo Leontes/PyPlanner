@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Leontes/PyPlanner/schema/pddl.schema.json",
   "title": "PyPlanner PDDL-JSON",
-  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos). Versión 5: PDDL 2.2 (predicados derivados y literales iniciales temporizados).",
+  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos). Versión 5: PDDL 2.2 (predicados derivados y literales iniciales temporizados). Versión 6: PDDL 3 (restricciones de trayectoria, preferencias e is-violated).",
   "type": "object",
   "required": [
     "kind"
@@ -56,10 +56,10 @@
   ],
   "$defs": {
     "version": {
-      "description": "Versión del formato (1 a 5). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
+      "description": "Versión del formato (1 a 6). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
       "type": "integer",
       "minimum": 1,
-      "maximum": 5
+      "maximum": 6
     },
     "loc": {
       "description": "Posición opcional en el fichero PDDL original (el fichero va en 'source' a nivel de documento).",
@@ -736,7 +736,7 @@
           "$ref": "#/$defs/parameters"
         },
         "precondition": {
-          "$ref": "#/$defs/formula"
+          "$ref": "#/$defs/pre_gd"
         },
         "effect": {
           "$ref": "#/$defs/effect"
@@ -809,6 +809,9 @@
           "items": {
             "$ref": "#/$defs/derived_rule"
           }
+        },
+        "constraints": {
+          "$ref": "#/$defs/con_gd"
         }
       },
       "additionalProperties": false
@@ -852,10 +855,13 @@
           }
         },
         "goal": {
-          "$ref": "#/$defs/formula"
+          "$ref": "#/$defs/pre_gd"
         },
         "metric": {
           "$ref": "#/$defs/metric"
+        },
+        "constraints": {
+          "$ref": "#/$defs/pref_con_gd"
         }
       },
       "additionalProperties": false
@@ -1156,7 +1162,7 @@
       "additionalProperties": false
     },
     "expression": {
-      "description": "Expresión numérica: número, término de función u operación aritmética (+ y * con dos o más términos, - con uno o dos, / con dos). 'total-time' (duración del plan) solo puede aparecer en la métrica. v4: 'duration' (?duration) solo en los efectos numéricos de una acción durativa y '#t' (tiempo transcurrido) solo en un efecto continuo.",
+      "description": "Expresión numérica: número, término de función u operación aritmética (+ y * con dos o más términos, - con uno o dos, / con dos). 'total-time' (duración del plan) solo puede aparecer en la métrica. v4: 'duration' (?duration) solo en los efectos numéricos de una acción durativa y '#t' (tiempo transcurrido) solo en un efecto continuo. v6: 'is-violated' (número de incumplimientos de una preferencia) solo en la métrica.",
       "type": "object",
       "required": [
         "op"
@@ -1172,7 +1178,8 @@
             "/",
             "total-time",
             "duration",
-            "#t"
+            "#t",
+            "is-violated"
           ]
         }
       },
@@ -1418,6 +1425,34 @@
             },
             "additionalProperties": false
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "is-violated"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "name"
+            ],
+            "properties": {
+              "op": {
+                "const": "is-violated"
+              },
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       ]
     },
@@ -1643,7 +1678,7 @@
       "additionalProperties": false
     },
     "timed_condition": {
-      "description": "Condición de una acción durativa: una fórmula en at-start, at-end u over-all, o and y forall de ellas.",
+      "description": "Condición de una acción durativa: una fórmula en at-start, at-end u over-all, o and y forall de ellas. v6: 'preference' (con 'name' opcional) alrededor de una condición at-start, at-end u over-all.",
       "type": "object",
       "required": [
         "op"
@@ -1655,7 +1690,8 @@
             "forall",
             "at-start",
             "at-end",
-            "over-all"
+            "over-all",
+            "preference"
           ]
         }
       },
@@ -1799,6 +1835,37 @@
               },
               "arg": {
                 "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "preference"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "preference"
+              },
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "arg": {
+                "$ref": "#/$defs/timed_gd"
               },
               "loc": {
                 "$ref": "#/$defs/loc"
@@ -2060,6 +2127,706 @@
         }
       },
       "additionalProperties": false
+    },
+    "pre_gd": {
+      "description": "Objetivo o precondición (v6): una fórmula, o 'and' y 'forall' cuyos elementos pueden ser preferencias {'op': 'preference', 'name'?, 'arg': fórmula}. Las preferencias no pueden ir dentro de or, not, imply ni exists.",
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "and"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "and"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/pre_gd"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "forall"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "parameters",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "forall"
+              },
+              "parameters": {
+                "$ref": "#/$defs/quantified"
+              },
+              "arg": {
+                "$ref": "#/$defs/pre_gd"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "preference"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "preference"
+              },
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "op": {
+                  "enum": [
+                    "and",
+                    "forall",
+                    "preference"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/formula"
+          }
+        }
+      ]
+    },
+    "timed_gd": {
+      "description": "Condición con momento: at-start, at-end u over-all de una fórmula.",
+      "type": "object",
+      "required": [
+        "op",
+        "arg"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "at-start",
+            "at-end",
+            "over-all"
+          ]
+        },
+        "arg": {
+          "$ref": "#/$defs/formula"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "con_gd": {
+      "description": "Restricción de trayectoria dura (v6): un operador modal sobre fórmulas, o 'and' y 'forall' de restricciones. Los operadores modales no se anidan. 'sometime-after' y 'sometime-before' llevan 'args' [φ, ψ]: si φ, ψ después (o antes); 'always-within' lleva 'time' y 'args' [φ, ψ]; 'hold-during', 'from' y 'to'.",
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "and",
+            "forall",
+            "at-end",
+            "always",
+            "sometime",
+            "at-most-once",
+            "sometime-after",
+            "sometime-before",
+            "within",
+            "hold-after",
+            "always-within",
+            "hold-during"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "and"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "and"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/con_gd"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "forall"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "parameters",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "forall"
+              },
+              "parameters": {
+                "$ref": "#/$defs/quantified"
+              },
+              "arg": {
+                "$ref": "#/$defs/con_gd"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "at-end"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "at-end"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "always"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "always"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "sometime"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "sometime"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "at-most-once"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "at-most-once"
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "sometime-after"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "sometime-after"
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/$defs/formula"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "sometime-before"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "sometime-before"
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/$defs/formula"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "within"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "time",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "within"
+              },
+              "time": {
+                "type": "number",
+                "minimum": 0
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "hold-after"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "time",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "hold-after"
+              },
+              "time": {
+                "type": "number",
+                "minimum": 0
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "always-within"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "time",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "always-within"
+              },
+              "time": {
+                "type": "number",
+                "minimum": 0
+              },
+              "args": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "$ref": "#/$defs/formula"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "hold-during"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "from",
+              "to",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "hold-during"
+              },
+              "from": {
+                "type": "number",
+                "minimum": 0
+              },
+              "to": {
+                "type": "number",
+                "minimum": 0
+              },
+              "arg": {
+                "$ref": "#/$defs/formula"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "pref_con_gd": {
+      "description": "Restricción del problema (v6): como 'con_gd', pero 'and' y 'forall' pueden contener preferencias {'op': 'preference', 'name'?, 'arg': con_gd}.",
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "and",
+            "forall",
+            "preference",
+            "at-end",
+            "always",
+            "sometime",
+            "at-most-once",
+            "sometime-after",
+            "sometime-before",
+            "within",
+            "hold-after",
+            "always-within",
+            "hold-during"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "and"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "and"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/pref_con_gd"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "forall"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "parameters",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "forall"
+              },
+              "parameters": {
+                "$ref": "#/$defs/quantified"
+              },
+              "arg": {
+                "$ref": "#/$defs/pref_con_gd"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "preference"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "preference"
+              },
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "arg": {
+                "$ref": "#/$defs/con_gd"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "at-end",
+                  "always",
+                  "sometime",
+                  "at-most-once",
+                  "sometime-after",
+                  "sometime-before",
+                  "within",
+                  "hold-after",
+                  "always-within",
+                  "hold-during"
+                ]
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/con_gd"
+          }
+        }
+      ]
     }
   }
 }

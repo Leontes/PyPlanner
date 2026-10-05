@@ -16,7 +16,7 @@ SUPPORTED_TIER = 4
 
 #: Tier máximo que el parser (fases 1 y 2) tiene que aceptar. Durante una iteración va por
 #: delante de :data:`SUPPORTED_TIER`; al cerrarla, los dos valen lo mismo.
-PARSER_TIER = 4
+PARSER_TIER = 5
 
 #: Partes (*subtiers*) de tiers superiores que ya están soportadas, para las iteraciones que
 #: se dividen en partes (la 3 en numérica y temporal). Al cerrar la iteración se sube el

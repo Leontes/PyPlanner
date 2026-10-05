@@ -149,16 +149,8 @@ def test_syntax_errors(text: str, message: str) -> None:
     [
         ("(define (domain d) (:requirements :time))", ":time"),
         ("(define (domain d) (:functions (f) - object))", ":object-fluents"),
-        ("(define (domain d) (:requirements :preferences))", ":preferences"),
         ("(define (domain d) (:process p))", ":time"),
-        (
-            "(define (problem p) (:domain d) (:goal (preference g (q))))",
-            ":preferences",
-        ),
-        (
-            "(define (problem p) (:domain d) (:goal (q)) (:constraints (always (q))))",
-            ":constraints",
-        ),
+        ("(define (domain d) (:event e))", ":time"),
     ],
 )
 def test_future_features_are_unsupported(text: str, requirement: str) -> None:

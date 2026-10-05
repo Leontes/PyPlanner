@@ -47,17 +47,23 @@ _NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 _FUTURE_DOMAIN_SECTIONS = {
     ":process": ":time",
     ":event": ":time",
-    ":constraints": ":constraints",
 }
-_FUTURE_PROBLEM_SECTIONS = {
-    ":constraints": ":constraints",
-}
+_FUTURE_PROBLEM_SECTIONS: dict[str, str] = {}
 #: Operadores lógicos: no pueden usarse como nombre de predicado dentro de un borrado.
 _OPERATORS = frozenset({"and", "or", "not", "imply", "exists", "forall", "=", "when"})
 
-_FUTURE_FORMULA_OPS = {
-    "preference": ":preferences",
+#: Operadores modales de las restricciones de trayectoria (PDDL 3) con una fórmula, con dos
+#: (``(sometime-after φ ψ)``: si φ, después ψ), y con instantes y fórmulas.
+_MODAL_ONE = ("always", "sometime", "at-most-once")
+_MODAL_TWO = ("sometime-after", "sometime-before")
+_MODAL_TIMED = {
+    "within": (1, 1),
+    "hold-after": (1, 1),
+    "always-within": (1, 2),
+    "hold-during": (2, 1),
 }
+
+_MODAL_NAMES = frozenset({*_MODAL_ONE, *_MODAL_TWO, *_MODAL_TIMED, "at"})
 
 #: Comparadores numéricos.
 _COMPARATORS = ("<", "<=", "=", ">=", ">")
@@ -217,6 +223,8 @@ class _Parser:
                 document["durative_actions"].append(self._durative_action(section))
             elif key == ":derived":
                 document["derived"].append(self._derived(section))
+            elif key == ":constraints":
+                document["constraints"] = self._constraints_section(section, preferences=False)
             else:
                 self._unknown_section(keyword, _FUTURE_DOMAIN_SECTIONS, "dominio")
         return document
@@ -240,7 +248,7 @@ class _Parser:
                 )
             elif keyword.value == ":precondition":
                 if not self._is_empty_list(value):
-                    node["precondition"] = self._formula(value)
+                    node["precondition"] = self._pre_gd(value)
             elif keyword.value == ":effect":
                 if not self._is_empty_list(value):
                     node["effect"] = self._effect(value)
@@ -333,7 +341,9 @@ class _Parser:
             elif key == ":goal":
                 if len(body) != 1:
                     raise PDDLSyntaxError("se esperaba (:goal <fórmula>)", section.location)
-                document["goal"] = self._formula(body[0])
+                document["goal"] = self._pre_gd(body[0])
+            elif key == ":constraints":
+                document["constraints"] = self._constraints_section(section, preferences=True)
             elif key == ":metric":
                 document["metric"] = self._metric(section)
             else:
@@ -425,11 +435,140 @@ class _Parser:
                 "left": self._expression(rest[0]),
                 "right": self._expression(rest[1]),
             }
-        elif op in _FUTURE_FORMULA_OPS:
-            self._unsupported(f"'{op}' en fórmulas", _FUTURE_FORMULA_OPS[op], head)
+        elif op == "preference":
+            raise PDDLSyntaxError(
+                "una preferencia solo puede ir en la conjunción exterior (and, forall) del "
+                "objetivo o de una precondición, alrededor de una condición con momento o de "
+                "una restricción del problema, y nunca dentro de otra preferencia",
+                head.location,
+            )
         else:
             return self._atom(formula)
         return self._with_loc(node, formula)
+
+    def _pre_gd(self, expr: SExpr) -> JSONDict:
+        """Objetivo o precondición (PDDL 3): una fórmula, o ``and`` y ``forall`` cuyos
+        elementos pueden ser preferencias ``(preference [<nombre>] <fórmula>)``."""
+        formula = self._list(expr, "una fórmula")
+        head = formula.items[0] if formula.items else None
+        if isinstance(head, Symbol):
+            rest = formula.items[1:]
+            if head.value == "and":
+                node: JSONDict = {"op": "and", "args": [self._pre_gd(item) for item in rest]}
+                return self._with_loc(node, formula)
+            if head.value == "forall":
+                self._arity(formula, rest, 2, "(forall (<variables>) <fórmula>)")
+                node = {
+                    "op": "forall",
+                    "parameters": self._quantified(rest[0]),
+                    "arg": self._pre_gd(rest[1]),
+                }
+                return self._with_loc(node, formula)
+            if head.value == "preference":
+                node, arg = self._preference(formula, "<fórmula>")
+                node["arg"] = self._formula(arg)
+                return self._with_loc(node, formula)
+        return self._formula(expr)
+
+    def _preference(self, expr: SList, form: str) -> tuple[JSONDict, SExpr]:
+        """``(preference [<nombre>] X)``: el nodo (con el nombre, si lo tiene) y ``X``."""
+        rest = expr.items[1:]
+        if len(rest) == 2 and isinstance(rest[0], Symbol):
+            return {"op": "preference", "name": self._name(rest[0], "el nombre")}, rest[1]
+        if len(rest) == 1:
+            return {"op": "preference"}, rest[0]
+        raise PDDLSyntaxError(f"se esperaba (preference [<nombre>] {form})", expr.location)
+
+    # --- Restricciones de trayectoria (PDDL 3) ------------------------------------------
+
+    def _modal_arg(self, expr: SExpr) -> JSONDict:
+        """La fórmula de un operador modal, que no puede ser otro operador modal."""
+        if (
+            isinstance(expr, SList)
+            and expr.items
+            and self._is_symbol_in(expr.items[0], _MODAL_NAMES)
+            and any(isinstance(item, SList) for item in expr.items[1:])
+        ):
+            raise PDDLSyntaxError(
+                "los operadores modales no se anidan: cada uno va directamente en "
+                ":constraints (o en su and, forall o preference)",
+                expr.location,
+            )
+        return self._formula(expr)
+
+    def _constraints_section(self, section: SList, *, preferences: bool) -> JSONDict:
+        body = section.items[1:]
+        if len(body) != 1:
+            raise PDDLSyntaxError("se esperaba (:constraints <restricción>)", section.location)
+        return self._constraint(body[0], preferences=preferences, in_preference=False)
+
+    def _constraint(self, expr: SExpr, *, preferences: bool, in_preference: bool) -> JSONDict:
+        """Restricción de trayectoria: un operador modal sobre fórmulas, o ``and``,
+        ``forall`` y (en el problema) ``preference`` de restricciones."""
+        constraint = self._list(expr, "una restricción")
+        if not constraint.items:
+            raise PDDLSyntaxError("restricción vacía", constraint.location)
+        head = self._symbol(constraint.items[0], "un operador modal")
+        op, rest = head.value, constraint.items[1:]
+        node: JSONDict
+        if op == "and":
+            node = {
+                "op": "and",
+                "args": [
+                    self._constraint(i, preferences=preferences, in_preference=in_preference)
+                    for i in rest
+                ],
+            }
+        elif op == "forall":
+            self._arity(constraint, rest, 2, "(forall (<variables>) <restricción>)")
+            node = {
+                "op": "forall",
+                "parameters": self._quantified(rest[0]),
+                "arg": self._constraint(
+                    rest[1], preferences=preferences, in_preference=in_preference
+                ),
+            }
+        elif op == "preference":
+            if not preferences:
+                raise PDDLSyntaxError(
+                    "las restricciones del dominio no admiten preferencias (solo las del problema)",
+                    head.location,
+                )
+            if in_preference:
+                raise PDDLSyntaxError("una preferencia no puede contener otra", head.location)
+            node, arg = self._preference(constraint, "<restricción>")
+            node["arg"] = self._constraint(arg, preferences=preferences, in_preference=True)
+        elif op == "at" and len(rest) == 2 and self._is_symbol(rest[0], "end"):
+            node = {"op": "at-end", "arg": self._modal_arg(rest[1])}
+        elif op in _MODAL_ONE:
+            self._arity(constraint, rest, 1, f"({op} <fórmula>)")
+            node = {"op": op, "arg": self._modal_arg(rest[0])}
+        elif op in _MODAL_TWO:
+            self._arity(constraint, rest, 2, f"({op} <fórmula> <fórmula>)")
+            node = {"op": op, "args": [self._modal_arg(rest[0]), self._modal_arg(rest[1])]}
+        elif op in _MODAL_TIMED:
+            times, formulas = _MODAL_TIMED[op]
+            form = " ".join(["<número>"] * times + ["<fórmula>"] * formulas)
+            self._arity(constraint, rest, times + formulas, f"({op} {form})")
+            numbers = [self._number(item) for item in rest[:times]]
+            node = {"op": op}
+            if op == "hold-during":
+                node["from"], node["to"] = numbers
+            else:
+                node["time"] = numbers[0]
+            parsed = [self._modal_arg(item) for item in rest[times:]]
+            if formulas == 1:
+                node["arg"] = parsed[0]
+            else:
+                node["args"] = parsed
+        else:
+            raise PDDLSyntaxError(
+                "se esperaba una restricción: always, sometime, within, at-most-once, "
+                "sometime-after, sometime-before, always-within, hold-during, hold-after, "
+                f"(at end ...), and, forall o preference; no '{op}'",
+                head.location,
+            )
+        return self._with_loc(node, constraint)
 
     def _effect(
         self, expr: SExpr, *, conditional: bool = False, context: str = "dentro de 'when'"
@@ -550,8 +689,17 @@ class _Parser:
             }
         elif (timed := self._timed_op(condition, allow_overall=True)) is not None:
             node = {"op": timed, "arg": self._formula(rest[1])}
-        elif op in _FUTURE_FORMULA_OPS:
-            self._unsupported(f"'{op}' en fórmulas", _FUTURE_FORMULA_OPS[op], head)
+        elif op == "preference":
+            node, arg = self._preference(condition, "(at start|at end|over all <fórmula>)")
+            inner = self._list(arg, "una condición con momento")
+            timed = self._timed_op(inner, allow_overall=True)
+            if timed is None:
+                raise PDDLSyntaxError(
+                    "una preferencia de una acción durativa envuelve una condición "
+                    "(at start ...), (at end ...) u (over all ...)",
+                    inner.location,
+                )
+            node["arg"] = self._with_loc({"op": timed, "arg": self._formula(inner.items[2])}, inner)
         else:
             raise PDDLSyntaxError(
                 "en una acción durativa, cada condición va dentro de (at start ...), "
@@ -660,6 +808,10 @@ class _Parser:
             return self._with_loc(node, expr)
         if op in _EXPRESSION_SYMBOLS:
             raise PDDLSyntaxError(f"'{op}' va sin paréntesis", head.location)
+        if op == "is-violated":
+            self._arity(expr, rest, 1, "(is-violated <preferencia>)")
+            node = {"op": "is-violated", "name": self._name(rest[0], "el nombre de la preferencia")}
+            return self._with_loc(node, expr)
         return self._fluent(expr)
 
     def _fluent(self, expr: SList) -> JSONDict:

@@ -40,6 +40,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from itertools import product
 
+from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding.normalize import (
     TRUE,
     Clause,
@@ -92,6 +93,7 @@ from pyplanner.loader.ast import (
     TotalTime,
     Variable,
     When,
+    preferences_in,
 )
 
 #: Asignación de los parámetros de un esquema (nombre de la variable → objeto).
@@ -112,11 +114,26 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
             disyuntiva, o si usa algo que el motor temporal todavía no admite.
     """
+    if domain.constraints is not None or problem.constraints is not None:
+        raise UnsupportedFeatureError(
+            "el motor de búsqueda todavía no admite restricciones de trayectoria"
+        )
+    if _has_preferences(domain, problem):
+        raise UnsupportedFeatureError("el motor de búsqueda todavía no admite preferencias")
     if domain.durative_actions or problem.timed_literals:
         from pyplanner.grounding.temporal import ground_temporal
 
         return ground_temporal(domain, problem)
     return ground_with_context(domain, problem)[0]
+
+
+def _has_preferences(domain: Domain, problem: Problem) -> bool:
+    nodes = [
+        problem.goal,
+        *(a.precondition for a in domain.actions),
+        *(a.condition for a in domain.durative_actions),
+    ]
+    return any(next(preferences_in(node), None) is not None for node in nodes)
 
 
 @dataclass

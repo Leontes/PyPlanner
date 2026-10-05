@@ -138,6 +138,7 @@ from pyplanner.loader.ast import (
     Or,
     Parameter,
     Predicate,
+    Preference,
     Problem,
     TimedCondition,
     TimedEffect,
@@ -304,6 +305,8 @@ def _split_condition(condition: DurativeCondition) -> dict[str, list[Formula]]:
         for arg in condition.args:
             for time, formulas in _split_condition(arg).items():  # type: ignore[arg-type]
                 parts[time].extend(formulas)
+    elif isinstance(condition, Preference):
+        raise UnsupportedFeatureError("el motor temporal todavía no admite preferencias")
     else:  # DurativeForall: el cuantificador se reparte entre los momentos
         for time, formulas in _split_condition(condition.arg).items():
             if formulas:
