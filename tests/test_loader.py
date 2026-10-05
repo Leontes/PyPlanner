@@ -99,9 +99,13 @@ def test_json_names_are_normalised_to_lowercase() -> None:
     assert action is not None and action.effect == Atom("p", (x("?x"),))
 
 
-def test_objects_that_repeat_constants_are_merged(domain: Domain) -> None:
+def test_objects_cannot_repeat_constants(domain: Domain) -> None:
+    """Un objeto que repite una constante del dominio es un error (antes se ignoraba): cada
+    nombre se declara una sola vez."""
     document = parse_problem(PROBLEM.replace("(:objects kitchen)", "(:objects kitchen home)"))
-    assert load_problem(document, domain).objects == (ObjectDecl("kitchen"),)
+    message = "el nombre 'home' ya se ha definido previamente como constante en el dominio"
+    with pytest.raises(SemanticError, match=message):
+        load_problem(document, domain)
 
 
 def test_schema_errors_are_reported_before_semantics() -> None:
@@ -149,7 +153,16 @@ def domain_with(body: str) -> str:
             "parámetro '\\?x' repetido",
             "actions[0].parameters[1]",
         ),
-        ("(:action a) (:action a)", "acción 'a' declarada dos veces", "actions[1]"),
+        (
+            "(:action a) (:action a)",
+            "el nombre 'a' ya se ha definido previamente como acción",
+            "actions[1]",
+        ),
+        (
+            "(:action p)",
+            "el nombre 'p' ya se ha definido previamente como predicado",
+            "actions[0]",
+        ),
     ],
 )
 def test_domain_semantic_errors(body: str, message: str, path: str) -> None:
@@ -160,10 +173,15 @@ def test_domain_semantic_errors(body: str, message: str, path: str) -> None:
 
 
 def test_duplicate_declarations() -> None:
-    with pytest.raises(SemanticError, match="predicado 'p' declarado dos veces"):
+    previously = "ya se ha definido previamente como"
+    with pytest.raises(SemanticError, match=f"'p' {previously} predicado"):
         load_domain(parse_domain("(define (domain d) (:predicates (p) (p ?x)))"))
-    with pytest.raises(SemanticError, match="constante 'k' declarado dos veces"):
+    with pytest.raises(SemanticError, match=f"'k' {previously} constante"):
         load_domain(parse_domain("(define (domain d) (:constants k k))"))
+    with pytest.raises(SemanticError, match=f"'d' {previously} nombre del dominio"):
+        load_domain(parse_domain("(define (domain d) (:predicates (d)))"))
+    with pytest.raises(SemanticError, match=f"'object' {previously} tipo predefinido"):
+        load_domain(parse_domain("(define (domain d) (:predicates (object)))"))
 
 
 def test_error_location_points_to_the_node() -> None:
@@ -174,7 +192,7 @@ def test_error_location_points_to_the_node() -> None:
 
 
 def problem_with(body: str, domain_name: str = "d") -> dict[str, Any]:
-    return parse_problem(f"(define (problem p) (:domain {domain_name}) {body})")
+    return parse_problem(f"(define (problem prob) (:domain {domain_name}) {body})")
 
 
 @pytest.mark.parametrize(
@@ -184,7 +202,16 @@ def problem_with(body: str, domain_name: str = "d") -> dict[str, Any]:
         ("(:init (p ?x)) (:goal (q))", "variable '\\?x' no está ligada", "init[0]"),
         ("(:init (p z)) (:goal (q))", "'z' no declarado", "init[0]"),
         ("(:objects o) (:init (p o)) (:goal (and (p k) (r)))", "'r' no declarado", "goal.args[1]"),
-        ("(:objects o o) (:goal (q))", "objeto 'o' declarado dos veces", "objects[1]"),
+        (
+            "(:objects o o) (:goal (q))",
+            "el nombre 'o' ya se ha definido previamente como objeto",
+            "objects[1]",
+        ),
+        (
+            "(:objects q) (:goal (q))",
+            "el nombre 'q' ya se ha definido previamente como predicado en el dominio",
+            "objects[0]",
+        ),
     ],
 )
 def test_problem_semantic_errors(body: str, message: str | None, path: str | None) -> None:

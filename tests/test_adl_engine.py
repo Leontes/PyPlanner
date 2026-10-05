@@ -152,12 +152,12 @@ def test_negative_preconditions_and_goals() -> None:
 
 def test_disjunctive_precondition_splits_actions() -> None:
     task = task_of("doors")
-    opens = [a for a in task.actions if a.name == "open" and a.args == ("d1",)]
+    opens = [a for a in task.actions if a.name == "open-door" and a.args == ("d1",)]
     # (exists k (has k)) or (not (locked d1)); locked es estático y cierto para d1, así
     # que solo queda la rama de la llave: una acción por llave posible (k1; fake no se
     # puede coger, así que (has fake) es inalcanzable).
     assert [facts(task, a.pre_facts) for a in opens] == [["(has k1)"]]
-    opens_d2 = [a for a in task.actions if a.name == "open" and a.args == ("d2",)]
+    opens_d2 = [a for a in task.actions if a.name == "open-door" and a.args == ("d2",)]
     assert [a.pre_facts for a in opens_d2] == [()]  # d2 no está cerrada con llave
     assert not any(a.name == "take" and a.args == ("fake",) for a in task.actions)
     [leave] = [a for a in task.actions if a.name == "leave"]

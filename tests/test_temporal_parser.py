@@ -382,7 +382,7 @@ def test_names_are_shared_with_actions() -> None:
     document = domain(
         f"{BASE} (:action a :effect (q)) (:durative-action a :duration () :effect (at end (q)))"
     )
-    with pytest.raises(SemanticError, match="declarada dos veces"):
+    with pytest.raises(SemanticError, match="'a' ya se ha definido previamente como acción"):
         load_domain(document)
 
 

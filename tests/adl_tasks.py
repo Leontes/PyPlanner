@@ -5,7 +5,7 @@
 # estado anterior; si se aplicaran en secuencia, x1 pasaría de a a b y después a c.
 ROTATE = (
     """
-(define (domain rotate)
+(define (domain rotation)
   (:requirements :adl)
   (:types item slot)
   (:constants a b c - slot)
@@ -17,7 +17,7 @@ ROTATE = (
       (forall (?x - item) (when (at ?x c) (and (not (at ?x c)) (at ?x a)))))))
 """,
     """
-(define (problem rotate-1) (:domain rotate)
+(define (problem rotate-1) (:domain rotation)
   (:objects x1 x2 - item)
   (:init (at x1 a) (at x2 b))
   (:goal (and (at x1 c) (at x2 a))))
@@ -57,7 +57,7 @@ DOORS = (
   (:predicates (open ?d - door) (locked ?d - door) (has ?k - key) (outside))
   (:action take :parameters (?k - key)
     :precondition (not (= ?k fake)) :effect (has ?k))
-  (:action open :parameters (?d - door)
+  (:action open-door :parameters (?d - door)
     :precondition (or (exists (?k - key) (has ?k)) (not (locked ?d)))
     :effect (open ?d))
   (:action leave :parameters ()

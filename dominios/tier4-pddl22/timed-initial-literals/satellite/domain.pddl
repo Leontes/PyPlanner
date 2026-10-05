@@ -1,5 +1,5 @@
 
-(define (domain satellite)
+(define (domain satellite-time-windows)
   (:requirements :strips :equality :typing :fluents :durative-actions :timed-initial-literals)
 (:types satellite antenna direction instrument mode)
  (:predicates 

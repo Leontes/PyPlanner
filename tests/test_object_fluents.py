@@ -39,7 +39,7 @@ ROBOTS = """
     :effect (and (assign (holder ?b) undefined) (box-at ?b (loc ?r)))))
 """
 ROBOTS_PROBLEM = """
-(define (problem r1) (:domain robots)
+(define (problem robots-1) (:domain robots)
   (:objects a b c - place r1 r2 - robot x - box)
   (:init (road a b) (road b c) (road c a) (= (loc r1) a) (= (loc r2) c) (box-at x a))
   (:goal (and (box-at x c) (= (loc r1) (loc r2)))))
@@ -225,7 +225,7 @@ def test_classical_plans_with_object_fluents(preset: str, tmp_path: Path) -> Non
 
 
 TEMPORAL = """
-(define (domain shuttle)
+(define (domain shuttles)
   (:requirements :typing :durative-actions :numeric-fluents :object-fluents)
   (:types place shuttle)
   (:predicates (served ?p - place))
@@ -236,7 +236,7 @@ TEMPORAL = """
     :effect (and (at end (assign (at ?s) ?to)) (at end (served ?to)))))
 """
 TEMPORAL_PROBLEM = """
-(define (problem s1) (:domain shuttle)
+(define (problem s1) (:domain shuttles)
   (:objects s - shuttle base moon mars - place)
   (:init (served base) (= (at s) base))
   (:goal (and (served mars) (served moon))))

@@ -136,6 +136,7 @@ def load_domain(document: JSON) -> Domain:
         ctx.fail("se esperaba un documento de dominio", document, "kind")
     requirements = ctx.requirements(document)
     ctx.check_declared(document, document.get("requirements", []))
+    _Names(ctx).domain(document)
     # Las funciones de objetos se compilan a predicados antes de construir el AST.
     fluents = object_functions(document)
     if fluents:
@@ -149,15 +150,11 @@ def load_domain(document: JSON) -> Domain:
     for i, node in enumerate(document.get("predicates", [])):
         path = f"predicates[{i}]"
         name = node["name"].lower()
-        if name in predicates:
-            ctx.fail(f"predicado '{name}' declarado dos veces", node, path)
         predicates[name] = Predicate(name, ctx.parameters(node.get("parameters", []), path))
     functions: dict[str, Function] = {}
     for i, node in enumerate(document.get("functions", [])):
         path = f"functions[{i}]"
         name = node["name"].lower()
-        if name in functions:
-            ctx.fail(f"función '{name}' declarada dos veces", node, path)
         functions[name] = Function(name, ctx.parameters(node.get("parameters", []), path))
 
     # Dominio provisional (sin acciones) para consultar la jerarquía de tipos al comprobar.
@@ -173,8 +170,6 @@ def load_domain(document: JSON) -> Domain:
     for i, node in enumerate(document.get("actions", [])):
         path = f"actions[{i}]"
         name = node["name"].lower()
-        if name in actions:
-            ctx.fail(f"acción '{name}' declarada dos veces", node, path)
         parameters = ctx.parameters(node.get("parameters", []), path)
         action_scope = scope.bind(parameters)
         precondition: Formula = And()
@@ -188,8 +183,6 @@ def load_domain(document: JSON) -> Domain:
     for i, node in enumerate(document.get("durative_actions", [])):
         path = f"durative_actions[{i}]"
         name = node["name"].lower()
-        if name in actions or name in durative_actions:
-            ctx.fail(f"acción '{name}' declarada dos veces", node, path)
         durative_actions[name] = ctx.durative_action(node, path, scope)
     constraints = None
     if "constraints" in document:
@@ -235,6 +228,7 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
         )
     requirements = ctx.requirements(document) | domain.requirements
     ctx.check_declared(document, requirements, frozenset(f.name for f in domain.object_fluents))
+    _Names(ctx).problem(document, domain)
     if domain.object_fluents:
         document = compile_problem(document, domain.object_fluents)
 
@@ -242,11 +236,7 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
     ctx.derived = domain.derived_predicates
     ctx.known_types = {OBJECT, *(name for name, _ in domain.types)}
     constant_types = {c.name: c.types for c in domain.constants}
-    objects = tuple(
-        o
-        for o in ctx.objects(document.get("objects", []), "objects", "objeto")
-        if o.name not in constant_types
-    )
+    objects = ctx.objects(document.get("objects", []), "objects", "objeto")
     predicates = {p.name: p for p in domain.predicates}
     functions = {f.name: f for f in domain.functions}
     scope = _Scope(
@@ -302,6 +292,95 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
         timed_literals=tuple(sorted(timed.values(), key=lambda lit: (lit.time, str(lit.atom)))),
         constraints=constraints,
     )
+
+
+class _Names:
+    """Registro de todos los nombres declarados: un nombre solo se puede declarar una vez,
+    sea donde sea (dominio, problema, tipo, constante, objeto, predicado, función o acción).
+
+    Un mismo nombre en dos sitios confunde a otras herramientas (VAL se cae si una función
+    se llama como el dominio) y casi siempre es un error. La única excepción son las
+    preferencias: varias pueden compartir nombre (``is-violated`` las cuenta juntas), pero
+    tampoco pueden llamarse como otra cosa. Las variables (``?x``) tienen su propio ámbito.
+    """
+
+    def __init__(self, ctx: "_Context") -> None:
+        self.ctx = ctx
+        #: nombre → (qué es, dónde se declaró, para el mensaje)
+        self.seen: dict[str, tuple[str, str]] = {OBJECT: ("tipo predefinido", "")}
+
+    def add(self, name: str, kind: str, node: JSON, path: str, *, shared: bool = False) -> None:
+        name = name.lower()
+        previous = self.seen.get(name)
+        if previous is not None:
+            if shared and previous[0] == kind:
+                return
+            self.ctx.fail(
+                f"el nombre '{name}' ya se ha definido previamente como {previous[0]}{previous[1]}",
+                node,
+                path,
+            )
+        loc = node.get("loc")
+        self.seen[name] = (kind, f" (línea {loc['line']})" if loc else "")
+
+    def preferences(self, node: Any, path: str) -> None:
+        """Los nombres de las preferencias de un objetivo, condición o restricción."""
+        if isinstance(node, Mapping):
+            if node.get("op") == "preference" and "name" in node:
+                self.add(node["name"], "preferencia", node, path, shared=True)
+            for key, value in node.items():
+                self.preferences(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                self.preferences(item, f"{path}[{i}]")
+
+    def domain(self, document: JSON) -> None:
+        self.add(document["name"], "nombre del dominio", document, "name")
+        declared = {node["name"].lower() for node in document.get("types", [])}
+        for i, node in enumerate(document.get("types", [])):
+            if node["name"].lower() != OBJECT:
+                self.add(node["name"], "tipo", node, f"types[{i}]")
+        for i, node in enumerate(document.get("types", [])):
+            parent = node.get("parent", OBJECT).lower()
+            if parent not in declared and parent not in self.seen:
+                self.add(parent, "tipo", node, f"types[{i}].parent")  # implícito
+        for key, kind in (
+            ("constants", "constante"),
+            ("predicates", "predicado"),
+            ("functions", "función"),
+            ("actions", "acción"),
+            ("durative_actions", "acción durativa"),
+        ):
+            for i, node in enumerate(document.get(key, [])):
+                self.add(node["name"], kind, node, f"{key}[{i}]")
+        for key in ("actions", "durative_actions"):
+            for i, node in enumerate(document.get(key, [])):
+                self.preferences(node, f"{key}[{i}]")
+
+    def problem(self, document: JSON, domain: Domain) -> None:
+        compiled = {f.predicate for f in domain.object_fluents}
+        here = " en el dominio"
+        self.seen[domain.name] = ("nombre del dominio", "")
+        for name, _ in domain.types:
+            self.seen[name] = ("tipo", here)
+        for kind, names in (
+            ("constante", [c.name for c in domain.constants]),
+            ("predicado", [p.name for p in domain.predicates if p.name not in compiled]),
+            (
+                "función",
+                [*(f.name for f in domain.functions), *(f.name for f in domain.object_fluents)],
+            ),
+            ("acción", [a.name for a in domain.actions]),
+            ("acción durativa", [a.name for a in domain.durative_actions]),
+            ("preferencia", sorted(domain.preference_names)),
+        ):
+            for name in names:
+                self.seen[name] = (kind, here)
+        self.add(document["name"], "nombre del problema", document, "name")
+        for i, node in enumerate(document.get("objects", [])):
+            self.add(node["name"], "objeto", node, f"objects[{i}]")
+        self.preferences(document.get("goal"), "goal")
+        self.preferences(document.get("constraints"), "constraints")
 
 
 class _Scope:
@@ -400,12 +479,10 @@ class _Context:
     def types(self, nodes: list[JSON]) -> tuple[tuple[str, str], ...]:
         """Jerarquía de tipos. Un supertipo no declarado se declara implícitamente."""
         parents: dict[str, str] = {}
-        for i, node in enumerate(nodes):
+        for node in nodes:
             name = node["name"].lower()
             if name == OBJECT:
                 continue
-            if name in parents:
-                self.fail(f"tipo '{name}' declarado dos veces", node, f"types[{i}]")
             parents[name] = node.get("parent", OBJECT).lower()
         for parent in list(parents.values()):
             if parent != OBJECT and parent not in parents:
@@ -435,8 +512,6 @@ class _Context:
         seen: dict[str, ObjectDecl] = {}
         for i, node in enumerate(nodes):
             name = node["name"].lower()
-            if name in seen:
-                self.fail(f"{what} '{name}' declarado dos veces", node, f"{path}[{i}]")
             seen[name] = ObjectDecl(name, self.type_spec(node, f"{path}[{i}]"))
         return tuple(seen.values())
 

@@ -18,6 +18,8 @@ python scripts/benchmark.py benchmarks/timed-initial-literals/satellite \
 | `timed-initial-literals/satellite` | p01–p20 | IPC 2004 (satellite-time-time-windows-strips), instancias 1–20 | Heurística temporal con plazos (iteración 4); resultados en [motor-busqueda.md](../docs/motor-busqueda.md#iteración-4-literales-iniciales-temporizados) |
 
 Mismas convenciones que en `dominios/`: los ficheros se copian sin modificar, salvo las
-erratas de `:requirements`, que se marcan con (*). Las de satellite no tienen ninguna.
+erratas de `:requirements`, que se marcan con (*), y las discordancias de otro tipo que se
+decide corregir, con (‡). Satellite tiene una (‡): el dominio se llamaba igual que su tipo
+`satellite` y se ha renombrado a `satellite-time-windows`, como en `dominios/`.
 p01 y p02 son las mismas que las del tier 4. Las instancias 21 a 36 de la colección
 original (de 90 KB a 3 MB) no se han copiado.

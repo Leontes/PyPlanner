@@ -387,7 +387,7 @@ def test_continuous_invariant_that_cannot_hold() -> None:
 
 
 WORK_DOMAIN = """
-(define (domain work) (:requirements :durative-actions :numeric-fluents :duration-inequalities)
+(define (domain workshop) (:requirements :durative-actions :numeric-fluents :duration-inequalities)
   (:predicates (ready))
   (:functions (progress))
   (:durative-action work :parameters () :duration (and (>= ?duration 1) (<= ?duration 10))
@@ -396,7 +396,8 @@ WORK_DOMAIN = """
                  (at end (increase (progress) ?duration)))))
 """
 WORK_PROBLEM = """
-(define (problem p) (:domain work) (:init (ready) (= (progress) 0)) (:goal (>= (progress) {goal})))
+(define (problem p) (:domain workshop) (:init (ready) (= (progress) 0))
+  (:goal (>= (progress) {goal})))
 """
 
 
@@ -571,15 +572,15 @@ def test_temporal_tasks_and_states_can_be_pickled() -> None:
 # --- Órdenes compatibles con VAL (corregidas en la iteración 4) ----------------------
 
 PRODUCE_DOMAIN = """
-(define (domain produce) (:requirements :durative-actions)
-  (:predicates (p) (q) (object ?x))
+(define (domain factory) (:requirements :durative-actions)
+  (:predicates (p) (q) (item ?x))
   (:durative-action produce :parameters (?x) :duration (= ?duration 5)
-    :condition (at start (object ?x)) :effect (at end (p)))
+    :condition (at start (item ?x)) :effect (at end (p)))
   (:durative-action use :parameters () :duration (= ?duration 1)
     :condition (at start (p)) :effect (at end (q))))
 """
 PRODUCE_PROBLEM = """
-(define (problem p) (:domain produce) (:objects a b) (:init (object a) (object b))
+(define (problem factory-1) (:domain factory) (:objects a b) (:init (item a) (item b))
   (:goal (q)))
 """
 

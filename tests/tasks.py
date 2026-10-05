@@ -47,13 +47,13 @@ FORK_PROBLEM = """
 # Irresoluble pero no en la relajación: el testigo solo se puede gastar una vez y hacen
 # falta x e y. La búsqueda tiene que agotar el espacio para demostrarlo.
 TOKEN_DOMAIN = """
-(define (domain token)
+(define (domain single-token)
   (:predicates (token) (x) (y))
   (:action use-x :precondition (token) :effect (and (x) (not (token))))
   (:action use-y :precondition (token) :effect (and (y) (not (token)))))
 """
 TOKEN_PROBLEM = """
-(define (problem token-1) (:domain token) (:init (token)) (:goal (and (x) (y))))
+(define (problem token-1) (:domain single-token) (:init (token)) (:goal (and (x) (y))))
 """
 
 # Objetivo inalcanzable incluso en la relajación (y estático): todas las heurísticas dan

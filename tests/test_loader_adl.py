@@ -85,7 +85,8 @@ def test_typed_action_ast(typed: Domain) -> None:
     ("body", "message"),
     [
         ("(:types a - b b - a)", "ciclo en la jerarquía"),
-        ("(:types a a)", "tipo 'a' declarado dos veces"),
+        ("(:types a a)", "'a' ya se ha definido previamente como tipo"),
+        ("(:types a b - c) (:predicates (c))", "'c' ya se ha definido previamente como tipo"),
         ("(:constants c - nope)", "tipo 'nope' no declarado"),
         ("(:predicates (p ?x - nope))", "tipo 'nope' no declarado"),
         ("(:types t) (:constants c - (either t nope))", "tipo 'nope' no declarado"),

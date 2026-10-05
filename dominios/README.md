@@ -17,7 +17,7 @@ puede romper la anterior.
 | 3 | PDDL 2.1 temporal | `temporal/zenotravel` | `:durative-actions :typing :numeric-fluents` (*) | IPC 2002 (zenotravel-time-simple-automatic) |
 | 3 | PDDL 2.1 temporal | `temporal/greenhouse` | `:typing :durative-actions :numeric-fluents :continuous-effects :duration-inequalities :conditional-effects :negative-preconditions` | **no oficial**: creado ad hoc (†) |
 | 4 | PDDL 2.2 | `derived-predicates/psr-middle` | `:adl :derived-predicates` | IPC 2004 (psr-middle-derived-predicates-adl) |
-| 4 | PDDL 2.2 | `timed-initial-literals/satellite` | `:strips :equality :typing :fluents :durative-actions :timed-initial-literals` | IPC 2004 (satellite-time-time-windows-strips) |
+| 4 | PDDL 2.2 | `timed-initial-literals/satellite` | `:strips :equality :typing :fluents :durative-actions :timed-initial-literals` | IPC 2004 (satellite-time-time-windows-strips) (‡) |
 | 5 | PDDL 3 | `preferences/storage` | `:typing :adl :preferences :constraints` | IPC 2006 (storage-preferences-qualitative) (‡) |
 | 5 | PDDL 3 | `constraints/trucks` | `:typing :adl :durative-actions :fluents :constraints` | IPC 2006 (trucks-time-constraints) |
 | 6 | PDDL+ | `car` | `:typing :durative-actions :fluents :time :negative-preconditions :timed-initial-literals` | SMTPlan (car_nodrag) |
@@ -71,6 +71,10 @@ Notas:
   primera línea de `:types` y `area crate - surface` en la última. La primera no aporta
   nada (todo tipo desciende de `object`) y el parser rechaza los tipos repetidos, así que
   se ha quitado `area` de la primera línea. Los planes valen lo mismo para VAL.
+- (‡) El dominio de `satellite` se llamaba igual que uno de sus tipos (`satellite`), y el
+  parser no admite un nombre declarado dos veces en ningún sitio. Se ha renombrado el
+  dominio a `satellite-time-windows` (el nombre de su colección en la IPC 2004), en el
+  dominio y en el `(:domain …)` de los problemas. Los tipos y los planes no cambian.
 - (†) `greenhouse` **no es un benchmark oficial**. Se ha creado ad hoc para probar casos
   límite de expresividad de PDDL 2.1 temporal que no aparecen en ningún benchmark público
   encontrado (ni en las IPC ni en los de COLIN/OPTIC o VAL): efectos continuos dentro de

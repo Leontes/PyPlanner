@@ -161,7 +161,7 @@ def test_total_time_without_parentheses() -> None:
 )
 def test_syntax_errors(text: str, message: str | None) -> None:
     if message is None:  # válido en la fase 1: el error es semántico (fase 2)
-        with pytest.raises(SemanticError, match="función 'g' declarada dos veces"):
+        with pytest.raises(SemanticError, match="'g' ya se ha definido previamente como función"):
             load_domain(domain(text))
         return
     with pytest.raises(PDDLSyntaxError, match=message):

@@ -116,7 +116,7 @@ def test_static_derived_facts() -> None:
   (:action finish :parameters (?x) :precondition (linked ?x) :effect (done ?x)))
 """
     problem = """
-(define (problem s) (:domain s) (:objects a b) (:init (base a)) (:goal (done a)))
+(define (problem s1) (:domain s) (:objects a b) (:init (base a)) (:goal (done a)))
 """
     task = build(domain, problem)
     result = search(task, PRESETS["astar-blind"])
@@ -133,7 +133,7 @@ NUMERIC_DOMAIN = """
   (:action finish :precondition (full) :effect (done)))
 """
 NUMERIC_PROBLEM = """
-(define (problem n) (:domain n) (:init (= (level) 0)) (:goal (done)))
+(define (problem n1) (:domain n) (:init (= (level) 0)) (:goal (done)))
 """
 
 
@@ -230,7 +230,7 @@ def test_plans_are_valid_for_val(preset: str, tmp_path: Path) -> None:
 # --- Dominios temporales -------------------------------------------------------------
 
 LAUNCH_DOMAIN = """
-(define (domain launch)
+(define (domain rocket)
   (:requirements :typing :durative-actions :derived-predicates :universal-preconditions)
   (:types engine)
   (:predicates (charged ?e - engine) (ready) (launched))
@@ -242,7 +242,7 @@ LAUNCH_DOMAIN = """
 """
 # El :init vacío es necesario: VAL se cae (violación de segmento) si el problema no lo tiene.
 LAUNCH_PROBLEM = """
-(define (problem l) (:domain launch) (:objects e1 e2 - engine) (:init) (:goal (launched)))
+(define (problem l) (:domain rocket) (:objects e1 e2 - engine) (:init) (:goal (launched)))
 """
 
 

@@ -36,6 +36,12 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
   válido.
 - Los nombres siguen el patrón `[A-Za-z][A-Za-z0-9_-]*`. La fase 2 los pasa a minúsculas,
   porque PDDL no distingue mayúsculas.
+- **Cada nombre se declara una sola vez, en cualquier sitio:** el dominio, el problema, los
+  tipos (incluido `object`), las constantes, los objetos, los predicados, las funciones y
+  las acciones no pueden compartir nombre. El error dice qué era el nombre repetido
+  (`el nombre 'satellite' ya se ha definido previamente como nombre del dominio`). La única
+  excepción son las preferencias, que pueden compartir nombre entre sí (pero no con otra
+  cosa). Las variables (`?x`) tienen su propio ámbito.
 - Los argumentos de un átomo son cadenas: una **variable** si empieza por `?` y un
   **objeto o constante** en otro caso.
 - Los nodos de fórmulas y efectos llevan un campo `op` que indica su tipo.
@@ -71,7 +77,7 @@ acciones durativas comparten espacio de nombres.
 | `domain` | sí | nombre del dominio; tiene que coincidir con el dominio cargado |
 | `goal` | sí | fórmula |
 | `requirements` | no | se suman a los del dominio |
-| `objects` | no | como `constants`. Si repiten una constante del dominio, se ignoran |
+| `objects` | no | como `constants`. No pueden repetir ningún nombre del dominio (ni una constante) |
 | `init` | no | lista de átomos sin variables, de valores iniciales `{"op": "=", "fluent": …, "value": 3.5}` (v3) y de literales iniciales temporizados `{"op": "at", "time": 10, "literal": …}` (v5) |
 | `metric` | no | `{"direction": "minimize" \| "maximize", "expression": …}` (v3) |
 | `constraints` | no | restricciones de trayectoria, que pueden ser preferencias (v6); ver [PDDL 3](#pddl-3-v6) |
