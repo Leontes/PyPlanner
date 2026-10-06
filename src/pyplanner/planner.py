@@ -23,10 +23,15 @@ from pyplanner.loader.ast import Domain, Problem
 from pyplanner.plan import Plan, simulate
 from pyplanner.portfolio import PortfolioResult, run_portfolio
 from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
+from pyplanner.search.anytime import search_anytime
 from pyplanner.search.memory import available_memory_mb
 
 #: Fracción de la memoria disponible que usa el planificador si no se le da un límite.
 DEFAULT_MEMORY_FRACTION = 0.8
+
+#: Límite de tiempo (s) de la búsqueda anytime de las tareas con preferencias si no se da
+#: otro: siempre hay plan mejor que buscar, así que hace falta un final.
+DEFAULT_ANYTIME_LIMIT = 60.0
 
 
 def available_cores() -> int:
@@ -71,6 +76,11 @@ def solve(
 ) -> PlanningResult:
     """Resuelve una tarea con una configuración o, si hay varias, con un portfolio paralelo.
 
+    Si la tarea tiene preferencias (PDDL 3), la búsqueda es *anytime*
+    (:mod:`pyplanner.search.anytime`): devuelve el mejor plan que encuentre en
+    ``time_limit`` segundos (por defecto, :data:`DEFAULT_ANYTIME_LIMIT`), o antes si
+    demuestra que es óptimo.
+
     Args:
         time_limit: límite de tiempo en segundos para cada búsqueda.
         memory_limit: memoria total (MB) que pueden usar las búsquedas; se reparte a
@@ -96,14 +106,17 @@ def solve(
             c if c.max_memory is not None else c.with_changes(max_memory=share) for c in configs
         ]
 
+    anytime = task.preferences is not None
+    if anytime and time_limit is None:
+        time_limit = DEFAULT_ANYTIME_LIMIT
     portfolio = None
     if len(configs) == 1:
         config = configs[0]
         if time_limit is not None and config.max_time is None:
             config = config.with_changes(max_time=time_limit)
-        result = search(task, config)
+        result = search_anytime(task, config) if anytime else search(task, config)
     else:
-        portfolio = run_portfolio(task, configs, time_limit=time_limit)
+        portfolio = run_portfolio(task, configs, time_limit=time_limit, anytime=anytime)
         result = portfolio.best
 
     plan = None

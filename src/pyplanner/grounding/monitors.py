@@ -51,14 +51,19 @@ estados (``always``, ``at-most-once``, ``sometime-before``) no cuentan en la rel
 así sigue siendo optimista.
 
 **Coste.** Un monitor solo se reevalúa si el paso cambia algún hecho o variable de sus
-fórmulas: si no, su actualización no cambiaría nada.
+fórmulas: si no, su actualización no cambiaría nada. Un índice de hecho → monitores evita
+recorrerlos todos en cada paso (en storage hay cientos).
+
+**Monitores blandos** (restricciones-preferencia, ver :mod:`pyplanner.grounding.preferences`).
+Donde uno duro descartaría el paso, uno blando marca su hecho ``violated``, borra los demás
+y deja de actualizarse: ya no importa qué pase después.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pyplanner.grounding.numeric import variables_of
-from pyplanner.grounding.task import Condition, State, mask_of
+from pyplanner.grounding.task import Condition, State, bits, mask_of
 
 #: Operadores de las restricciones sin tiempo que vigila un monitor (``at end`` va al objetivo).
 UNTIMED = ("always", "sometime", "at-most-once", "sometime-before", "sometime-after")
@@ -80,6 +85,8 @@ class Monitor:
             ``hold-during``: t1 y t2).
         bound: en ``always-within``, el plazo t.
         label: la restricción, para los mensajes.
+        violated: en un monitor blando, el hecho que marca que se ha incumplido (-1 en uno
+            duro).
     """
 
     kind: str
@@ -89,6 +96,7 @@ class Monitor:
     markers: tuple[int, ...] = ()
     bound: float = 0.0
     label: str = ""
+    violated: int = -1
     mask: int = field(init=False, repr=False, compare=False)
     variables: tuple[int, ...] = field(init=False, repr=False, compare=False)
 
@@ -160,6 +168,21 @@ class MonitorEvaluator:
     def __init__(self, monitors: Sequence[Monitor], clock: StepClock | None = None) -> None:
         self.monitors = tuple(monitors)
         self.clock = clock
+        watchers: dict[int, list[int]] = {}
+        #: Monitores que se reevalúan en cada paso (su contador avanza siempre).
+        self._every_step: list[int] = []
+        #: Monitores con condiciones numéricas, por sus variables.
+        self._numeric: list[tuple[int, tuple[int, ...]]] = []
+        for i, monitor in enumerate(self.monitors):
+            if monitor.kind == "always-within-steps":
+                self._every_step.append(i)
+                continue
+            for fact in bits(monitor.mask):
+                watchers.setdefault(fact, []).append(i)
+            if monitor.variables:
+                self._numeric.append((i, monitor.variables))
+        self._watchers = {fact: tuple(group) for fact, group in watchers.items()}
+        self._watched = mask_of(watchers)
 
     def initial(self, state: State) -> State | None:
         """El estado inicial con los hechos de los monitores, o ``None`` si incumple alguna
@@ -169,7 +192,10 @@ class MonitorEvaluator:
             facts = self.clock.initial(facts)
             state = State(facts, state.values)
         for monitor in self.monitors:
-            result = self._step(monitor, facts, state)
+            if monitor.violated < 0:
+                result = self._step(monitor, facts, state)
+            else:
+                result = self._soft(monitor, facts, state)
             if result is None:
                 return None
             facts = result
@@ -182,19 +208,43 @@ class MonitorEvaluator:
         if self.clock is not None:
             facts = self.clock.tick(facts)
             after = State(facts, after.values)
-        changed = before.facts ^ after.facts
-        for monitor in self.monitors:
-            if monitor.kind == "always-within-steps":
-                pass  # su contador avanza en cada paso: siempre se reevalúa
-            elif not changed & monitor.mask and all(
-                before.values[v] == after.values[v] for v in monitor.variables
-            ):
-                continue  # sus fórmulas valen lo mismo: el monitor no cambia
-            result = self._step(monitor, facts, after)
+        # Solo los monitores con algún hecho o variable cambiados (los demás valen lo mismo).
+        changed = (before.facts ^ after.facts) & self._watched
+        selected = set(self._every_step)
+        watchers = self._watchers
+        for fact in bits(changed):
+            selected.update(watchers[fact])
+        if self._numeric and before.values != after.values:
+            selected.update(
+                i
+                for i, variables in self._numeric
+                if any(before.values[v] != after.values[v] for v in variables)
+            )
+        monitors = self.monitors
+        for i in sorted(selected):
+            monitor = monitors[i]
+            if monitor.violated < 0:
+                result = self._step(monitor, facts, after)
+            else:
+                result = self._soft(monitor, facts, after)
             if result is None:
                 return None
             facts = result
         return after if facts == after.facts else State(facts, after.values)
+
+    @staticmethod
+    def _soft(monitor: Monitor, facts: int, state: State) -> int:
+        """Como :meth:`_step` para un monitor blando: marca ``violated`` en lugar de
+        incumplirse (y ya no se actualiza más)."""
+        violated = monitor.violated
+        if facts >> violated & 1:
+            return facts
+        result = MonitorEvaluator._step(monitor, facts, state)
+        if result is not None:
+            return result
+        for fact in monitor.facts:
+            facts &= ~(1 << fact)
+        return facts | (1 << violated)
 
     @staticmethod
     def _step(monitor: Monitor, facts: int, state: State) -> int | None:

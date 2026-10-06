@@ -14,6 +14,10 @@ def test_bits_and_masks() -> None:
     assert list(bits(0b101001)) == [0, 3, 5]
     assert mask_of([0, 3, 5]) == 0b101001
     assert list(bits(0)) == []
+    # Máscaras grandes (otro camino): los mismos índices, de menor a mayor.
+    indices = [0, 1, 63, 64, 1023, 1024, 5000, 40000]
+    assert list(bits(mask_of(indices))) == indices
+    assert list(bits(1 << 2000)) == [2000]
 
 
 def test_static_facts_are_removed() -> None:
@@ -44,6 +48,7 @@ def test_applicable_and_apply() -> None:
     [step] = list(task.applicable(task.init))
     assert str(step) == "(step p0 p1)"
     successor = task.apply(task.init, step)
+    assert successor is not None
     assert task.atoms(successor) == [atom("at", "p1")]
 
 

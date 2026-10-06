@@ -12,7 +12,8 @@ Subcomandos:
 * ``configs``: lista las configuraciones predefinidas y los portfolios por núcleos.
 
 Códigos de salida: 0 plan encontrado (o comando correcto), 2 entrada no válida, 3 se ha
-demostrado que no hay plan, 4 no se ha encontrado plan dentro de los límites.
+demostrado que no hay plan, 4 no se ha encontrado plan (dentro de los límites, o con una
+búsqueda que no puede demostrar que no lo haya).
 """
 
 import argparse
@@ -41,7 +42,8 @@ from pyplanner.search import (
 EXIT_INVALID_INPUT = 2
 #: Código de salida cuando se ha demostrado que la tarea no tiene solución.
 EXIT_UNSOLVABLE = 3
-#: Código de salida cuando no se ha encontrado plan dentro de los límites.
+#: Código de salida cuando no se ha encontrado plan (dentro de los límites, o sin poder
+#: demostrar que no lo haya).
 EXIT_NO_PLAN = 4
 
 
@@ -82,7 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"núcleos a usar (por defecto {DEFAULT_CORES}, o los que tenga la máquina si son "
         "menos); determina qué búsquedas se lanzan",
     )
-    solve_cmd.add_argument("-t", "--time-limit", type=float, help="límite de tiempo en segundos")
+    solve_cmd.add_argument(
+        "-t",
+        "--time-limit",
+        type=float,
+        help="límite de tiempo en segundos (con preferencias, la búsqueda devuelve el mejor "
+        "plan que encuentre en ese tiempo; por defecto, 60)",
+    )
     solve_cmd.add_argument(
         "-m",
         "--memory-limit",
@@ -258,10 +266,14 @@ def _report(result: PlanningResult) -> None:
         plan = result.plan
         metric = plan.metric
         suffix = f", métrica {metric:g}" if metric is not None else ""
+        if search.optimal:
+            suffix += " (óptimo demostrado)"
         if plan.makespan is not None:
             err(f"Plan: {len(plan)} acciones, duración total {plan.makespan:g}{suffix}")
         else:
             err(f"Plan: {len(plan)} acciones, coste {plan.cost:g}{suffix}")
+        if plan.violated:
+            err(f"Preferencias incumplidas: {', '.join(plan.violated)}")
     if search.message:
         err(f"Detalle: {search.message}")
 

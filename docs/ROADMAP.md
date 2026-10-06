@@ -395,6 +395,18 @@ dominio compilado).
   sin literales; `always-within` añade aristas a la red temporal). Sus salidas buenas son
   reglas relajadas de la heurística. Resuelve trucks (plazos `within`), validado con VAL
   (ver [motor-busqueda.md](motor-busqueda.md#restricciones-de-trayectoria-iteración-5b)).
+- **Preferencias (5c):** ✅ compiladas a costes (Keyder y Geffner) con los pesos de la
+  métrica lineal: una fase final (`_end`, `_collect` y `_forgo`) para las del objetivo y
+  las que se deciden al final del plan; las restricciones-preferencia que se incumplen a
+  mitad del plan (monitores blandos) cobran su peso en el paso que las incumple; variantes
+  de las acciones para las de las precondiciones. Las restricciones triviales se descartan
+  y los `forall` de restricciones se instancian con un join. Búsqueda *anytime* al estilo
+  LAMA (primer plan con coste unitario, la configuración elegida con incumbente, WA* con
+  pesos 5, 3, 2 y 1, y A* con h_max) con poda por cota, también en el portfolio con la cota
+  compartida; 60 s por defecto. Resuelve storage p01 y p02 con el óptimo demostrado
+  (métricas 0 y 1), validado con VAL (ver
+  [motor-busqueda.md](motor-busqueda.md#preferencias-y-búsqueda-anytime-iteración-5c)).
+  Las preferencias en tareas temporales quedan como trabajo opcional.
 - **Funciones de objetos (5d):** ✅ adelantada a la 5a: la fase 2 las compila a predicados
   sobre el documento JSON, antes del AST, así que el motor no las ve y funcionan con todo
   lo demás. Planes clásicos y temporales validados con VAL contra el dominio compilado.
@@ -454,6 +466,27 @@ Nada por ahora.
 ## Trabajo opcional (al final del proyecto, fuera de las iteraciones)
 
 - Técnicas opcionales del repertorio (ver la tabla de "Motor de búsqueda").
+- **Preferencias en tareas temporales** (de la iteración 5c): la fase final como pasos
+  instantáneos al final del plan, y los monitores blandos con las marcas de instante de
+  la 5b. El tier 5 no tiene ningún dominio que las use.
+- **Límite de memoria duro en las búsquedas** (de la iteración 5c). Hoy el límite del
+  planificador (`max_memory`, `-m`) se mira durante la búsqueda cada 32 iteraciones y no
+  cubre el grounding; una medida de storage agotó la memoria de WSL por eso (el script de
+  benchmarks ya pone un límite duro por proceso). Medido el 2026-10-06:
+  - `RLIMIT_AS` no sirve con CUDA (reserva 34 GB de memoria virtual). `RLIMIT_DATA` sí:
+    CUDA y Numba arrancan, al pasarlo Python y NumPy reciben `MemoryError`, y en
+    búsquedas sin GPU sigue de cerca a la memoria residente (142 MB frente a 170; 405
+    frente a 430 con storage p20). Con CUDA el proceso parte de 1,2 GB.
+  - El límite no cuesta nada en la búsqueda; lanzarla en un proceso hijo con `fork`
+    cuesta de 10 a 14 ms (con `spawn`, de 1 a 3 s).
+  - **Opción A** (barata, sin cambiar la API): cada miembro del portfolio fija
+    `RLIMIT_DATA` a su parte (con el margen de CUDA en el miembro con GPU) y un
+    `MemoryError` es `limit_reached`; la CLI se lo pone a sí misma antes del grounding.
+    Como librería, el grounding y las búsquedas de una configuración siguen con el límite
+    blando (no se puede limitar el proceso anfitrión).
+  - **Opción B** (completa): `solve()` hace el grounding y la búsqueda en un proceso hijo
+    con el límite duro. Cambia la API: `PlanningResult.task` no se puede devolver barato
+    desde el hijo.
 - **Más allá de la programación lineal** (después de la iteración 6). El motor temporal
   resuelve los efectos continuos lineales con un programa lineal por estado; lo que este
   no puede expresar se rechaza con un error claro. Dos líneas posibles:

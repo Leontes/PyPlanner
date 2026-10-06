@@ -11,14 +11,29 @@ planes se validan con VAL (``tools/bin/Validate``) si está compilado. La salida
 por problema y un resumen por configuración (resueltos y tiempo total, contando el límite
 para los no resueltos), y opcionalmente un JSON con todas las filas.
 
-**Memoria:** como mucho 5 procesos a la vez y siempre con límite de memoria por búsqueda
-(una medida sin límites agotó la memoria de WSL). No se usa ``ulimit -v``: rompe la
-reserva de memoria virtual de CUDA.
+Con preferencias, la búsqueda es *anytime* (el mejor plan en el límite de tiempo): la tabla
+da además la métrica del plan (con la de VAL si no coincide) y si es óptimo, y el resumen,
+la suma de las métricas.
+
+**Memoria:** como mucho 5 procesos a la vez y siempre con límite de memoria (dos medidas
+agotaron la memoria de WSL y obligaron a reiniciar). Cada proceso tiene dos límites:
+
+* el de la búsqueda (``max_memory``), que la termina con ``limit_reached``;
+* uno duro del sistema (``RLIMIT_AS``, memoria virtual) de ``--memory`` más 512 MB, que
+  cubre también el grounding (el de la búsqueda solo se mira mientras busca): al pasarlo,
+  el proceso recibe ``MemoryError`` en lugar de agotar la máquina. No se pone con las
+  configuraciones que usan PyTorch (``cpu``, ``cuda``, ``hybrid``), cuya reserva de memoria
+  virtual (CUDA) lo rompería.
+
+Antes de empezar se comprueba que procesos × (``--memory`` + 512 MB) quepa en el 80 % de la
+memoria disponible.
 """
 
 import argparse
 import json
 import multiprocessing
+import re
+import resource
 import subprocess
 import tempfile
 import time
@@ -29,20 +44,32 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 VALIDATE = ROOT / "tools" / "bin" / "Validate"
 MAX_WORKERS = 5
+#: Memoria virtual de más sobre ``--memory`` en el límite duro (Python, NumPy y Numba
+#: reservan unos 400 MB).
+VIRTUAL_MARGIN_MB = 512
 
 
 def run_one(domain: str, problem: str, config: str, limit: float, memory: int) -> dict[str, Any]:
     """Resuelve un problema con una configuración (en un proceso aparte)."""
+    from pyplanner.search import PRESETS as presets
+
+    if presets[config].device not in ("cpu", "cuda", "hybrid"):
+        limit_bytes = (memory + VIRTUAL_MARGIN_MB) * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
     from pyplanner.frontend import read_domain, read_problem
     from pyplanner.grounding import ground
     from pyplanner.plan import Plan
     from pyplanner.search import PRESETS, SearchStatus, search
+    from pyplanner.search.anytime import search_anytime
 
     start = time.perf_counter()
     loaded = read_domain(domain)
     task = ground(loaded, read_problem(problem, loaded))
     grounding = time.perf_counter() - start
-    result = search(task, PRESETS[config].with_changes(max_time=limit, max_memory=memory))
+    settings = PRESETS[config].with_changes(max_time=limit, max_memory=memory)
+    anytime = task.preferences is not None
+    result = search_anytime(task, settings) if anytime else search(task, settings)
     row: dict[str, Any] = {
         "problem": Path(problem).stem,
         "config": config,
@@ -56,6 +83,9 @@ def run_one(domain: str, problem: str, config: str, limit: float, memory: int) -
         plan = Plan.from_indices(task, result.plan)
         row["length"] = len(plan)
         row["makespan"] = plan.makespan
+        row["metric"] = plan.metric
+        if anytime:
+            row["optimal"] = result.optimal
         if VALIDATE.exists():
             with tempfile.NamedTemporaryFile("w", suffix=".plan", delete=False) as handle:
                 handle.write(plan.to_ipc())
@@ -68,6 +98,8 @@ def run_one(domain: str, problem: str, config: str, limit: float, memory: int) -
             ).stdout
             Path(handle.name).unlink()
             row["valid"] = "Plan valid" in output
+            value = re.search(r"Final value: (\S+)", output)
+            row["val_metric"] = float(value.group(1)) if value else None
     return row
 
 
@@ -83,6 +115,15 @@ def main() -> None:
     args = parser.parse_args()
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers tiene que estar entre 1 y {MAX_WORKERS}")
+    from pyplanner.search.memory import available_memory_mb
+
+    available = available_memory_mb()
+    needed = args.workers * (args.memory + VIRTUAL_MARGIN_MB)
+    if available is None or needed > 0.8 * available:
+        parser.error(
+            f"{args.workers} procesos × ({args.memory} + {VIRTUAL_MARGIN_MB}) MB = {needed} MB no "
+            f"caben en el 80% de la memoria disponible ({available} MB): baja -w o -m"
+        )
 
     domain = args.directory / "domain.pddl"
     problems = sorted(args.directory.glob("p[0-9]*.pddl"))
@@ -105,11 +146,21 @@ def main() -> None:
                        "time": None, "error": str(error)}  # fmt: skip
             rows.append(row)
             valid = {True: "válido", False: "INVÁLIDO", None: ""}[row.get("valid")]
+            quality = ""
+            if row.get("metric") is not None:
+                quality = f" métrica={row['metric']:g}"
+                val_metric = row.get("val_metric")
+                if val_metric is not None and abs(val_metric - row["metric"]) > 1e-3:
+                    quality += f" (VAL {val_metric:g})"
+                if row.get("optimal"):
+                    quality += " óptimo"
+            if row.get("error"):
+                quality = f" {row['error'] or 'MemoryError'}"
             print(
                 f"{row['problem']:5} {row['config']:22} {row['status']:14} "
                 f"t={row['time'] if row['time'] is not None else '-':>8} "
                 f"exp={row.get('expanded', '-'):>8} "
-                f"callejones={row.get('dead_ends', '-'):>7} {valid}",
+                f"callejones={row.get('dead_ends', '-'):>7} {valid}{quality}",
                 flush=True,
             )
 
@@ -120,6 +171,10 @@ def main() -> None:
         total = sum(r["time"] if r in solved else args.time for r in mine)
         invalid = sum(r.get("valid") is False for r in mine)
         note = f", {invalid} planes inválidos" if invalid else ""
+        if any("optimal" in r for r in solved):
+            metric = sum(r["metric"] for r in solved if r.get("metric") is not None)
+            optimal = sum(bool(r.get("optimal")) for r in solved)
+            note += f", métrica total {metric:g}, {optimal} óptimos"
         print(f"  {config:22} {len(solved)}/{len(mine)} resueltos, {total:.1f} s{note}")
     if args.output:
         args.output.write_text(json.dumps(rows, indent=2, ensure_ascii=False))

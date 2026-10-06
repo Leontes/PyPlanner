@@ -2,9 +2,11 @@
 
 Cada instancia de los tiers soportados se resuelve con el portfolio de cada número de
 núcleos (1, 2, 4, 5, 6 y 7), y el plan se valida con VAL (``tools/bin/Validate``, ver
-``scripts/build_val.sh``). Si VAL no está compilado, estos tests se saltan.
+``scripts/build_val.sh``). Si el plan informa de la métrica, tiene que coincidir con la de
+VAL. Si VAL no está compilado, estos tests se saltan.
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -58,6 +60,9 @@ def test_supported_tiers_are_solved_and_validated(
     plan_file.write_text(result.plan.to_ipc())
     output = validate_with_val(instance, plan_file)
     assert "Plan valid" in output, output
+    value = re.search(r"Final value: (\S+)", output)
+    if result.plan.metric is not None and value is not None:
+        assert result.plan.metric == pytest.approx(float(value.group(1)), rel=1e-5, abs=1e-3)
 
 
 def test_val_rejects_a_bad_plan(tmp_path: Path) -> None:

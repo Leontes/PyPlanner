@@ -10,7 +10,6 @@ from pyplanner.errors import (
     SchemaValidationError,
     SemanticError,
     UndeclaredRequirementError,
-    UnsupportedFeatureError,
 )
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.grounding import ground
@@ -374,7 +373,7 @@ def test_trucks_loads() -> None:
     )
 
 
-def test_storage_loads_and_the_engine_rejects_it_for_now() -> None:
+def test_storage_loads_and_grounds() -> None:
     path = DOMINIOS_DIR / "tier5-pddl3" / "preferences" / "storage"
     domain = read_domain(path / "domain.pddl")
     assert domain.supertypes("area") == ("area", "surface", "object")
@@ -383,5 +382,7 @@ def test_storage_loads_and_the_engine_rejects_it_for_now() -> None:
     names = {p.name for node in (result.goal, result.constraints) for p in preferences_in(node)}
     expected = {"p0a", "p1a", "p1b", "p1c", "p3a", "p3b", "p4a", "p4b", "p5a", "p6a", "p7a"}
     assert names == expected
-    with pytest.raises(UnsupportedFeatureError, match="preferencias"):
-        ground(domain, result)
+    task = ground(domain, result)
+    assert task.preferences is not None
+    # p0a pesa 0 en la métrica: no cuenta.
+    assert "p0a" not in dict(task.preferences.weights)

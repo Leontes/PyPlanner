@@ -189,9 +189,10 @@ def test_conditional_effects_read_the_previous_state() -> None:
     task = task_of("rotate")
     [rotate] = task.actions
     state = rotate.apply(task.init)
+    assert state is not None
     assert sorted(str(f) for f in task.atoms(state)) == ["(at x1 b)", "(at x2 c)"]
     state = rotate.apply(state)
-    assert task.is_goal(state)
+    assert state is not None and task.is_goal(state)
 
 
 def test_negative_preconditions_block_actions() -> None:
@@ -361,7 +362,9 @@ def test_conditional_effect_with_only_negative_condition() -> None:
     [toggle] = task.actions
     assert [len(e.condition.pos_facts) for e in toggle.conditional] == [1, 0]
     once = toggle.apply(task.init)
+    assert once is not None
     twice = toggle.apply(once)
+    assert twice is not None
     assert task.is_goal(once) and not task.is_goal(twice)
     assert search(task, PRESETS["gbfs-ff-pref-tb"]).cost == 1
 

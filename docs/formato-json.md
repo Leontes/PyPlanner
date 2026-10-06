@@ -372,7 +372,12 @@ El planificador devuelve los planes con `"kind": "plan"` (`pyplanner solve -f js
   coste, es el número de acciones.
 - `metric` (opcional, v3): valor de la métrica del problema, cuando los costes de las
   acciones la representan (ver [motor-busqueda.md](motor-busqueda.md#motor-numérico-iteración-3a)).
-  Es el valor inicial de la métrica más `cost`, y coincide con el que calcula VAL.
+  Es el valor inicial de la métrica más `cost`, y coincide con el que calcula VAL. Con
+  preferencias (v6), suma además los pesos de las incumplidas, y `cost` es solo la
+  contribución de las acciones.
+- `violated` (opcional, v6): instancias de preferencias del objetivo y de las restricciones
+  que el plan incumple, como `"nombre arg1 arg2"` (ver
+  [motor-busqueda.md](motor-busqueda.md#preferencias-y-búsqueda-anytime-iteración-5c)).
 
 ## Errores
 

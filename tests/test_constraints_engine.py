@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from pyplanner.grounding import GroundTask
+from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.heuristics import create_heuristic
 from pyplanner.plan import Plan, simulate
 from pyplanner.search import PRESETS, SearchStatus, search
@@ -198,10 +199,12 @@ def test_temporal_within(tmp_path: Path) -> None:
     domain = OVEN.replace(":constraints)", ":constraints :negative-preconditions)")
     problem = oven("(within 20 (baked))")
     task, plan = solve(domain, problem, "gbfs-ff-pref-tb")
+    assert isinstance(task, TemporalTask)
     assert task.til_times == (20.0,)  # el instante es un TIL sin literales
     assert_valid(domain, problem, plan, tmp_path)
+    # Sin plan (la búsqueda temporal no lo demuestra: ver test_temporal_engine).
     impossible = build(domain, oven("(within 12 (baked))"))
-    assert search(impossible, PRESETS["astar-blind"]).status is SearchStatus.UNSOLVABLE
+    assert search(impossible, PRESETS["astar-blind"]).status is SearchStatus.FAILED
 
 
 def test_temporal_always_within(tmp_path: Path) -> None:
@@ -215,7 +218,7 @@ def test_temporal_always_within(tmp_path: Path) -> None:
     assert times["bake"] + 5 <= times["heat"] + 10 + 8 + 1e-6
     assert_valid(domain, problem, plan, tmp_path)
     too_short = build(domain, oven("(always-within 4 (hot) (baked))"))
-    assert search(too_short, PRESETS["astar-blind"]).status is SearchStatus.UNSOLVABLE
+    assert search(too_short, PRESETS["astar-blind"]).status is SearchStatus.FAILED  # sin plan
 
 
 def test_temporal_untimed_constraints(tmp_path: Path) -> None:
@@ -234,3 +237,6 @@ def test_trucks() -> None:
     task, plan = solve(domain, problem, "bfws-ff-pref")
     assert len(task.monitors) == 3
     assert plan.makespan is not None
+    # La búsqueda perezosa agota la cola sin encontrarlo: no puede decir que no hay plan.
+    lazy = search(task, PRESETS["lazy-ff-pref"])
+    assert lazy.status is SearchStatus.FAILED

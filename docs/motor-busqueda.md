@@ -14,7 +14,7 @@ Domain + Problem (AST) ──ground()──► GroundTask ──search() / run_p
 | Grounding | `pyplanner.grounding` | Instancia las acciones alcanzables en la relajación y elimina los hechos estáticos |
 | Heurísticas | `pyplanner.heuristics` | Evalúan lotes de estados; implementación de referencia y en PyTorch |
 | Búsqueda | `pyplanner.search` | GBFS / A* / WA*, inmediata o perezosa, con acciones útiles y lotes |
-| Portfolio | `pyplanner.portfolio` | Varias configuraciones en procesos paralelos; gana la primera |
+| Portfolio | `pyplanner.portfolio` | Varias configuraciones en procesos paralelos; gana la primera (con preferencias, la mejor dentro del límite de tiempo) |
 | Plan | `pyplanner.plan` | Salida IPC o JSON y validación interna (simulación) |
 | Fachada | `pyplanner.planner.solve` | Encadena todo lo anterior |
 
@@ -131,8 +131,12 @@ cada paso. El código está en `grounding/temporal.py`.
   instantáneas del dominio conviven con las durativas.
 - **Estado temporal.** Un `State` (hechos y valores) con una línea temporal adjunta. Se
   compara solo por la parte lógica (memoización al estilo de POPF), así que la detección
-  de repetidos funciona como en la planificación clásica. Es incompleta en casos raros:
-  un estado repetido con otra planificación en el tiempo se descarta.
+  de repetidos funciona como en la planificación clásica. Es incompleta: un estado
+  repetido con otra planificación en el tiempo se descarta, y con plazos (TIL,
+  restricciones con tiempo, duraciones máximas) esa otra quizá llegaba al objetivo. Por
+  eso, si la búsqueda agota la cola tras descartar algún repetido, termina con `failed`
+  (no ha encontrado plan), no con `unsolvable` (no lo hay): trucks p01 con `lazy-ff-pref`
+  agotaba la cola y decía que no tenía solución, y la tiene.
 - **Línea temporal bajo demanda.** Al generar un sucesor se comprueba su línea temporal,
   pero no se guarda: el estado solo recuerda de dónde viene y la recalcula al expandirse.
   La búsqueda genera muchos más estados de los que expande, y cada línea temporal crece
@@ -341,6 +345,97 @@ memoria.
 - **VAL** valida `within`, `hold-during`, `always-within` y los operadores sin tiempo,
   pero su `hold-after` no funciona (falla con planes válidos o se cae): esos planes se
   comprueban con la simulación propia.
+
+## Preferencias y búsqueda anytime (iteración 5c)
+
+Una preferencia es una condición deseable: cada incumplimiento suma a la métrica el
+coeficiente de su `(is-violated p)`, su **peso**. El grounder las compila a costes de
+acción (Keyder y Geffner, 2009; `pyplanner.grounding.preferences`), así que la búsqueda
+solo minimiza costes y el coste de un plan es su métrica.
+
+- **Pesos.** Salen de la forma lineal de la métrica, que tiene que minimizarse. Las
+  preferencias que no aparecen en ella (o pesan 0) no cuentan y no se compilan. Sin
+  métrica, ninguna cuenta (queda una nota). Una métrica no lineal o un peso negativo se
+  rechazan con un error claro.
+- **Preferencias del objetivo y de las restricciones** (se evalúan al final del plan).
+  Cada instancia (una por asignación de los `forall` que la rodean; `is-violated` cuenta
+  las incumplidas) se resuelve en una **fase final**:
+  - `_end` (coste 0) se aplica con el objetivo duro cumplido; después ninguna acción del
+    dominio es aplicable;
+  - cada instancia se resuelve con `_collect` (coste 0) si se cumple o con `_forgo` (coste
+    su peso) si no;
+  - se resuelven en un orden fijo, así que la fase final no multiplica los caminos.
+- **Restricciones-preferencia.** Son monitores **blandos**: donde uno duro descartaría el
+  paso, uno blando marca su hecho `violated`, borra los demás y deja de actualizarse, y ese
+  paso cuesta además su peso (una **penalización** de la transición, que la búsqueda suma
+  a g): incumplida una vez, ya no se puede evitar. Las que solo se incumplen a mitad del
+  plan (`always`, `at-most-once`, `sometime-before`, `hold-after`, `hold-during`) no pasan
+  por la fase final; las que se deciden al final (`sometime`, `within`, lo pendiente de
+  `sometime-after` y `always-within`) se resuelven en ella según `done` o lo pendiente.
+  `(preference p (at end φ))` es como una del objetivo.
+- **Restricciones triviales.** Las que se cumplen en cualquier plan porque, con los hechos
+  estáticos y los inalcanzables, sus fórmulas quedan en cierto o en falso (`always` de algo
+  siempre cierto, `sometime-before` de algo imposible...) se descartan, duras o blandas. Un `forall` sobre `always`, `hold-*` o las que tienen
+  disparador se instancia como una acción: solo con las asignaciones que hacen alcanzables
+  los átomos necesarios para incumplirla o dispararla. En storage, la restricción de cajas
+  incompatibles en zonas contiguas recorre solo las zonas conectadas: en p20 pasa de 2,8
+  millones de instancias a las 37 000 que importan, y el grounding de 197 s y 2,7 GB a 6 s
+  y 350 MB.
+- **Preferencias de las precondiciones** (cuentan en cada aplicación). La acción se
+  desdobla según qué instancias cumple: la variante que incumple unas cuesta además sus
+  pesos y exige que se incumplan, así que el coste es exacto. Con más de 256 variantes por
+  acción, error.
+- **Coste de los pasos.** Si la métrica solo mide preferencias, las acciones costarían 0 y
+  la heurística no distinguiría un plan corto de uno largo. Cada acción del dominio cuesta
+  además una milésima del menor peso: se prefiere cumplir a renunciar, y entre dos planes
+  igual de buenos, el más corto. La métrica que se informa lo descuenta.
+- **El plan** no incluye la fase final (sus acciones empiezan por `_`, que no puede
+  empezar un nombre PDDL). Informa de la métrica y de las instancias incumplidas
+  (`; violated preferences: ...` en IPC, `violated` en el JSON).
+- **Heurística.** La fase final es parte de la relajación: h_FF suma los pesos de las
+  preferencias que no puede cumplir y el coste de los pasos de las que sí.
+
+**Búsqueda anytime** (`pyplanner.search.anytime`). Con preferencias, el primer plan rara
+vez es el mejor, y buscar el óptimo de una vez no es viable en tareas grandes. Como LAMA,
+se encadenan búsquedas, cada una con la **cota** del mejor plan encontrado:
+
+1. la configuración elegida con **coste unitario**, sin cota: un plan cualquiera, cuanto
+   antes (su coste real se calcula después). Con los costes reales, una búsqueda voraz
+   persigue las preferencias y puede no terminar: en storage, sin objetivo duro, explora
+   sin fin estados donde parecen alcanzables;
+2. la configuración elegida con los costes reales y el **incumbente** (ver abajo);
+3. WA* con h_FF y acciones útiles, con pesos 5, 3, 2 y 1 (perezosa o inmediata, con la
+   exploración y el desempate de la elegida);
+4. A* con h_max, que es admisible: si agota la cola, el mejor plan es **óptimo**.
+
+Tras cada plan se pasa a la siguiente; la última se repite mientras mejore. Termina al
+agotar el tiempo (60 s por defecto, `-t` para cambiarlo), al demostrar el óptimo o al
+alcanzar el límite de memoria.
+
+- **Incumbente.** Cada estado expandido en el que se cumple el objetivo duro es un plan
+  posible: desde él, la fase final cuesta exactamente los pesos de las preferencias que no
+  cumple. Si ese plan mejora la cota, la búsqueda lo apunta, baja la cota hasta él y
+  sigue; al terminar sin otro plan, devuelve el incumbente. Una búsqueda voraz que avanza
+  cumpliendo preferencias va dejando así planes cada vez mejores, aunque nunca entre por sí
+  misma en la fase final.
+- **Poda por cota.** La búsqueda descarta los nodos con g (que incluye las
+  penalizaciones) igual o mayor que la cota; con una heurística admisible, también los de
+  g + h. Si una búsqueda inmediata con reapertura (A* o WA*) agota la cola, no hay plan
+  mejor que la cota.
+- **Óptimo** quiere decir mínimo coste de búsqueda: métrica más el coste de los pasos. Es
+  el de menor métrica salvo que uno mejor necesite mil pasos más por cada unidad del menor
+  peso.
+- **En el portfolio**, cada miembro hace su búsqueda anytime empezando por su
+  configuración, informa de cada plan mejor y todos comparten la mejor cota
+  (`multiprocessing.Value`). Termina cuando se agota el tiempo, cuando todos han terminado
+  o cuando uno demuestra el óptimo.
+- **Storage** (tier 5): p01 y p02 llegan al óptimo demostrado (métricas 0 y 1) en menos de
+  un segundo, con cualquier portfolio. Las métricas coinciden con las de VAL. Resultados
+  en `benchmarks/preferences/storage` en
+  [Rendimiento medido](#iteración-5c-preferencias-y-búsqueda-anytime).
+- **Límites.** Las preferencias en tareas temporales todavía no se admiten (error claro).
+  VAL calcula mal las preferencias del objetivo si el problema tiene una sección
+  `(:constraints (and))` vacía.
 
 ## Heurísticas
 
@@ -556,7 +651,10 @@ contiene al anterior:
 
 **Cómo se ejecutan.**
 
-- Un proceso por configuración; gana el primer plan y el resto se cancelan.
+- Un proceso por configuración; gana el primer plan y el resto se cancelan. Con
+  preferencias, el portfolio es *anytime* (ver
+  [Preferencias y búsqueda anytime](#preferencias-y-búsqueda-anytime-iteración-5c)): se
+  queda con el mejor plan dentro del límite de tiempo.
 - Se usa `fork` cuando es seguro: sin CUDA, sin PyTorch cargado en el padre y con un
   solo hilo. En cualquier otro caso se usa `spawn`.
 - Si un miembro falla, informa con estado `ERROR` y un mensaje, pero no tumba el
@@ -577,6 +675,7 @@ pyplanner solve -m 4000 dominio.pddl p.pddl         # 4000 MB en total para las 
 pyplanner solve -c astar-hmax dominio.pddl p.pddl   # plan óptimo
 pyplanner solve -c gbfs-add --device cuda --batch-size 64 dominio.pddl p.pddl
 pyplanner solve -f json -o plan.json dominio.pddl p.pddl
+pyplanner solve -t 30 dominio.pddl preferencias.pddl  # el mejor plan en 30 s
 ```
 
 - El plan sale por la salida estándar y las estadísticas por la de error; `-q` las
@@ -590,7 +689,10 @@ pyplanner solve -f json -o plan.json dominio.pddl p.pddl
   - 0: plan encontrado;
   - 2: entrada no válida;
   - 3: se ha demostrado que no hay plan;
-  - 4: no hay plan dentro de los límites.
+  - 4: no se ha encontrado plan: se ha llegado a un límite, o la búsqueda no puede
+    demostrar que no lo haya (IW, o una tarea temporal en la que se han descartado estados
+    repetidos con otra línea temporal; ver
+    [Motor temporal](#motor-temporal-iteración-3b)).
 
 ## Uso como librería
 
@@ -818,6 +920,38 @@ satellite` (p01–p20, 60 s y 2,5 GB por búsqueda, planes validados con VAL):
 - Por encima de p06 las búsquedas se ahogan: cada expansión genera unos 270 sucesores en
   p07 y h_FF no orienta con ventanas. Las perezosas agotan los 2,5 GB. Lo que queda por
   ganar es de la parte B (plan relajado temporal), que está en el trabajo opcional.
+
+### Iteración 5c: preferencias y búsqueda anytime
+
+storage con preferencias cualitativas (IPC 2006, `benchmarks/preferences/storage`,
+p01–p20), 60 s y 2,5 GB por búsqueda, 3 procesos. Todos los planes son válidos para VAL y
+su métrica coincide con la de VAL:
+
+| | `lazy-ff-pref` | `bfws-ff-pref` |
+|---|---|---|
+| Con plan | 20 de 20 | 20 de 20 |
+| Óptimo demostrado | p01–p03 | p01–p03 |
+| Métrica total | 30 233 | 31 515 |
+
+- **Grounding.** La restricción de cajas incompatibles en zonas contiguas es un `forall`
+  sobre dos cajas y dos zonas: en p20, 2,8 millones de instancias, casi todas triviales.
+  Instanciarlas todas agotó la memoria de WSL en la primera medida. Con el join y el
+  descarte de las triviales quedan 37 000, y el grounding de p20 pasa de 197 s y 2,7 GB a
+  6 s y 350 MB. El índice del join acelera también el grounding de los demás tiers
+  (slitherlink p02, de 0,37 a 0,19 s) con el mismo resultado.
+- **Primer plan e incumbente.** Con los costes reales desde el principio, desde p04
+  `lazy-ff-pref` no encontraba plan en 60 s y `bfws-ff-pref` solo hasta p07. La primera
+  búsqueda con coste unitario da siempre un plan, pero el trivial (todo incumplido), y WA*
+  no lo mejora en 60 s. El incumbente sí: en p03–p06, p08 y p10, la métrica total pasa
+  de 1987 a 1309 (`lazy-ff-pref`) y a 985 (`bfws-ff-pref`); p04, de 81 a 5.
+- **Lo que queda.** En las instancias grandes la métrica sigue alta: cada estado tiene
+  miles de hechos (las marcas de las restricciones-preferencia) y las búsquedas expanden
+  poco (`bfws-ff-pref`, unas 600 expansiones en p20). En p10, la mitad del tiempo de
+  `bfws-ff-pref` es la novedad (un OR de enteros de miles de bits por átomo) y un tercio
+  h_FF compilada.
+- **Las mismas búsquedas en los tiers 1 a 5** (sin preferencias) cuestan lo mismo que
+  antes de la 5c (+1 %, dentro del ruido): la cota, la penalización y el incumbente se
+  comprueban con un solo booleano por sucesor cuando no se usan.
 
 ### Iteración 3b: búsqueda por novedad y portfolios
 

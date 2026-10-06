@@ -5,7 +5,7 @@ import math
 import pytest
 
 from pyplanner.grounding import GroundTask, State
-from pyplanner.heuristics import create_heuristic
+from pyplanner.heuristics import Evaluation, create_heuristic
 from pyplanner.heuristics.relaxation import (
     ONCE,
     REPEAT_EQ,
@@ -38,7 +38,9 @@ def by_name(task: GroundTask, name: str) -> int:
     return next(a.index for a in task.actions if str(a) == name)
 
 
-def evaluate(task: GroundTask, name: str, device: str = "python", state: State | None = None):
+def evaluate(
+    task: GroundTask, name: str, device: str = "python", state: State | None = None
+) -> Evaluation:
     return create_heuristic(name, task, device).evaluate(state or task.init)
 
 

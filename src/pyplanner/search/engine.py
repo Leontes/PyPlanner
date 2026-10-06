@@ -41,6 +41,30 @@ mesetas, donde la guía aporta poco, expande muchos nodos de golpe y los evalúa
 **Callejones sin salida.** Los estados con valor heurístico infinito se descartan. Es
 seguro con las heurísticas disponibles, porque solo dan infinito si el objetivo es
 inalcanzable incluso en la relajación.
+
+**Sin plan: ``UNSOLVABLE`` o ``FAILED``.** ``UNSOLVABLE`` es una demostración: el estado
+inicial es un callejón, o la búsqueda ha agotado la cola sin perder nada. Si ha perdido
+algo, termina con ``FAILED`` (no ha encontrado plan, pero puede haberlo): IW poda estados,
+y en una tarea temporal dos estados iguales con distinta línea temporal son el mismo nodo
+(memoización al estilo de POPF), así que al descartar un repetido se pierde un camino que
+quizá cumplía unos plazos que el otro no cumple.
+
+**Penalizaciones.** Con preferencias, el paso que incumple una restricción-preferencia
+cuesta además su peso (ver :mod:`pyplanner.grounding.preferences`): g lo incluye.
+
+**Cota** (``bound``, para la búsqueda *anytime*: ver :mod:`pyplanner.search.anytime`): solo
+se buscan planes de coste menor. Se descartan los nodos cuyo g llega a la cota; con una
+heurística admisible (A* con ``blind`` o ``hmax``), también los de g + h.
+
+**Incumbente** (con preferencias y ``on_plan``): cada estado expandido en el que se cumple
+el objetivo duro es un plan posible, porque la fase final de las preferencias se puede
+recorrer desde él con un coste conocido (los pesos de las que no cumple). Si ese plan
+mejora la cota, se apunta, la cota baja hasta él y se informa con ``on_plan``; la búsqueda
+sigue. Si termina sin otro plan, devuelve el incumbente. Así una búsqueda voraz que avanza
+cumpliendo preferencias va dejando planes cada vez mejores, aunque nunca llegue a la fase
+final por sí misma. Si la búsqueda
+agota la cola, no hay plan mejor que la cota que ella pueda encontrar; con A* o WA*
+(inmediata, con reapertura), no hay ninguno.
 """
 
 import heapq
@@ -48,6 +72,7 @@ import itertools
 import random
 import time
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 
 from pyplanner.grounding import GroundTask, State
 from pyplanner.heuristics import Evaluation, Heuristic, create_heuristic
@@ -67,12 +92,18 @@ _NO_PREFERRED: frozenset[int] = frozenset()
 #: Entrada de una cola: (prioridad, desempate, datos del nodo).
 _Entry = tuple[tuple[float, ...], float, tuple[int, ...]]
 
+#: Margen de la cota: un plan tiene que mejorarla al menos en esto (los costes son sumas de
+#: números reales, con su error de redondeo).
+BOUND_TOLERANCE = 1e-9
+
 
 def search(
     task: GroundTask,
     config: SearchConfig,
     heuristic: Heuristic | None = None,
     stop: StopSignal | None = None,
+    bound: float | None = None,
+    on_plan: Callable[[SearchResult], None] | None = None,
 ) -> SearchResult:
     """Busca un plan para ``task`` con la configuración dada.
 
@@ -82,11 +113,15 @@ def search(
         heuristic: heurística ya creada; si es ``None`` se crea a partir de ``config``.
         stop: señal de parada opcional; si se activa, la búsqueda termina con
             :attr:`SearchStatus.CANCELLED`.
+        bound: si se da, solo se buscan planes de coste menor (ver la documentación del
+            módulo); si no los hay, la búsqueda termina con ``UNSOLVABLE``.
+        on_plan: con preferencias, activa el **incumbente** (ver la documentación del
+            módulo): se llama con cada plan mejor que encuentra.
     """
     if heuristic is None:
         heuristic = create_heuristic(config.heuristic, task, config.device)
     engine_class = LazySearch if config.lazy else EagerSearch
-    return engine_class(task, config, heuristic, stop).run()
+    return engine_class(task, config, heuristic, stop, bound, on_plan).run()
 
 
 class _TypeBuckets:
@@ -199,6 +234,8 @@ class _BestFirstSearch:
         config: SearchConfig,
         heuristic: Heuristic,
         stop: StopSignal | None,
+        bound: float | None = None,
+        on_plan: Callable[[SearchResult], None] | None = None,
     ) -> None:
         self.task = task
         self.config = config
@@ -240,6 +277,24 @@ class _BestFirstSearch:
         self._dead_end_check: Callable[[Sequence[State]], list[bool]] | None = None
         #: Nodos descartados al expandir por la comprobación aplazada.
         self._discarded: set[int] = set()
+        # Cota: los nodos con g desde ``limit`` se descartan.
+        self.limit = float("inf") if bound is None else bound - BOUND_TOLERANCE
+        self._admissible_bound = bound is not None and config.is_optimal
+        # Penalización de las transiciones (restricciones-preferencia incumplidas).
+        preferences = task.preferences
+        self.penalty = (
+            preferences.penalty if preferences is not None and preferences.violations else None
+        )
+        # Incumbente: el mejor plan que termina en un estado expandido.
+        self.on_plan = on_plan
+        self.completes = (
+            on_plan is not None and preferences is not None and bool(preferences.end_actions)
+        )
+        self.incumbent: tuple[float, tuple[int, ...]] | None = None
+        self._lower_bound: float | None = None
+        #: En una tarea temporal, si se ha descartado algún estado repetido (memoización al
+        #: estilo de POPF): entonces agotar la cola no demuestra que no haya plan.
+        self.lost_paths = False
 
     # --- Nodos ----------------------------------------------------------------------
 
@@ -307,9 +362,46 @@ class _BestFirstSearch:
         return True
 
     def exhausted(self) -> SearchResult:
-        """La cola se ha agotado: no hay plan, salvo que se haya podado algo (IW)."""
-        status = SearchStatus.FAILED if self.stats.pruned else SearchStatus.UNSOLVABLE
+        """La cola se ha agotado. Si no se ha perdido nada por el camino, no hay plan
+        (``UNSOLVABLE``). Si no, la búsqueda solo sabe que no lo ha encontrado
+        (``FAILED``): IW ha podado estados, o una tarea temporal ha descartado estados
+        repetidos, que con otra línea temporal podrían haber llegado al objetivo.
+
+        Con una cota, una búsqueda inmediata con reapertura (A* o WA*) demuestra que no hay
+        plan mejor que ella (``lower_bound``)."""
+        status = SearchStatus.UNSOLVABLE
+        if self.stats.pruned:
+            status = SearchStatus.FAILED
+        elif self.lost_paths:
+            status = SearchStatus.FAILED
+            self._message = (
+                "sin plan, pero no se demuestra que no lo haya: la búsqueda temporal ha "
+                "descartado estados repetidos, que con otra línea temporal podrían llegar "
+                "al objetivo"
+            )
+        exact = not self.config.lazy and self.config.algorithm in ("astar", "wastar")
+        if status is SearchStatus.UNSOLVABLE and exact and self.limit < float("inf"):
+            self._lower_bound = self.limit + BOUND_TOLERANCE
         return self.finish(status)
+
+    def complete(self, node: int) -> None:
+        """Incumbente: si en el nodo se puede pasar a la fase final de las preferencias y
+        el plan que termina en él mejora la cota, lo apunta, aprieta la cota e informa."""
+        preferences = self.task.preferences
+        assert preferences is not None and self.on_plan is not None
+        g, state = self.g[node], self.states[node]
+        if g >= self.limit or not preferences.can_end(self.task, state):
+            return
+        cost = g + preferences.end_cost(state)
+        if cost >= self.limit:
+            return
+        plan = (*self.path(node), *preferences.completion(self.task, state))
+        self.incumbent = (cost, plan)
+        self.limit = cost - BOUND_TOLERANCE
+        self.stats.time = time.perf_counter() - self._start
+        self.on_plan(
+            SearchResult(SearchStatus.SOLVED, plan, cost, replace(self.stats), self.config.name)
+        )
 
     def priority(self, g: float, h: float, width: int = 0) -> tuple[float, ...]:
         algorithm = self.config.algorithm
@@ -321,14 +413,17 @@ class _BestFirstSearch:
             return (g + h, h)
         return (g + self.config.weight * h, h)
 
-    def extract_plan(self, node: int) -> SearchResult:
+    def path(self, node: int) -> list[int]:
+        """Las acciones desde la raíz hasta el nodo."""
         plan: list[int] = []
         while self.parent[node] != _NO_PARENT:
             plan.append(self.action[node])
             node = self.parent[node]
         plan.reverse()
-        cost = sum(self.task.actions[a].cost for a in plan)
-        return self.finish(SearchStatus.SOLVED, tuple(plan), cost)
+        return plan
+
+    def extract_plan(self, node: int) -> SearchResult:
+        return self.finish(SearchStatus.SOLVED, tuple(self.path(node)), self.g[node])
 
     # --- Control --------------------------------------------------------------------
 
@@ -357,7 +452,23 @@ class _BestFirstSearch:
     ) -> SearchResult:
         self.stats.time = time.perf_counter() - self._start
         self.stats.gpu_batches = getattr(self.heuristic, "gpu_batches", 0)
-        return SearchResult(status, plan, cost, self.stats, self.config.name, self._message)
+        message = self._message
+        interrupted = False
+        if status is not SearchStatus.SOLVED and self.incumbent is not None:
+            # Sin plan propio, el resultado es el incumbente.
+            cost, plan = self.incumbent
+            interrupted = status in (SearchStatus.LIMIT_REACHED, SearchStatus.CANCELLED)
+            status = SearchStatus.SOLVED
+        return SearchResult(
+            status,
+            plan,
+            cost,
+            self.stats,
+            self.config.name,
+            message,
+            self._lower_bound,
+            interrupted,
+        )
 
     def run(self) -> SearchResult:
         self._start = time.perf_counter()
@@ -378,6 +489,9 @@ class EagerSearch(_BestFirstSearch):
         self.measure_novelty(root)
         self.push(root, preferred=False)
         reopen = self.config.algorithm in ("astar", "wastar")
+        limit, penalty = self.limit, self.penalty
+        # Sin cota, penalizaciones ni incumbente, una sola comprobación por sucesor.
+        checked = penalty is not None or self.completes or limit < float("inf")
         # La comprobación de callejones que se puede aplazar (los plazos de los TIL) se hace
         # al sacar cada nodo de la cola: la mayoría de los sucesores nunca se expanden.
         self._dead_end_check = self.heuristic.defer_dead_end_check()
@@ -396,6 +510,9 @@ class EagerSearch(_BestFirstSearch):
             pending_preferred: dict[int, bool] = {}
             for node in batch:
                 self.stats.expanded += 1
+                if self.completes:
+                    self.complete(node)
+                    limit = self.limit
                 state, g = self.states[node], self.g[node]
                 useful = self.preferred[node]
                 for action in self.successors(state):
@@ -408,13 +525,22 @@ class EagerSearch(_BestFirstSearch):
                     if successor is None:
                         continue  # efecto numérico indefinido: la acción no se puede aplicar
                     new_g = g + action.cost
+                    if checked:
+                        if penalty is not None:
+                            new_g += penalty(state, successor)
+                        if new_g >= limit:
+                            continue  # no puede mejorar la cota
                     is_preferred = action.index in useful
                     known = self.index.get(successor)
                     if known is None:
                         child = self.new_node(successor, new_g, node, action.index)
                         pending.append(child)
                         pending_preferred[child] = is_preferred
-                    elif new_g < self.g[known] and not (self._temporal and self.closed[known]):
+                        continue
+                    if self._temporal:
+                        # Uno de los dos caminos (y su línea temporal) se pierde.
+                        self.lost_paths = True
+                    if new_g < self.g[known] and not (self._temporal and self.closed[known]):
                         # Con un camino mejor se cambia el padre. En una tarea temporal, solo
                         # si el nodo no se ha expandido, y cambiando también el estado: su línea
                         # temporal (y la de sus hijos) tiene que ser la del camino del plan.
@@ -439,6 +565,8 @@ class EagerSearch(_BestFirstSearch):
                 if evaluation.is_dead_end:
                     self.stats.dead_ends += 1
                     self.closed[child] = True
+                elif self._admissible_bound and self.g[child] + evaluation.value >= self.limit:
+                    self.closed[child] = True  # con h admisible, no puede mejorar la cota
                 elif not self.measure_novelty(child):
                     self.closed[child] = True
                 else:
@@ -467,6 +595,9 @@ class EagerSearch(_BestFirstSearch):
                 if self._discarded and node in self._discarded:
                     self.open.retry()  # otra entrada de un nodo descartado: no cuenta
                 continue  # entrada obsoleta: el nodo ya se expandió
+            if self.g[node] >= self.limit:
+                self.closed[node] = True  # la cota ha bajado (incumbente): no la mejora
+                continue
             if self.task.is_goal(self.states[node]):
                 if not batch:
                     return node
@@ -508,7 +639,7 @@ class LazySearch(_BestFirstSearch):
             if reason is not None:
                 return self.finish(reason)
             if not self.open:
-                return self.finish(SearchStatus.UNSOLVABLE)
+                return self.exhausted()
 
             # Saca hasta batch_size entradas cuyos sucesores sean estados nuevos.
             children: list[int] = []
@@ -524,11 +655,18 @@ class LazySearch(_BestFirstSearch):
                     if self._direct_apply
                     else self.task.apply(parent_state, action)
                 )
-                if successor is None or successor in self.index:
+                if successor is None:
                     continue
-                children.append(
-                    self.new_node(successor, self.g[parent] + action.cost, parent, action_index)
-                )
+                if successor in self.index:
+                    if self._temporal:
+                        self.lost_paths = True  # el camino nuevo (y su línea temporal) se pierde
+                    continue
+                g = self.g[parent] + action.cost
+                if self.penalty is not None:
+                    g += self.penalty(parent_state, successor)
+                if g >= self.limit:
+                    continue  # no puede mejorar la cota
+                children.append(self.new_node(successor, g, parent, action_index))
 
             for child, evaluation in zip(children, self.evaluate(children), strict=True):
                 if evaluation.is_dead_end:
@@ -542,11 +680,16 @@ class LazySearch(_BestFirstSearch):
         """Mete en la cola las entradas (nodo, acción) de todas sus acciones aplicables."""
         self.stats.expanded += 1
         self.closed[node] = True
+        if self.completes:
+            self.complete(node)
         h = self.h[node]
         assert h is not None
         useful = self.preferred[node]
+        limit = self.limit
         for action in self.successors(self.states[node]):
             self.stats.generated += 1
-            key = self.priority(self.g[node] + action.cost, h)
             g = self.g[node] + action.cost
+            if g >= limit:
+                continue  # no puede mejorar la cota
+            key = self.priority(g, h)
             self.open.push(key, (node, action.index), action.index in useful, (h, g))

@@ -121,8 +121,12 @@ def test_required_concurrency(tmp_path: Path) -> None:
 
 
 def test_maximum_duration_that_cannot_contain_the_other_action() -> None:
+    """No hay plan, pero la búsqueda temporal no lo puede demostrar: ha descartado estados
+    repetidos, que con otra línea temporal quizá sí llegaban (memoización de POPF)."""
     task = light("(= ?duration 3)")
-    assert search(task, PRESETS["gbfs-ff"]).status is SearchStatus.UNSOLVABLE
+    result = search(task, PRESETS["gbfs-ff"])
+    assert result.status is SearchStatus.FAILED
+    assert "no se demuestra que no lo haya" in result.message
 
 
 @requires_val
@@ -139,7 +143,7 @@ def test_duration_inequalities(tmp_path: Path) -> None:
     output = val(domain, LIGHT_PROBLEM, plan, tmp_path)
     assert "Plan valid" in output, output
     too_short = light("(and (>= ?duration 1) (<= ?duration 3))", ":duration-inequalities")
-    assert search(too_short, PRESETS["gbfs-ff"]).status is SearchStatus.UNSOLVABLE
+    assert search(too_short, PRESETS["gbfs-ff"]).status is SearchStatus.FAILED  # sin plan
 
 
 PARALLEL_DOMAIN = """
@@ -200,8 +204,9 @@ def test_steps_that_break_an_invariant_are_not_applicable() -> None:
     assert isinstance(task, TemporalTask)
     state = task.init
     for name in ("(light-match@start)", "(fix-fuse@start)"):
-        state = task.apply(state, task.actions[by_name(task, name)])
-        assert state is not None
+        successor = task.apply(state, task.actions[by_name(task, name)])
+        assert successor is not None
+        state = successor
     blow = task.actions[by_name(task, "(blow)")]
     assert task.snaps[blow.index].kind == INSTANT
     assert blow.applicable(state)
@@ -261,8 +266,9 @@ def test_start_conditions_of_end_effects_are_remembered() -> None:
     task = build(TRUCK_DOMAIN, TRUCK_PROBLEM.format(metric=""))
     state = task.init
     for name in ("(drive@start home shop)", "(drive@end home shop)"):
-        state = task.apply(state, task.actions[by_name(task, name)])
-        assert state is not None
+        successor = task.apply(state, task.actions[by_name(task, name)])
+        assert successor is not None
+        state = successor
     atoms = {str(a) for a in task.atoms(state)}
     assert "(washed)" in atoms and "(clean)" not in atoms
     assert state.values == (36.0,)  # 50 - 2·7
@@ -406,7 +412,8 @@ def test_free_duration_chosen_by_the_linear_program(tmp_path: Path) -> None:
     """El objetivo obliga a alargar la acción: la duración la elige el programa lineal."""
     problem = WORK_PROBLEM.format(goal=6)
     plan = solve(build(WORK_DOMAIN, problem))
-    assert [(s.name, s.duration) for s in plan.steps] == [("work", pytest.approx(6))]
+    [step] = plan.steps
+    assert step.name == "work" and step.duration == pytest.approx(6)
     output = val(WORK_DOMAIN, problem, plan, tmp_path)
     assert "Plan valid" in output, output
 
@@ -474,6 +481,7 @@ def test_certification_domain(init: str, goal: str, tmp_path: Path) -> None:
 
 def apply_all(task: TemporalTask, names: list[str]) -> TemporalState:
     state = task.init
+    assert isinstance(state, TemporalState)
     for name in names:
         successor = task.apply(state, task.actions[by_name(task, name)])
         assert successor is not None, name
@@ -565,6 +573,7 @@ def test_temporal_tasks_and_states_can_be_pickled() -> None:
     copy = pickle.loads(pickle.dumps(task))
     assert copy == task
     state = task.apply(task.init, task.actions[by_name(task, "(light-match@start)")])
+    assert state is not None
     restored = pickle.loads(pickle.dumps(state))
     assert restored == state and restored.timeline.earliest == state.timeline.earliest
 

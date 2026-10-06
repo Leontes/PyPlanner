@@ -76,7 +76,9 @@ def test_ff_preferred_operators() -> None:
 def test_batch_and_single_evaluation_agree() -> None:
     task = chain()
     heuristic = create_heuristic("ff", task)
-    states = [task.init, task.apply(task.init, task.actions[0]), goal_state(task)]
+    successor = task.apply(task.init, task.actions[0])
+    assert successor is not None
+    states = [task.init, successor, goal_state(task)]
     assert heuristic.evaluate_batch(states) == [heuristic.evaluate(s) for s in states]
 
 
@@ -143,7 +145,7 @@ def all_states(task: GroundTask) -> list[State]:
         state = frontier.pop()
         for action in task.applicable(state):
             successor = task.apply(state, action)
-            if successor not in seen:
+            if successor is not None and successor not in seen:
                 seen.add(successor)
                 frontier.append(successor)
     return sorted(seen)

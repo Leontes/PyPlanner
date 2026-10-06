@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pyplanner.grounding import GroundTask
+from pyplanner.grounding.preferences import final_state
 from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.schema import SCHEMA_VERSION
 
@@ -54,6 +55,9 @@ class Plan:
     unit_cost: bool = True
     #: Duración total de un plan temporal (``None`` en uno secuencial).
     makespan: float | None = None
+    #: Instancias de preferencias del objetivo y de las restricciones que incumple
+    #: (``nombre arg1 arg2``).
+    violated: tuple[str, ...] = ()
 
     @property
     def is_temporal(self) -> bool:
@@ -85,16 +89,29 @@ class Plan:
                 metric=makespan if task.metric_is_makespan else None,
                 makespan=makespan,
             )
-        actions = [task.actions[i] for i in indices]
-        cost = sum(a.cost for a in actions)
+        preferences = task.preferences
+        if preferences is None:
+            actions = [task.actions[i] for i in indices]
+            cost = sum(a.cost for a in actions)
+            metric = cost
+            violated: list[str] = []
+        else:
+            # Sin la fase final de las preferencias; el coste es la contribución de las
+            # acciones a la métrica, y la métrica suma además las preferencias incumplidas.
+            actions = [task.actions[i] for i in preferences.plan_actions(indices)]
+            cost = _clean(sum(a.cost - preferences.step_cost for a in actions))
+            final = final_state(task, indices)
+            metric = _clean(preferences.metric(task, indices, final))
+            violated = preferences.violated(task, indices, final)
         offset = task.metric_offset
         return cls(
             domain=task.domain_name,
             problem=task.problem_name,
             steps=tuple(PlanStep(a.name, a.args) for a in actions),
             cost=cost,
-            metric=offset + cost if task.metric_is_cost and offset is not None else None,
+            metric=offset + metric if task.metric_is_cost and offset is not None else None,
             unit_cost=not task.metric_is_cost,
+            violated=tuple(violated),
         )
 
     def __len__(self) -> int:
@@ -111,6 +128,8 @@ class Plan:
             lines.append(f"; cost = {_number(self.cost)}{unit}")
         if self.metric is not None:
             lines.append(f"; metric = {_number(self.metric)}")
+        if self.violated:
+            lines.append(f"; violated preferences: {', '.join(self.violated)}")
         return "\n".join(lines) + "\n"
 
     def to_dict(self) -> dict[str, Any]:
@@ -126,6 +145,8 @@ class Plan:
             document["metric"] = _number(self.metric)
         if self.makespan is not None:
             document["makespan"] = _number(self.makespan)
+        if self.violated:
+            document["violated"] = list(self.violated)
         steps = []
         for step in self.steps:
             node: dict[str, Any] = {"name": step.name, "args": list(step.args)}

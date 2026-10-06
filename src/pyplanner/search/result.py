@@ -54,6 +54,10 @@ class SearchResult:
         cost: coste del plan, si hay plan.
         config_name: configuración que lo produjo.
         message: detalle adicional (por ejemplo, el error en el portfolio).
+        lower_bound: en una búsqueda *anytime*, coste por debajo del cual se ha demostrado
+            que no hay plan (``None``: no se ha demostrado nada).
+        interrupted: la búsqueda se detuvo antes de terminar (límite o parada externa) y
+            el plan es el mejor que llevaba (su incumbente).
     """
 
     status: SearchStatus
@@ -62,8 +66,19 @@ class SearchResult:
     statistics: SearchStatistics = field(default_factory=SearchStatistics)
     config_name: str = ""
     message: str = ""
+    lower_bound: float | None = None
+    interrupted: bool = False
 
     @property
     def solved(self) -> bool:
         """``True`` si se ha encontrado un plan."""
         return self.status is SearchStatus.SOLVED
+
+    @property
+    def optimal(self) -> bool:
+        """``True`` si se ha demostrado que el plan es óptimo."""
+        return (
+            self.cost is not None
+            and self.lower_bound is not None
+            and self.cost <= self.lower_bound + 1e-6
+        )

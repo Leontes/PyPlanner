@@ -39,6 +39,7 @@ from pyplanner.loader.ast import Atom, FluentTerm
 if TYPE_CHECKING:
     from pyplanner.grounding.axioms import AxiomEvaluator
     from pyplanner.grounding.monitors import Monitor, MonitorEvaluator, MonitorRule, StepClock
+    from pyplanner.grounding.preferences import PreferenceModel
 
 
 class State(NamedTuple):
@@ -49,11 +50,31 @@ class State(NamedTuple):
 
 
 def bits(mask: int) -> Iterator[int]:
-    """Devuelve los índices de los bits a 1 de ``mask``, de menor a mayor."""
-    while mask:
-        low = mask & -mask
-        yield low.bit_length() - 1
-        mask ^= low
+    """Devuelve los índices de los bits a 1 de ``mask``, de menor a mayor.
+
+    Con máscaras pequeñas se aísla el bit más bajo cada vez. Con grandes (tareas de miles
+    de hechos), cada una de esas operaciones recorre el entero entero; se buscan los unos
+    en su representación binaria, de una pasada (``str.find`` está en C), y en tareas como
+    storage es de 3 a 6 veces más rápido.
+    """
+    if mask.bit_length() <= _SMALL_MASK:
+        while mask:
+            low = mask & -mask
+            yield low.bit_length() - 1
+            mask ^= low
+        return
+    text = bin(mask)
+    top = len(text) - 1
+    positions = []
+    i = text.find("1", 2)
+    while i >= 0:
+        positions.append(top - i)
+        i = text.find("1", i + 1)
+    yield from reversed(positions)
+
+
+#: Tamaño (en bits) hasta el que :func:`bits` aísla los bits uno a uno.
+_SMALL_MASK = 1024
 
 
 def mask_of(indices: Iterable[int]) -> int:
@@ -293,6 +314,9 @@ class GroundTask:
         monitor_rules: sus reglas relajadas, para la heurística.
         monitor_clock: contador de pasos, si una tarea clásica tiene restricciones con
             tiempo.
+        preferences: las preferencias (PDDL 3) compiladas a costes, si las hay (ver
+            :mod:`pyplanner.grounding.preferences`). Las acciones desde
+            ``preferences.first_auxiliary`` son las de su fase final.
     """
 
     domain_name: str
@@ -309,6 +333,7 @@ class GroundTask:
     monitors: tuple["Monitor", ...] = ()
     monitor_rules: tuple["MonitorRule", ...] = ()
     monitor_clock: "StepClock | None" = None
+    preferences: "PreferenceModel | None" = None
 
     @cached_property
     def monitor_evaluator(self) -> "MonitorEvaluator":
@@ -399,10 +424,14 @@ class GroundTask:
 
         Si hay predicados derivados, recalcula sus hechos en el sucesor, y si hay
         restricciones de trayectoria, actualiza sus monitores (``None`` si el paso incumple
-        alguna)."""
+        alguna). Las acciones de la fase final de las preferencias no son pasos del plan:
+        no cambian los hechos de los que dependen los axiomas ni avanzan el tiempo."""
         successor = action.apply(state)
         if successor is None:
             return None
+        preferences = self.preferences
+        if preferences is not None and action.index >= preferences.first_auxiliary:
+            return successor
         if self.axioms:
             successor = self.axiom_evaluator.evaluate(successor)
         if self.monitors:

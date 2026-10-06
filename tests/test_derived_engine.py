@@ -120,7 +120,7 @@ def test_static_derived_facts() -> None:
 """
     task = build(domain, problem)
     result = search(task, PRESETS["astar-blind"])
-    assert result.status is SearchStatus.SOLVED
+    assert result.status is SearchStatus.SOLVED and result.plan is not None
     assert [str(task.actions[i]) for i in result.plan] == ["(finish a)"]
 
 
@@ -141,7 +141,7 @@ def test_numeric_conditions_in_axioms() -> None:
     task = build(NUMERIC_DOMAIN, NUMERIC_PROBLEM)
     assert [str(v) for v in task.variables] == ["(level)"]
     result = search(task, PRESETS["astar-blind"])
-    assert result.status is SearchStatus.SOLVED
+    assert result.status is SearchStatus.SOLVED and result.plan is not None
     assert [str(task.actions[i]) for i in result.plan] == ["(fill)"] * 3 + ["(finish)"]
 
 
@@ -193,12 +193,14 @@ def test_relaxation_uses_axioms() -> None:
 def test_optimal_search_with_derived_predicates() -> None:
     task = graph()
     result = search(task, PRESETS["astar-blind"])
-    assert result.status is SearchStatus.SOLVED
+    assert result.status is SearchStatus.SOLVED and result.plan is not None
     # Dos cortes: a→c y, o bien b→c, o bien a→b.
     assert len(result.plan) == 2
     state = task.init
     for index in result.plan:
-        state = task.apply(state, task.actions[index])  # type: ignore[assignment]
+        successor = task.apply(state, task.actions[index])
+        assert successor is not None
+        state = successor
     assert "c" in true_atoms(task, state, "isolated")
 
 
@@ -214,7 +216,7 @@ def test_plans_are_valid_for_val(preset: str, tmp_path: Path) -> None:
     goal = "(and (isolated c) (reach b))"
     task = graph(goal)
     result = search(task, PRESETS[preset])
-    assert result.status is SearchStatus.SOLVED
+    assert result.status is SearchStatus.SOLVED and result.plan is not None
     (tmp_path / "domain.pddl").write_text(GRAPH_DOMAIN)
     (tmp_path / "problem.pddl").write_text(graph_problem(goal))
     (tmp_path / "plan").write_text(Plan.from_indices(task, result.plan).to_ipc())

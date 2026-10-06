@@ -937,6 +937,13 @@
           "description": "Duración total de un plan temporal (v4).",
           "type": "number",
           "minimum": 0
+        },
+        "violated": {
+          "description": "Instancias de preferencias del objetivo y de las restricciones que el plan incumple, como 'nombre arg1 arg2' (v6).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

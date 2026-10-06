@@ -25,6 +25,13 @@ Arranque de los procesos:
 Resultado: el plan del ganador, o, si ninguno lo encuentra, el estado más informativo.
 Por orden de prioridad: ``UNSOLVABLE`` si alguno lo ha demostrado; si no, ``LIMIT_REACHED``;
 si no, ``FAILED`` (una búsqueda incompleta que se rindió); si no, ``ERROR``.
+
+**Modo anytime** (``anytime=True``, para las tareas con preferencias): cada miembro hace una
+búsqueda *anytime* (:mod:`pyplanner.search.anytime`) que empieza por su configuración, e
+informa de cada plan mejor que encuentra. Todos comparten la mejor cota, así que cada uno
+solo busca planes mejores que el mejor de todos. Termina cuando se agota el tiempo, cuando
+todos han terminado o cuando uno demuestra que el mejor plan es óptimo; el resultado es el
+mejor plan.
 """
 
 import multiprocessing as mp
@@ -34,13 +41,14 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from typing import Any
 
 from pyplanner.grounding import GroundTask
 from pyplanner.heuristics import numba_available
 from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
+from pyplanner.search.anytime import SharedBound, search_anytime
 
 #: Segundos que se espera a que un proceso cancelado termine antes de forzarlo.
 JOIN_TIMEOUT = 2.0
@@ -71,14 +79,17 @@ def run_portfolio(
     configs: Sequence[SearchConfig],
     time_limit: float | None = None,
     start_method: str | None = None,
+    anytime: bool = False,
 ) -> PortfolioResult:
-    """Ejecuta las configuraciones en paralelo y devuelve la primera solución.
+    """Ejecuta las configuraciones en paralelo y devuelve la primera solución (o, con
+    ``anytime``, la mejor que encuentren en el tiempo dado).
 
     Args:
         task: tarea instanciada.
         configs: configuraciones del portfolio (nombres distintos).
         time_limit: límite de tiempo global en segundos.
         start_method: ``"fork"`` o ``"spawn"``; por defecto se elige según los dispositivos.
+        anytime: modo anytime (ver la documentación del módulo).
     """
     names = [c.name for c in configs]
     if not configs:
@@ -99,10 +110,11 @@ def run_portfolio(
     )
     stop = shared.Event()
     results_queue = shared.Queue()
+    bound = shared.Value("d", float("inf")) if anytime else None
     processes = {
         c.name: contexts[c.name].Process(
-            target=_worker,
-            args=(task, c, stop, results_queue),
+            target=_anytime_worker if anytime else _worker,
+            args=(task, c, stop, results_queue, *((bound,) if anytime else ())),
             name=f"pyplanner-{c.name}",
             daemon=True,
         )
@@ -118,6 +130,8 @@ def run_portfolio(
             process.start()
     starter = threading.Thread(target=lambda: [p.start() for p in slow], daemon=True)
     starter.start()
+    if anytime:
+        return _collect_anytime(processes, starter, stop, results_queue, start, time_limit)
 
     results: dict[str, SearchResult] = {}
     winner: SearchResult | None = None
@@ -160,6 +174,86 @@ def run_portfolio(
             )
             results[name] = SearchResult(status, config_name=name, message=message)
     return PortfolioResult(winner or _most_informative(results), results, elapsed)
+
+
+def _collect_anytime(
+    processes: dict[str, Any],
+    starter: threading.Thread,
+    stop: Any,
+    results_queue: Any,
+    start: float,
+    time_limit: float | None,
+) -> PortfolioResult:
+    """Recoge los planes de los miembros en modo anytime y se queda con el mejor."""
+    results: dict[str, SearchResult] = {}  # resultado final de cada miembro
+    best: SearchResult | None = None
+    lower: float | None = None  # cota inferior demostrada del coste de los planes
+    deadline = None if time_limit is None else start + time_limit + JOIN_TIMEOUT
+
+    def receive(timeout: float) -> bool:
+        """Procesa un mensaje; ``False`` si no había ninguno."""
+        nonlocal best, lower
+        try:
+            kind, member, result = results_queue.get(timeout=timeout)
+        except queue.Empty:
+            return False
+        if kind == "done":
+            results[member] = result
+        if result.solved and (best is None or result.cost < best.cost):
+            best = replace(result, lower_bound=lower)
+        if result.lower_bound is not None and (lower is None or result.lower_bound > lower):
+            lower = result.lower_bound
+            if best is not None:
+                best = replace(best, lower_bound=lower)
+        return True
+
+    try:
+        while len(results) < len(processes):
+            if deadline is not None and time.perf_counter() > deadline:
+                break
+            if best is not None and best.optimal:
+                break
+            if not receive(POLL_INTERVAL) and not (
+                starter.is_alive() or any(p.is_alive() for p in processes.values())
+            ):
+                break
+    finally:
+        stop.set()
+        starter.join()
+        _shutdown(processes.values(), JOIN_TIMEOUT)
+    while receive(POLL_INTERVAL):  # mensajes enviados justo antes de terminar
+        pass
+
+    elapsed = time.perf_counter() - start
+    for name, process in processes.items():
+        if name not in results:
+            crashed = process.exitcode not in (0, -15)
+            status = SearchStatus.ERROR if crashed else SearchStatus.CANCELLED
+            message = (
+                f"el proceso terminó sin informar (código {process.exitcode})" if crashed else ""
+            )
+            results[name] = SearchResult(status, config_name=name, message=message)
+    return PortfolioResult(best or _most_informative(results), results, elapsed)
+
+
+def _anytime_worker(
+    task: GroundTask, config: SearchConfig, stop: Any, results_queue: Any, bound: SharedBound
+) -> None:
+    """Punto de entrada de cada proceso en modo anytime: informa de cada plan mejor y, al
+    terminar, del resultado final."""
+    try:
+        result = search_anytime(
+            task,
+            config,
+            stop=stop,
+            on_plan=lambda plan: results_queue.put(("plan", config.name, plan)),
+            shared_bound=bound,
+        )
+    except Exception as exc:  # noqa: BLE001 - se informa al padre en lugar de perderse
+        result = SearchResult(
+            SearchStatus.ERROR, config_name=config.name, message=f"{type(exc).__name__}: {exc}"
+        )
+    results_queue.put(("done", config.name, result))
 
 
 def _worker(task: GroundTask, config: SearchConfig, stop: Any, results_queue: Any) -> None:
