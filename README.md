@@ -15,7 +15,7 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 | v0.2 | 2 | PDDL 1.2, subconjunto ADL: tipos, precondiciones negativas y disyuntivas, cuantificadores, igualdad y efectos condicionales | ✅ |
 | v0.3 | 3 | PDDL 2.1: fluentes numéricos (con `:action-costs`) y acciones durativas | ✅ |
 | v0.4 | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | ✅ |
-| v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | pendiente |
+| v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | ✅ |
 | v0.6 | 6 | PDDL+: procesos y eventos | pendiente |
 
 Tras las iteraciones, quedan como trabajo opcional técnicas de búsqueda adicionales y un
@@ -41,14 +41,20 @@ claro.
 - **PDDL 2.2:** predicados derivados (axiomas evaluados por estratos en cada estado) y
   literales iniciales temporizados, con plazos y ventanas en la heurística para descartar
   los estados que ya no llegan a tiempo.
+- **PDDL 3:** restricciones de trayectoria (los diez operadores modales, también con
+  tiempo) vigiladas por monitores en el motor; preferencias compiladas a costes con los
+  pesos de la métrica, con búsqueda *anytime* que devuelve el mejor plan dentro del límite
+  de tiempo; y funciones de objetos (PDDL 3.1) compiladas a predicados.
 - **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles.
 - **Búsquedas:** GBFS, A* y WA*, con evaluación inmediata o perezosa, acciones útiles,
-  exploración por tipos, búsqueda por novedad (IW y BFWS) y evaluación por lotes.
+  exploración por tipos, búsqueda por novedad (IW y BFWS), evaluación por lotes y búsqueda
+  *anytime* (con preferencias).
 - **Rendimiento:** heurísticas y generación de sucesores compiladas con Numba, con
   resultados idénticos a la implementación de referencia en Python. También hay evaluación
   por lotes en GPU con PyTorch.
 - **Portfolio paralelo:** conjuntos de búsquedas predefinidos para 1, 2, 4, 5, 6 y 7 núcleos;
-  gana la primera que encuentra un plan.
+  gana la primera que encuentra un plan (con preferencias, el mejor plan que encuentren
+  todas en el tiempo dado, compartiendo la cota).
 - **Planes** en formato IPC (el que lee VAL) o en JSON.
 
 ## Instalación
@@ -85,6 +91,7 @@ pyplanner solve dominio.pddl problema.pddl                 # portfolio de 6 núc
 pyplanner solve -j 1 -t 60 dominio.pddl problema.pddl       # un solo núcleo, 60 s
 pyplanner solve -c astar-hmax dominio.pddl problema.pddl    # plan óptimo
 pyplanner solve -f json -o plan.json dominio.pddl problema.pddl
+pyplanner solve -t 30 dominio.pddl preferencias.pddl       # con preferencias: el mejor en 30 s
 pyplanner configs                                            # configuraciones y portfolios
 
 # Fase 1: PDDL → JSON
@@ -99,7 +106,8 @@ Códigos de salida de `solve`:
 - 0: plan encontrado;
 - 2: entrada no válida;
 - 3: se ha demostrado que no hay plan;
-- 4: no hay plan dentro de los límites.
+- 4: no se ha encontrado plan (dentro de los límites, o con una búsqueda que no puede
+  demostrar que no lo haya, como IW o una temporal que descarta estados repetidos).
 
 ## Uso como librería
 

@@ -10,7 +10,7 @@ proyecto avanza en 6 iteraciones y cada una amplía el lenguaje que se acepta:
 | 2 | PDDL 1.2 (subconjunto ADL) | v0.2 | ✅ |
 | 3 | PDDL 2.1 (3a numérico con `:action-costs`, 3b temporal) | v0.3 | ✅ |
 | 4 | PDDL 2.2 (predicados derivados y TIL) | v0.4 | ✅ |
-| 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | |
+| 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | ✅ |
 | 6 | PDDL+ (procesos y eventos) | v0.6 | |
 
 Después de las iteraciones: técnicas opcionales del repertorio y un estudio de la
@@ -52,13 +52,14 @@ src/pyplanner/
   requirements.py  requisitos soportados y reglas construcción → requisito (modo estricto)
   grounding/       instanciación con alcanzabilidad, normalización ADL y numérica
                    (normalize, numeric), tarea instanciada (task: estado, acciones,
-                   objetivos), axiomas de los predicados derivados (axioms) y motor
-                   temporal (temporal, temporal_lp)
+                   objetivos), axiomas de los predicados derivados (axioms), motor
+                   temporal (temporal, temporal_lp), restricciones de trayectoria
+                   (monitors) y preferencias compiladas a costes (preferences)
   heuristics/      blind, goalcount, h_max, h_add y h_FF con sus extensiones numéricas y
                    temporales (plazos de los TIL); interfaz por lotes; referencia en
                    Python, Numba (compiled) y PyTorch (tensor), y evaluación híbrida
   search/          GBFS, A*, WA* e IW sobre una interfaz común: configuraciones, novedad,
-                   sucesores compilados y límite de memoria
+                   sucesores compilados, límite de memoria y búsqueda anytime (anytime)
   portfolio/       ejecución paralela de configuraciones (procesos, cancelación)
   plan/            representación del plan; salida en formato IPC (la que lee VAL) o en JSON
   planner.py       fachada: grounding, búsqueda o portfolio, y comprobación del plan
@@ -426,8 +427,16 @@ dominio compilado).
     mejorando el plan hasta agotar el tiempo. Las preferencias en precondiciones y
     restricciones cuentan sus incumplimientos;
   - funciones de objetos compiladas a predicados (como en Fast Downward).
-- **Tests:** tier 5 (storage con preferencias cualitativas y trucks con restricciones con
-  tiempo). Hay que comprobar hasta dónde llega el soporte de PDDL 3 en VAL.
+- **Tests:** ✅ tier 5 (storage con preferencias cualitativas y trucks con restricciones
+  con tiempo) resuelto y validado con VAL con todos los portfolios, y la métrica de los
+  planes comparada con la de VAL en todos los tiers. VAL admite las restricciones y las
+  preferencias, con dos fallos: `hold-after` (esos planes se comprueban con la simulación
+  propia) y una sección `(:constraints (and))` vacía, que le hace dar por incumplidas las
+  preferencias del objetivo. Medidas aparte en `benchmarks/` (storage p01–p20).
+- **Correcciones del motor** que destapó la iteración: una búsqueda que agota la cola sin
+  poder demostrar que no hay plan (IW, o una tarea temporal que ha descartado estados
+  repetidos con otra línea temporal) termina con `failed`, no con `unsolvable`; y el join
+  del grounding usa un índice por posiciones ligadas (mismo resultado, más rápido).
 - **Carga estimada:** la mayor de todas. Las preferencias cambian el objetivo de la
   búsqueda: ya no basta el primer plan, importa su calidad.
 
