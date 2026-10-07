@@ -12,7 +12,7 @@ DOMINIOS_DIR = Path(__file__).resolve().parent.parent / "dominios"
 
 #: Tier máximo que el planificador tiene que resolver (con plan válido según VAL).
 #: Se sube al cerrar cada iteración.
-SUPPORTED_TIER = 5
+SUPPORTED_TIER = 6
 
 #: Tier máximo que el parser (fases 1 y 2) tiene que aceptar. Durante una iteración va por
 #: delante de :data:`SUPPORTED_TIER`; al cerrarla, los dos valen lo mismo.

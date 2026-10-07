@@ -16,10 +16,11 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 | v0.3 | 3 | PDDL 2.1: fluentes numéricos (con `:action-costs`) y acciones durativas | ✅ |
 | v0.4 | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | ✅ |
 | v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | ✅ |
-| v0.6 | 6 | PDDL+: procesos y eventos | pendiente |
+| v0.6 | 6 | PDDL+: procesos y eventos | ✅ |
 
-Tras las iteraciones, quedan como trabajo opcional técnicas de búsqueda adicionales y un
-estudio de la integración de HTN.
+Las seis iteraciones de la planificación original están completas. Queda como trabajo
+opcional: técnicas de búsqueda adicionales, preferencias en tareas temporales, un límite
+de memoria duro y un estudio de la integración de HTN.
 
 **Modo estricto:** toda construcción tiene que tener su requisito declarado en
 `:requirements`. Una entrada que usa algo todavía no soportado se rechaza con un error
@@ -45,7 +46,13 @@ claro.
   tiempo) vigiladas por monitores en el motor; preferencias compiladas a costes con los
   pesos de la métrica, con búsqueda *anytime* que devuelve el mejor plan dentro del límite
   de tiempo; y funciones de objetos (PDDL 3.1) compiladas a predicados.
-- **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles.
+- **PDDL+:** procesos y eventos con el tiempo discretizado al estilo de ENHSP (una espera
+  de δ, 1 por defecto), integración exacta con series de Taylor (Runge-Kutta si la serie
+  no termina), eventos en su instante exacto y validación del plan con un paso diez veces
+  más fino (si falla, se busca otra vez con δ/2). Las tareas temporales con efectos
+  continuos no lineales también van a este motor.
+- **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles; con procesos,
+  además, la proyección de las invariantes de las acciones en curso.
 - **Búsquedas:** GBFS, A* y WA*, con evaluación inmediata o perezosa, acciones útiles,
   exploración por tipos, búsqueda por novedad (IW y BFWS), evaluación por lotes y búsqueda
   *anytime* (con preferencias).
@@ -92,6 +99,7 @@ pyplanner solve -j 1 -t 60 dominio.pddl problema.pddl       # un solo núcleo, 6
 pyplanner solve -c astar-hmax dominio.pddl problema.pddl    # plan óptimo
 pyplanner solve -f json -o plan.json dominio.pddl problema.pddl
 pyplanner solve -t 30 dominio.pddl preferencias.pddl       # con preferencias: el mejor en 30 s
+pyplanner solve --delta 0.5 dominio.pddl problema.pddl     # PDDL+: paso de tiempo de 0,5
 pyplanner configs                                            # configuraciones y portfolios
 
 # Fase 1: PDDL → JSON
@@ -107,7 +115,8 @@ Códigos de salida de `solve`:
 - 2: entrada no válida;
 - 3: se ha demostrado que no hay plan;
 - 4: no se ha encontrado plan (dentro de los límites, o con una búsqueda que no puede
-  demostrar que no lo haya, como IW o una temporal que descarta estados repetidos).
+  demostrar que no lo haya, como IW, una temporal que descarta estados repetidos o una con
+  el tiempo discretizado).
 
 ## Uso como librería
 

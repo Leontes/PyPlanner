@@ -11,10 +11,12 @@ proyecto avanza en 6 iteraciones y cada una amplía el lenguaje que se acepta:
 | 3 | PDDL 2.1 (3a numérico con `:action-costs`, 3b temporal) | v0.3 | ✅ |
 | 4 | PDDL 2.2 (predicados derivados y TIL) | v0.4 | ✅ |
 | 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | ✅ |
-| 6 | PDDL+ (procesos y eventos) | v0.6 | |
+| 6 | PDDL+ (procesos y eventos) | v0.6 | ✅ |
 
-Después de las iteraciones: técnicas opcionales del repertorio y un estudio de la
-integración de HTN (ver "Trabajo opcional").
+**Planificación original cerrada** (2026-10-07): las 6 iteraciones están completas y los
+tiers 1 a 6 se resuelven y validan con VAL con todos los portfolios. Lo que sigue es el
+trabajo opcional: técnicas del repertorio y un estudio de la integración de HTN (ver
+"Trabajo opcional").
 
 Referencia principal del lenguaje: [planning.wiki](https://planning.wiki/ref/pddl/requirements).
 PDDL 3 se incluye para no dejar ninguna versión a medias, no por una necesidad concreta.
@@ -54,10 +56,13 @@ src/pyplanner/
                    (normalize, numeric), tarea instanciada (task: estado, acciones,
                    objetivos), axiomas de los predicados derivados (axioms), motor
                    temporal (temporal, temporal_lp), restricciones de trayectoria
-                   (monitors) y preferencias compiladas a costes (preferences)
+                   (monitors), preferencias compiladas a costes (preferences) y motor
+                   con el tiempo discretizado de PDDL+ (discrete, con la integración
+                   de los procesos en flows)
   heuristics/      blind, goalcount, h_max, h_add y h_FF con sus extensiones numéricas y
-                   temporales (plazos de los TIL); interfaz por lotes; referencia en
-                   Python, Numba (compiled) y PyTorch (tensor), y evaluación híbrida
+                   temporales (plazos de los TIL); proyección de las invariantes con
+                   procesos (projection); interfaz por lotes; referencia en Python,
+                   Numba (compiled) y PyTorch (tensor), y evaluación híbrida
   search/          GBFS, A*, WA* e IW sobre una interfaz común: configuraciones, novedad,
                    sucesores compilados, límite de memoria y búsqueda anytime (anytime)
   portfolio/       ejecución paralela de configuraciones (procesos, cancelación)
@@ -492,8 +497,10 @@ Se divide en tres partes (decidido el 2026-10-07):
   resueltas a 86 de 86, todas válidas para VAL; generator-toricelli, de 5 y 1 de 9 a 9 y
   9. Los tiers 1 a 5 hacen las mismas búsquedas con el mismo coste.
 
-**Tests:** tier 6 (car y generator, de SMTPlan) resuelto y validado con VAL, más medidas
-en `benchmarks/` con colecciones de PDDL+. Erratas de los ficheros del tier 6 (‡): en car,
+**Tests:** ✅ tier 6 (car y generator, de SMTPlan) resuelto y validado con VAL con todos
+los portfolios, más medidas en `benchmarks/` con colecciones de PDDL+ (car-nodrag,
+generator-events y las de efectos continuos: 86 de 86 búsquedas con `bfws-ff-pref` y
+`lazy-ff-pref`). Erratas de los ficheros del tier 6 (‡): en car,
 funciones sin paréntesis (`(= d 0)`); en generator, un guion pegado al tipo (`?t -tank`) y
 sin valor inicial para `(ptime ?t)`, que el proceso de repostaje usa (ni VAL ni el
 planificador admitían ningún plan que repostara).
@@ -545,8 +552,8 @@ Nada por ahora.
   - ✅ **expresiones no lineales por discretización del tiempo** (hecho en la 6b, a
     petición del usuario): las tareas temporales que el motor de la 3b no admite por sus
     efectos continuos pasan al motor discretizado de PDDL+ (paso δ, integración exacta,
-    validación con un δ más fino). generator-nonlinear: 8 de 8; generator-toricelli: 5 de 9
-    (ver `benchmarks/continuous-effects`);
+    validación con un δ más fino). generator-nonlinear: 8 de 8; generator-toricelli: 5 de 9,
+    y 9 de 9 con la heurística de la 6c (ver `benchmarks/continuous-effects`);
   - **disyunciones sobre variables continuas** (condiciones de efectos condicionales,
     invariantes disyuntivas) con **programación lineal entera** (HiGHS, ya disponible con
     `scipy.optimize.milp`). El coste en eficiencia es importante (la programación entera
