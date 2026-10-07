@@ -51,7 +51,14 @@ import torch
 from pyplanner.errors import PDDLError
 from pyplanner.grounding import GroundTask, State
 from pyplanner.heuristics.base import DEAD_END, Evaluation, Heuristic
-from pyplanner.heuristics.relaxation import ONCE, REPEAT_EQ, REPEAT_GE, REPEAT_GT, RelaxedTask
+from pyplanner.heuristics.relaxation import (
+    DEFINE,
+    ONCE,
+    REPEAT_EQ,
+    REPEAT_GE,
+    REPEAT_GT,
+    RelaxedTask,
+)
 
 DTYPE = torch.float64
 _COMPARATORS = {">=": 0, ">": 1, "=": 2}
@@ -201,6 +208,7 @@ class TensorRelaxation:
         )
         result = torch.where(kind == REPEAT_GE, ge, torch.where(kind == REPEAT_GT, gt, eq))
         result = torch.where(torch.isnan(value), inf, result)
+        result = torch.where(kind == DEFINE, torch.where(torch.isnan(value), one, inf), result)
         return torch.where(kind == ONCE, one, result)
 
     # --- Costes -----------------------------------------------------------------------
@@ -464,4 +472,4 @@ class TensorFFHeuristic(_TensorHeuristic):
 
 
 # Las constantes de tipo de arista tienen que coincidir con las de la referencia.
-assert (REPEAT_GE, REPEAT_GT, REPEAT_EQ, ONCE) == (0, 1, 2, 3)
+assert (REPEAT_GE, REPEAT_GT, REPEAT_EQ, ONCE, DEFINE) == (0, 1, 2, 3, 4)

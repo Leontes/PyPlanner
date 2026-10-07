@@ -473,9 +473,24 @@ Se divide en tres partes (decidido el 2026-10-07):
     acciones en el mismo instante). VAL simula hasta el último *happening*: no puede
     validar un plan cuyo objetivo solo se cumple esperando tras la última acción, que se
     comprueba con la simulación propia.
-- **6c, heurística y rendimiento:** los procesos (su ritmo por δ) y los eventos en la
-  relajación numérica de la 3a; medidas en `benchmarks/`, y esperas más largas cuando no
-  cambia nada (generator necesita unas 1000 esperas con δ = 1).
+- **6c, heurística y rendimiento:** ✅ (ver
+  [motor-busqueda.md](motor-busqueda.md#heurística-con-procesos-y-eventos-iteración-6c)).
+  Los procesos (su ritmo por δ) y los eventos ya estaban en la relajación desde la 6b; lo
+  que faltaba eran las invariantes, que la relajación no ve:
+  - duraciones fijas comparadas con el reloj tal cual, relojes a 0 desde el inicio y una
+    asignación constante que solo logra una condición si su valor la cumple;
+  - **proyección**: la heurística suma lo que una espera sin hacer nada no cubriría de la
+    duración obligatoria de las acciones en curso, con anticipación al empezar una con
+    invariante, y las acciones útiles son las que reducen ese faltante;
+  - la proyección ve las rupturas que no duran hasta el final de un tramo (las raíces de
+    las condiciones a lo largo del flujo exacto);
+  - rendimiento: menos redondeos y comprobaciones durante las esperas.
+  
+  Las esperas más largas cuando no cambia nada no hicieron falta: con la heurística, las
+  1000 esperas de generator se recorren sin desviarse (unas 1000 expansiones).
+  Colecciones de `benchmarks/` con `bfws-ff-pref` y `lazy-ff-pref`: de 66 de 86 búsquedas
+  resueltas a 86 de 86, todas válidas para VAL; generator-toricelli, de 5 y 1 de 9 a 9 y
+  9. Los tiers 1 a 5 hacen las mismas búsquedas con el mismo coste.
 
 **Tests:** tier 6 (car y generator, de SMTPlan) resuelto y validado con VAL, más medidas
 en `benchmarks/` con colecciones de PDDL+. Erratas de los ficheros del tier 6 (‡): en car,

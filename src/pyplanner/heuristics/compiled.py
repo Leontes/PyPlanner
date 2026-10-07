@@ -29,7 +29,14 @@ from numba import njit
 
 from pyplanner.grounding import GroundTask, State
 from pyplanner.heuristics.base import DEAD_END, Evaluation, Heuristic
-from pyplanner.heuristics.relaxation import ONCE, REPEAT_EQ, REPEAT_GE, REPEAT_GT, RelaxedTask
+from pyplanner.heuristics.relaxation import (
+    DEFINE,
+    ONCE,
+    REPEAT_EQ,
+    REPEAT_GE,
+    REPEAT_GT,
+    RelaxedTask,
+)
 
 INF = np.inf
 
@@ -263,6 +270,8 @@ def _repetitions(kind, delta, value):
     """Igual que :func:`pyplanner.heuristics.relaxation.repetitions` (NaN = indefinido)."""
     if kind == 3:  # ONCE
         return 1.0
+    if kind == 4:  # DEFINE
+        return 1.0 if np.isnan(value) else INF
     if np.isnan(value):
         return INF
     if kind == 0:  # REPEAT_GE
@@ -664,4 +673,4 @@ class CompiledFFHeuristic(_CompiledHeuristic):
 
 
 # Las constantes de tipo de arista tienen que coincidir con las de la referencia.
-assert (REPEAT_GE, REPEAT_GT, REPEAT_EQ, ONCE) == (0, 1, 2, 3)
+assert (REPEAT_GE, REPEAT_GT, REPEAT_EQ, ONCE, DEFINE) == (0, 1, 2, 3, 4)

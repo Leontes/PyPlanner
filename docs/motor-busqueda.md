@@ -1,4 +1,4 @@
-# Motor de búsqueda (iteraciones 1 a 5)
+# Motor de búsqueda (iteraciones 1 a 6)
 
 Cómo está construido el motor y cómo se usa. Las decisiones de fondo (portfolio, lotes,
 GPU, técnicas descartadas) están en el [roadmap](ROADMAP.md#motor-de-búsqueda-diseño-y-repertorio).
@@ -109,7 +109,9 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
   Las repeticiones dependen del estado. Los efectos que no son incrementos constantes y
   las condiciones no lineales son **optimistas** (una repetición basta), así que la
   heurística nunca declara un callejón sin salida falso. Los efectos que empeoran una
-  condición se ignoran, como los borrados. h_FF cuenta cada operador por su coste por el
+  condición se ignoran, como los borrados. Desde la 6c, asignar una constante a la única
+  variable de una condición la logra solo si ese valor la cumple (si no, solo sirve para
+  definir la variable cuando no tiene valor). h_FF cuenta cada operador por su coste por el
   máximo número de repeticiones que necesita.
 
 ## Motor temporal (iteración 3b)
@@ -478,7 +480,7 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
 - **Heurística:** en la relajación, la espera es una acción con un efecto condicional por
   proceso (sus ritmos × δ); *h^hbd* cuenta las repeticiones si el ritmo es constante, como
   el reloj de una acción durativa. Los eventos son reglas relajadas de coste 0 sobre
-  hechos.
+  hechos. Lo que la relajación no ve (las invariantes) lo añade la 6c.
 - **Novedad:** las variables que cambian de forma continua no cuentan. Toman un valor
   nuevo en cada espera, así que todo estado parecía nuevo y la tabla crecía sin fin (en
   generator-events p06, 85 000 átomos y 2 GB en 20 s). Limitar sus valores distintos (16,
@@ -494,6 +496,57 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
 - **Límites** (error claro): literales iniciales temporizados, restricciones de
   trayectoria y preferencias con procesos y eventos; efectos condicionales que dependen de
   condiciones `over all` y efectos continuos condicionales en las acciones durativas.
+
+## Heurística con procesos y eventos (iteración 6c)
+
+La relajación ignora lo que empeora las condiciones, así que no ve las invariantes: para
+ella, el generador puede funcionar 1000 unidades con 960 de combustible y basta con
+esperar. Las búsquedas voraces esperaban hasta que la invariante se rompía y ya era tarde
+para repostar. La 6c añade lo que falta (`pyplanner.heuristics.projection`):
+
+- **Duraciones en la relajación.** Las cotas de la duración que no dependen de nada que
+  cambie se comparan con el reloj tal cual, sin una función intermedia que la relajación
+  no sabía cumplir. Asignar una constante (el reloj a 0 al empezar) ya no cuenta como
+  lograr cualquier condición sobre esa variable (ver "Motor numérico"). Los relojes valen
+  0 desde el estado inicial. Con esto, h(inicial) en generator pasa de 0,04 a unas 1000
+  esperas.
+- **Proyección** (`DiscreteTask.shortfall`): se simula el paso del tiempo sin hacer nada
+  hasta el final obligatorio (la duración mínima) de cada acción durativa en curso con
+  invariante. Si la invariante se rompe antes, cuenta lo que faltaba, y la heurística le
+  suma esos faltantes. En la simulación, cada acción en curso termina al llegar a su
+  duración máxima (o a la mínima, si no tiene máxima) o al romperse su propia invariante:
+  se aplican los efectos de su fin aunque no se cumplan sus condiciones, para que deje de
+  actuar también un proceso que dependa de ellos (un repostaje se detiene al llenarse el
+  depósito). Sin máxima ni ruptura, una acción seguiría para siempre: repostar sin parar
+  tapaba cualquier faltante.
+- **Anticipación.** Si solo contaran las acciones en curso, empezar el generador subiría el
+  valor de golpe (de 1000 a 1040 en generator-toricelli p02), y la búsqueda perezosa se
+  quedaba explorando los estados de antes: empezar y terminar un repostaje en ε da un
+  estado nuevo cada vez (93 000 estados sin pasar del estado inicial). Por eso también se
+  simula empezar cada acción durativa con invariante y duración mínima que la base da como
+  útil, y el valor es el mayor de los faltantes.
+- **Acciones útiles.** Las de la base no arreglan un faltante (para la relajación basta con
+  esperar), y la búsqueda perezosa, que pone a los sucesores el valor del padre, bajaba
+  esperando hasta que repostar ya no servía. Ahora, al expandir un estado con un faltante,
+  las útiles son las que lo reducen. Hacen falta tantas simulaciones como acciones
+  candidatas (las que cambian valores o hechos de las condiciones de procesos y eventos),
+  así que se calculan solo en los estados que se expanden (`Heuristic.helpful`), no en
+  todos los que se evalúan.
+- **Rupturas que no duran.** La bisección de una espera solo ve los cambios que siguen al
+  final del tramo, que en una espera de δ es lo previsto (la validación con δ/10 descubre
+  el resto). La proyección avanza tramos de cientos de unidades. En generator-events, con
+  los depósitos enganchados tarde, el combustible baja de 0 y se recupera (el caudal crece
+  con el cuadrado del tiempo), y la proyección no lo veía. Ahora comprueba entre cada dos
+  instantes en que se anula alguna de las condiciones numéricas en juego. Con un flujo
+  exacto, una condición polinómica es un polinomio en el tiempo: sus coeficientes son sus
+  derivadas a lo largo del flujo (`Flow.crossings`), que se calculan una vez por condición,
+  y sus raíces, con fórmula hasta grado 2. Con Runge-Kutta, solo la bisección.
+- **Rendimiento.** Sobre 1114e1d: el flujo redondea solo las variables que cambian, y los
+  valores tras una acción o un evento, solo los que cambian (los demás son los mismos
+  objetos, ya redondeados). La comprobación de cambios durante una espera evalúa una vez
+  lo del estado de partida, y solo los procesos con condiciones numéricas (los hechos no
+  cambian mientras pasa el tiempo). La búsqueda de generator-toricelli p09 con
+  `bfws-ff-pref` pasa de 13,1 a 6,2 s con el perfilador.
 
 ## Heurísticas
 
@@ -1010,6 +1063,32 @@ su métrica coincide con la de VAL:
 - **Las mismas búsquedas en los tiers 1 a 5** (sin preferencias) cuestan lo mismo que
   antes de la 5c (+1 %, dentro del ruido): la cota, la penalización y el incumbente se
   comprueban con un solo booleano por sucesor cuando no se usan.
+
+### Iteración 6c: heurística con procesos y eventos
+
+Colecciones PDDL+ de `benchmarks/`, 60 s y 2 GB por búsqueda, 4 procesos. Instancias
+resueltas y tiempo total (las no resueltas cuentan 60 s), antes (1114e1d, la 6b) y
+después de la 6c. Todos los planes de la 6c son válidos para VAL:
+
+| Colección | `bfws-ff-pref` 6b | `bfws-ff-pref` 6c | `lazy-ff-pref` 6b | `lazy-ff-pref` 6c |
+|---|---|---|---|---|
+| car-nodrag (10) | 10, 36,0 s | 10, 26,1 s | 10, 28,7 s | 10, 19,6 s |
+| generator-events (8) | 8, 31,0 s | 8, 9,8 s | 4, 263,8 s | 8, 9,9 s |
+| generator-nonlinear (8) | 8, 75,3 s | 8, 7,5 s | 4, 271,6 s | 8, 7,5 s |
+| generator-toricelli (9) | 5, 342,0 s | 9, 26,2 s | 1, 482,2 s | 9, 15,7 s |
+| generator-linear (8, motor de la 3b) | 8, 8,5 s | 8, 7,6 s | 8, 59,1 s | 8, 57,3 s |
+
+- **generator**: con la proyección, las búsquedas recorren las 1000 esperas casi sin
+  desviarse (unas 1000 expansiones). En generator-toricelli p08, el primer plan de
+  `bfws-ff-pref` falla con δ/10 y se encuentra otro con δ = 0,5.
+- **car-nodrag** no tiene invariantes: hace las mismas búsquedas, un 27-32 % más rápidas
+  por los cambios de rendimiento de las esperas.
+- **generator-linear** va al motor de la 3b y hace las mismas búsquedas; la lentitud de
+  `lazy-ff-pref` ya estaba.
+- **Las mismas búsquedas en los tiers 1 a 5** (52 búsquedas con `lazy-ff-pref` y
+  `bfws-ff-pref`, el mejor de 3): 51 expanden lo mismo, y la otra (satellite p02 con
+  `lazy-ff-pref`) llega al límite de tiempo en las dos versiones. El coste es el mismo
+  (mediana +0,9 %; en slitherlink p02, 7,3-7,6 s en las dos con varias medidas).
 
 ### Iteración 3b: búsqueda por novedad y portfolios
 

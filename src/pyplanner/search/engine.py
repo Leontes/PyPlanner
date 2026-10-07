@@ -314,6 +314,12 @@ class _BestFirstSearch:
             self.width.append(0)
         return node
 
+    def helpful(self, node: int) -> frozenset[int]:
+        """Las acciones útiles del nodo que se expande (las afina la heurística)."""
+        if not self.config.preferred_operators:
+            return self.preferred[node]
+        return self.heuristic.helpful(self.states[node], self.preferred[node])
+
     def evaluate(self, nodes: list[int]) -> list[Evaluation]:
         """Evalúa los nodos en un solo lote y guarda h y las acciones útiles."""
         if not nodes:
@@ -513,7 +519,7 @@ class EagerSearch(_BestFirstSearch):
                     self.complete(node)
                     limit = self.limit
                 state, g = self.states[node], self.g[node]
-                useful = self.preferred[node]
+                useful = self.helpful(node)
                 for action in self.successors(state):
                     self.stats.generated += 1
                     successor = (
@@ -683,7 +689,7 @@ class LazySearch(_BestFirstSearch):
             self.complete(node)
         h = self.h[node]
         assert h is not None
-        useful = self.preferred[node]
+        useful = self.helpful(node)
         limit = self.limit
         for action in self.successors(self.states[node]):
             self.stats.generated += 1

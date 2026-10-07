@@ -23,6 +23,8 @@ dos estados iguales lo son también para la detección de repetidos.
 import math
 from collections.abc import Mapping, Sequence
 
+import numpy as np
+
 from pyplanner.grounding.numeric import Const, NumExpr, Op, Var, evaluate
 
 #: Decimales a los que se redondean los valores numéricos tras cada cambio.
@@ -32,6 +34,8 @@ DECIMALS = 9
 MAX_ORDER = 12
 #: Subpasos de Runge-Kutta por unidad de tiempo (y como mínimo uno por espera).
 RK4_STEPS_PER_UNIT = 100
+#: Grado máximo de una expresión a lo largo del flujo para buscar dónde se anula.
+MAX_CROSSING_DEGREE = 4 * MAX_ORDER
 
 #: Monomio: pares (variable, exponente) ordenados por variable; ``()`` es la constante.
 Monomial = tuple[tuple[int, int], ...]
@@ -149,17 +153,25 @@ class Flow:
 
     def __init__(self, rates: Mapping[int, NumExpr]) -> None:
         self.rates = dict(rates)
+        self._polynomials = self._rate_polynomials()
         #: Por variable, sus derivadas sucesivas D¹x, D²x… hasta la última no nula; ``None``
         #: si la serie no termina (se integra con Runge-Kutta).
         self.series: dict[int, list[Polynomial]] | None = self._taylor()
+        self._expressions: dict[int, tuple[NumExpr, list[Polynomial] | None]] = {}
 
-    def _taylor(self) -> dict[int, list[Polynomial]] | None:
+    def _rate_polynomials(self) -> dict[int, Polynomial] | None:
         polys: dict[int, Polynomial] = {}
         for var, rate in self.rates.items():
             poly = polynomial(rate)
             if poly is None:
                 return None
             polys[var] = poly
+        return polys
+
+    def _taylor(self) -> dict[int, list[Polynomial]] | None:
+        polys = self._polynomials
+        if polys is None:
+            return None
         series: dict[int, list[Polynomial]] = {}
         for var, derivative in polys.items():
             terms = [derivative] if derivative else []
@@ -173,6 +185,47 @@ class Flow:
             series[var] = terms
         return series
 
+    def crossings(
+        self, expression: NumExpr, values: Sequence[float | None], duration: float
+    ) -> list[float] | None:
+        """Los instantes de (0, ``duration``) en que ``expression`` se anula a lo largo del
+        flujo, ordenados: entre dos seguidos no cambia de signo. ``None`` si no se pueden calcular
+        (el flujo no es exacto, la expresión no es un polinomio o falta algún valor).
+
+        Con un flujo exacto, la expresión es un polinomio en el tiempo: g(t) = Σₖ tᵏ/k! ·
+        Dᵏg, con las derivadas a lo largo del flujo (como las de las variables).
+        """
+        series = self._expression_series(expression)
+        if series is None:
+            return None
+        coefficients = []
+        factorial = 1.0
+        for k, term in enumerate(series):
+            factorial *= max(k, 1)
+            value = _evaluate(term, values)
+            if value is None:
+                return None
+            coefficients.append(value / factorial)
+        return sorted(t for t in _real_roots(coefficients) if 0 < t < duration)
+
+    def _expression_series(self, expression: NumExpr) -> list[Polynomial] | None:
+        """D⁰g, D¹g… hasta la última no nula (se calcula una vez por expresión; la caché
+        guarda la expresión para que su identificador no se reutilice)."""
+        cached = self._expressions.get(id(expression))
+        if cached is not None:
+            return cached[1]
+        polys, poly = self._polynomials, polynomial(expression)
+        terms: list[Polynomial] | None = None
+        if self.series is not None and polys is not None and poly is not None:
+            terms = [poly]
+            while terms is not None:
+                following = _along(terms[-1], polys)
+                if not following:
+                    break
+                terms = terms + [following] if len(terms) <= MAX_CROSSING_DEGREE else None
+        self._expressions[id(expression)] = (expression, terms)
+        return terms
+
     @property
     def exact(self) -> bool:
         """``True`` si el flujo se integra de forma exacta (serie de Taylor finita)."""
@@ -181,8 +234,9 @@ class Flow:
     def advance(
         self, values: tuple[float | None, ...], duration: float
     ) -> tuple[float | None, ...] | None:
-        """Los valores tras ``duration`` unidades de tiempo (redondeados), o ``None`` si
-        algún ritmo es indefinido."""
+        """Los valores tras ``duration`` unidades de tiempo, o ``None`` si algún ritmo es
+        indefinido. Se redondean los que cambian (los demás ya lo están: los estados se
+        redondean al crearse)."""
         result = list(values)
         if self.series is not None:
             for var, terms in self.series.items():
@@ -196,13 +250,15 @@ class Flow:
                     if value is None:
                         return None
                     total += factor * value
-                result[var] = total
-        else:
-            integrated = self._runge_kutta(values, duration)
-            if integrated is None:
-                return None
-            result = integrated
-        return tuple(None if v is None else round(v, DECIMALS) for v in result)
+                result[var] = round(total, DECIMALS)
+            return tuple(result)
+        integrated = self._runge_kutta(values, duration)
+        if integrated is None:
+            return None
+        for var in self.rates:
+            value = integrated[var]
+            integrated[var] = None if value is None else round(value, DECIMALS)
+        return tuple(integrated)
 
     def _runge_kutta(
         self, values: tuple[float | None, ...], duration: float
@@ -239,6 +295,27 @@ class Flow:
                 assert current is not None
                 state[var] = current + h / 6 * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i])
         return state
+
+
+def _real_roots(coefficients: Sequence[float]) -> list[float]:
+    """Las raíces reales de Σₖ cₖ·tᵏ (con fórmula hasta grado 2)."""
+    degree = len(coefficients) - 1
+    while degree > 0 and coefficients[degree] == 0:
+        degree -= 1
+    if degree == 0:
+        return []
+    if degree == 1:
+        return [-coefficients[0] / coefficients[1]]
+    if degree == 2:
+        c, b, a = coefficients[:3]
+        discriminant = b * b - 4 * a * c
+        if discriminant < 0:
+            return []
+        # Forma estable: sin restar números parecidos.
+        q = -0.5 * (b + math.copysign(math.sqrt(discriminant), b))
+        return [q / a, c / q] if q else [0.0]
+    roots = np.roots(list(reversed(coefficients[: degree + 1])))
+    return [float(r.real) for r in roots if abs(r.imag) <= 1e-9 * max(1.0, abs(r.real))]
 
 
 def _shift(

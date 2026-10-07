@@ -60,6 +60,12 @@ class Heuristic(ABC):
         """Evalúa un solo estado (lote de tamaño 1)."""
         return self.evaluate_batch([state])[0]
 
+    def helpful(self, state: State, preferred: frozenset[int]) -> frozenset[int]:
+        """Las acciones útiles de un estado que se va a expandir: por defecto, las de su
+        evaluación (``preferred``). Una heurística puede afinarlas aquí, donde solo se paga
+        por los estados que se expanden (no por todos los que se evalúan)."""
+        return preferred
+
     def defer_dead_end_check(self) -> Callable[[Sequence[State]], list[bool]] | None:
         """Aplaza la parte de la heurística que solo detecta callejones sin salida, si la
         tiene, y la devuelve para que la búsqueda la aplique al expandir.

@@ -28,7 +28,11 @@ para cada objetivo pendiente elige su mejor *soportador* y repite con sus precon
   son incrementos constantes (``assign``, ``scale-*``, valores variables) y las condiciones
   no lineales se tratan de forma **optimista**: una sola repetición basta. Así la
   heurística nunca declara un callejón sin salida que no lo es. Los efectos que empeoran una
-  condición se ignoran, como los borrados.
+  condición se ignoran, como los borrados. La excepción (iteración 6c) es asignar una
+  constante a la única variable de una condición: la logra si ese valor la cumple, y si no,
+  solo sirve para definir la variable cuando no tiene valor (que otras acciones la aumenten
+  después). Sin ella, poner en marcha el reloj de una acción durativa (``assign`` a 0)
+  bastaba para la relajación para poder terminarla.
 * **Objetivo disyuntivo.** El valor es el mínimo entre las cláusulas.
 * **Restricciones de trayectoria** (iteración 5): las reglas de los monitores (``done`` de
   ``sometime``, quitar ``pending`` de ``sometime-after``) son acciones relajadas de coste 0
@@ -68,8 +72,9 @@ from pyplanner.grounding import GroundAction, GroundTask, State, bits, mask_of
 from pyplanner.grounding.numeric import Const, NumericAssignment, NumericCondition, variables_of
 from pyplanner.heuristics.base import DEAD_END, Evaluation, Heuristic
 
-#: Tipos de arista numérica: repeticiones para ``>=``, para ``>``, para ``=`` y optimista.
-REPEAT_GE, REPEAT_GT, REPEAT_EQ, ONCE = 0, 1, 2, 3
+#: Tipos de arista numérica: repeticiones para ``>=``, para ``>``, para ``=``, optimista y
+#: la de una asignación que no cumple la condición (solo sirve para definir la variable).
+REPEAT_GE, REPEAT_GT, REPEAT_EQ, ONCE, DEFINE = 0, 1, 2, 3, 4
 
 
 class RelaxedTask:
@@ -365,6 +370,8 @@ def repetitions(kind: int, delta: float, value: float | None) -> float:
     arista no sirve). Ver la documentación del módulo."""
     if kind == ONCE:
         return 1.0
+    if kind == DEFINE:
+        return 1.0 if value is None else DEAD_END
     if value is None:
         return DEAD_END
     if kind == REPEAT_GE:
@@ -391,6 +398,16 @@ def _numeric_edge(
     weights = dict(form.terms)
     if not touched & weights.keys():
         return None
+    if len(weights) == 1:
+        # Una condición sobre una sola variable y un 'assign' de una constante: la consigue
+        # si, y solo si, ese valor la cumple (no hace falta ser optimista). Si no la cumple,
+        # solo sirve para definir la variable, por si luego la aumentan otras acciones.
+        [(variable, weight)] = weights.items()
+        assigns = [e for e in effects if e.variable == variable]
+        if len(assigns) == 1 and assigns[0].op == "assign" and isinstance(assigns[0].value, Const):
+            value = weight * assigns[0].value.value + form.constant
+            holds = {">=": value >= 0, ">": value > 0, "=": value == 0}[condition.comparator]
+            return (ONCE, 0.0) if holds else (DEFINE, 0.0)
     delta = 0.0
     for effect in effects:
         weight = weights.get(effect.variable)

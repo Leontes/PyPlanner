@@ -63,16 +63,18 @@ preferencias, efectos condicionales que dependen de condiciones ``over all`` y e
 continuos condicionales.
 """
 
+import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from typing import cast
 
 from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding.flows import DECIMALS, Flow
-from pyplanner.grounding.grounder import Binding, ground_with_context
+from pyplanner.grounding.grounder import Binding, GroundingContext, ground_with_context
 from pyplanner.grounding.monitors import MonitorRule
+from pyplanner.grounding.normalize import Fact
 from pyplanner.grounding.numeric import Const, NumericAssignment, NumExpr, make, negate
 from pyplanner.grounding.task import (
     Condition,
@@ -83,6 +85,7 @@ from pyplanner.grounding.task import (
 )
 from pyplanner.grounding.temporal import (
     TemporalStep,
+    _functions_of,
     _replace_duration,
     _split_condition,
     _split_effect,
@@ -116,7 +119,9 @@ from pyplanner.loader.ast import (
     NumericEffect,
     Predicate,
     Problem,
+    TimedEffect,
     TotalTime,
+    When,
 )
 
 #: Paso de tiempo por defecto.
@@ -130,6 +135,8 @@ MAX_CASCADE = 1000
 #: Precisión con la que se busca el instante de un evento (y por debajo de la cual un
 #: intervalo de tiempo se considera vacío).
 _TIME_TOLERANCE = 1e-9
+#: Precisión de la proyección de la heurística (ver :meth:`DiscreteTask.shortfall`).
+_PROJECTION_TOLERANCE = 1e-3
 #: Nombre de la acción de espera (``_`` no puede empezar un nombre PDDL).
 WAIT = "_wait"
 
@@ -156,6 +163,11 @@ class GroundProcess:
     def active(self, state: State) -> bool:
         return any(c.holds(state) for c in self.conditions)
 
+    @cached_property
+    def numeric(self) -> bool:
+        """``True`` si su precondición tiene condiciones numéricas."""
+        return any(c.numeric for c in self.conditions)
+
 
 @dataclass(frozen=True)
 class RunningAction:
@@ -166,7 +178,12 @@ class RunningAction:
         clock: la variable de su reloj (tiempo desde que empezó).
         bounds: variables de las cotas de su duración fijadas al empezar (las esperas se
             acortan para llegar justo a ellas).
+        limits: cotas fijas de su duración (que no dependen de nada que cambie), con el
+            mismo fin.
         invariant: sus condiciones ``over all`` en DNF (``None`` si no tiene).
+        minimum_bounds, minimums: las cotas inferiores de su duración (variables fijadas
+            al empezar y valores fijos): hasta ellas tiene que seguir en curso.
+        maximum_bounds, maximums: las cotas superiores: como mucho hasta ellas sigue.
     """
 
     name: str
@@ -175,6 +192,34 @@ class RunningAction:
     clock: int
     bounds: tuple[int, ...]
     invariant: tuple[Condition, ...] | None
+    limits: tuple[float, ...] = ()
+    minimum_bounds: tuple[int, ...] = ()
+    minimums: tuple[float, ...] = ()
+    maximum_bounds: tuple[int, ...] = ()
+    maximums: tuple[float, ...] = ()
+
+    def invariant_holds(self, state: State) -> bool:
+        return self.invariant is None or any(c.holds(state) for c in self.invariant)
+
+    def mandatory(self, state: State) -> float:
+        """Lo que le queda como mínimo hasta poder terminar (0 si ya puede)."""
+        clock = state.values[self.clock]
+        if clock is None:
+            return 0.0
+        lowest = [state.values[b] for b in self.minimum_bounds]
+        lowest += self.minimums
+        return max((v - clock for v in lowest if v is not None), default=0.0)
+
+    def latest(self, state: State) -> float | None:
+        """Lo que le queda como mucho hasta tener que terminar (``None`` si no tiene
+        cota superior)."""
+        clock = state.values[self.clock]
+        if clock is None:
+            return None
+        highest = [state.values[b] for b in self.maximum_bounds]
+        highest += self.maximums
+        remaining = [v - clock for v in highest if v is not None]
+        return max(0.0, min(remaining)) if remaining else None
 
 
 @dataclass(frozen=True)
@@ -222,7 +267,7 @@ class DiscreteTask(GroundTask):
         successor = action.apply(state)
         if successor is None:
             return None
-        successor = self.settle(State(successor.facts, _round(successor.values)))
+        successor = self.settle(State(successor.facts, _round(successor.values, state)))
         if successor is None:
             return None
         return self.elapse(successor, self.epsilon)
@@ -238,8 +283,7 @@ class DiscreteTask(GroundTask):
             clock = values[running.clock]
             if clock is None:
                 continue
-            for bound in running.bounds:
-                limit = values[bound]
+            for limit in (*(values[b] for b in running.bounds), *running.limits):
                 if limit is not None and clock < limit < clock + length:
                     length = limit - clock
         return round(length, DECIMALS)
@@ -267,22 +311,47 @@ class DiscreteTask(GroundTask):
             remaining = round(remaining - step, DECIMALS)
         return None  # demasiados cambios en una sola espera
 
-    def _until_change(self, state: State, duration: float) -> tuple[State | None, float]:
-        """Avanza hasta ``duration`` o hasta el primer instante en que se cumple un evento o
-        cambian los procesos activos (lo que llegue antes). Devuelve el estado y lo que ha
-        avanzado."""
+    def _until_change(
+        self,
+        state: State,
+        duration: float,
+        watched: Sequence[RunningAction] = (),
+        tolerance: float = _TIME_TOLERANCE,
+        scan: bool = False,
+    ) -> tuple[State | None, float]:
+        """Avanza hasta ``duration`` o hasta el primer instante en que se cumple un evento,
+        cambian los procesos activos o deja de cumplirse la invariante de una de
+        ``watched`` (lo que llegue antes). Devuelve el estado y lo que ha avanzado.
+
+        El instante se busca por bisección, que solo ve los cambios que siguen al final
+        del tramo: en una espera de δ, los que no duran tanto los descubre la validación
+        con un paso menor. Con ``scan`` (tramos largos, como los de la proyección) se
+        comprueba antes entre cada dos instantes en que se anula alguna de las condiciones
+        numéricas en juego (:meth:`Flow.crossings
+        <pyplanner.grounding.flows.Flow.crossings>`; si el flujo es exacto): así se ve una
+        invariante que se rompe y se recupera.
+        """
         active = self._active(state)
         if not active:
             return state, duration
         flow = self._flow(active)
+        changes = self._changes(state, active, watched)
         end = self._advanced(state, flow, duration)
-        if end is None or not self._changes(state, end, active):
-            return end, duration
+        if end is None:
+            return None, duration
         low, high = 0.0, duration
-        while high - low > _TIME_TOLERANCE:
+        for time in self._scan(state, flow, duration, active, watched) if scan else ():
+            point = self._advanced(state, flow, time)
+            if point is None or changes(point):
+                high = time
+                break
+            low = time
+        if high == duration and not changes(end):
+            return end, duration
+        while high - low > tolerance:
             middle = (low + high) / 2
             point = self._advanced(state, flow, middle)
-            if point is None or self._changes(state, point, active):
+            if point is None or changes(point):
                 high = middle
             else:
                 low = middle
@@ -298,16 +367,73 @@ class DiscreteTask(GroundTask):
         values = flow.advance(state.values, duration)
         return None if values is None else State(state.facts, values)
 
-    def _changes(self, before: State, after: State, active: frozenset[int]) -> bool:
-        """``True`` si en ``after`` se cumple un evento que no se cumplía en ``before`` o
-        cambian los procesos activos."""
-        if self._active(after) != active:
-            return True
-        return any(e.applicable(after) and not e.applicable(before) for e in self.events)
+    def _changes(
+        self, before: State, active: frozenset[int], watched: Sequence[RunningAction] = ()
+    ) -> Callable[[State], bool]:
+        """Comprueba si en un estado posterior a ``before`` se cumple un evento que no se
+        cumplía, cambian los procesos activos (``active``) o deja de cumplirse la invariante
+        de una de ``watched``. Lo de ``before`` se evalúa una sola vez."""
+        # Mientras avanza el tiempo los hechos no cambian: solo pueden cambiar los procesos
+        # con condiciones numéricas.
+        switching = [(p, i in active) for i, p in enumerate(self.processes) if p.numeric]
+        guarded = [r for r in watched if r.invariant_holds(before)]
+        events = [e for e in self._waiting(before) if not e.applicable(before)]
+
+        def changes(after: State) -> bool:
+            if any(p.active(after) != was for p, was in switching):
+                return True
+            if any(not r.invariant_holds(after) for r in guarded):
+                return True
+            return any(e.applicable(after) for e in events)
+
+        return changes
+
+    def _waiting(self, state: State) -> list[GroundAction]:
+        """Los eventos cuyos hechos se cumplen: los únicos que pueden dispararse mientras
+        avanza el tiempo."""
+        facts = state.facts
+        return [e for e in self.events if facts & e.pre == e.pre and not facts & e.neg]
+
+    def _scan(
+        self,
+        state: State,
+        flow: Flow,
+        duration: float,
+        active: frozenset[int],
+        watched: Sequence[RunningAction],
+    ) -> list[float]:
+        """Instantes de (0, ``duration``) en los que comprobar si algo cambia: uno entre
+        cada dos en que se anula alguna condición numérica que puede cambiar algo (las de
+        cláusulas cuyos hechos se cumplen). Vacía si alguno no se puede calcular."""
+        facts = state.facts
+        clauses = [c for p in self.processes if p.numeric for c in p.conditions]
+        clauses += [c for r in watched for c in r.invariant or ()]
+        numeric = [n for c in clauses if facts & c.pos == c.pos and not facts & c.neg
+                   for n in c.numeric]  # fmt: skip
+        numeric += [n for e in self._waiting(state) for n in e.numeric_pre]
+        times: set[float] = set()
+        for condition in numeric:
+            crossings = flow.crossings(condition.expression, state.values, duration)
+            if crossings is None:
+                return []
+            times.update(crossings)
+        bounds = [0.0, *sorted(times), duration]
+        return [(a + b) / 2 for a, b in itertools.pairwise(bounds)]
 
     def settle(self, state: State | None) -> State | None:
         """Dispara los eventos en cascada, recalcula los predicados derivados y comprueba
         las invariantes. ``None`` si alguna no se cumple o si los eventos no se detienen."""
+        state = self._cascade(state)
+        if state is None:
+            return None
+        for running in self.durative:
+            if state.facts >> running.running & 1 and not running.invariant_holds(state):
+                return None
+        return state
+
+    def _cascade(self, state: State | None) -> State | None:
+        """Los eventos en cascada y los predicados derivados (``None`` si los eventos no
+        se detienen)."""
         if state is None:
             return None
         if self.axioms:
@@ -320,7 +446,7 @@ class DiscreteTask(GroundTask):
                 successor = event.apply(state)
                 if successor is None:
                     return None
-                successor = State(successor.facts, _round(successor.values))
+                successor = State(successor.facts, _round(successor.values, state))
                 if self.axioms:
                     successor = self.axiom_evaluator.evaluate(successor)
                 if successor != state:
@@ -329,14 +455,87 @@ class DiscreteTask(GroundTask):
                 break
         else:
             return None  # los eventos se disparan sin fin
-        for running in self.durative:
-            if (
-                running.invariant is not None
-                and state.facts >> running.running & 1
-                and not any(c.holds(state) for c in running.invariant)
-            ):
-                return None
         return state
+
+    # --- Proyección (heurística) -------------------------------------------------------
+
+    def shortfall(self, state: State) -> float:
+        """Cuánto tiempo de las acciones durativas en curso no cubriría una espera sin
+        hacer nada: se simula el paso del tiempo y, si la invariante de una se rompe antes
+        de su final obligatorio (su duración mínima), cuenta lo que le faltaba. En la
+        simulación, cada acción en curso termina al llegar a su duración máxima (o a la
+        mínima, si no tiene máxima) o al romperse su invariante: su proceso deja de actuar
+        (un repostaje se detiene al llenarse el depósito).
+
+        Una condición ``over all`` hay que **mantenerla**, y la relajación de la heurística
+        no lo ve (ignora lo que empeora las condiciones, como el consumo de combustible).
+        Sumada a la heurística, guía hacia las acciones que retrasan la ruptura (repostar
+        antes de que sea tarde) y aleja de las que la adelantan.
+        """
+        watch: dict[int, float] = {}  # acción con invariante → final obligatorio
+        ends: dict[int, float] = {}  # acción → cuándo termina en la simulación
+        for i, running in enumerate(self.durative):
+            if not state.facts >> running.running & 1:
+                continue
+            mandatory = running.mandatory(state)
+            latest = running.latest(state)
+            end = latest if latest is not None else mandatory
+            if end > _PROJECTION_TOLERANCE:
+                ends[i] = end
+            if running.invariant is not None:
+                watch[i] = mandatory
+        total, elapsed = 0.0, 0.0
+        current: State | None = state
+        for _ in range(MAX_CASCADE):
+            pending = [h for h in watch.values() if h > elapsed + _PROJECTION_TOLERANCE]
+            if not pending or current is None:
+                break
+            stop = min(t for t in (*ends.values(), *pending) if t > elapsed) - elapsed
+            watched = [self.durative[i] for i in watch]
+            reached, step = self._until_change(
+                current, stop, watched, _PROJECTION_TOLERANCE, scan=True
+            )
+            if reached is None:
+                break
+            elapsed += step
+            current = self._cascade(reached)
+            for i, end in list(ends.items()):
+                if current is not None and elapsed >= end - _PROJECTION_TOLERANCE:
+                    current = self._finish(current, i)
+                    del ends[i]
+                    watch.pop(i, None)
+            for i, horizon in list(watch.items()):
+                if current is None or self.durative[i].invariant_holds(current):
+                    continue
+                if horizon - elapsed > _PROJECTION_TOLERANCE:
+                    total += horizon - elapsed
+                current = self._finish(current, i)
+                ends.pop(i, None)
+                del watch[i]
+        return round(total, DECIMALS)
+
+    @cached_property
+    def _end_actions(self) -> dict[int, tuple[GroundAction, ...]]:
+        """Las acciones de fin de cada acción durativa."""
+        ends: dict[int, list[GroundAction]] = {}
+        for action, kind, durative in zip(self.actions, self.kinds, self.durative_of, strict=True):
+            if kind == END_SNAP:
+                ends.setdefault(durative, []).append(action)
+        return {i: tuple(group) for i, group in ends.items()}
+
+    def _finish(self, state: State, durative: int) -> State | None:
+        """Termina una acción durativa en la proyección: con los efectos de su acción de fin
+        aunque no se cumplan sus condiciones (al romperse la invariante, por ejemplo), para
+        que deje de actuar también lo que dependa de ellos (un proceso que necesita
+        ``refueling``). Si no se pueden aplicar, simplemente deja de estar en curso."""
+        ends = self._end_actions.get(durative, ())
+        action = next((a for a in ends if a.applicable(state)), ends[0] if ends else None)
+        if action is not None:
+            successor = action.apply(state)
+            if successor is not None:
+                return self._cascade(State(successor.facts, _round(successor.values, state)))
+        running = self.durative[durative].running
+        return self._cascade(State(state.facts & ~(1 << running), state.values))
 
     @cached_property
     def _flows(self) -> dict[frozenset[int], Flow]:
@@ -455,8 +654,17 @@ class DiscreteTask(GroundTask):
         return f"no hay plan con un paso de tiempo δ = {self.delta:g}; con uno menor podría haberlo"
 
 
-def _round(values: tuple[float | None, ...]) -> tuple[float | None, ...]:
-    return tuple(None if v is None else round(v, DECIMALS) for v in values)
+def _round(
+    values: tuple[float | None, ...], before: State | None = None
+) -> tuple[float | None, ...]:
+    """Los valores redondeados. Con ``before``, el estado del que salen, solo los que han
+    cambiado (los demás son los mismos objetos, ya redondeados)."""
+    if before is None:
+        return tuple(None if v is None else round(v, DECIMALS) for v in values)
+    return tuple(
+        v if v is b or v is None else round(v, DECIMALS)
+        for v, b in zip(values, before.values, strict=True)
+    )
 
 
 # --- Compilación y grounding ---------------------------------------------------------
@@ -471,11 +679,20 @@ class _Durative:
     clock: Function
     bounds: tuple[Function, ...]
     invariant: Formula | None
+    limits: tuple[Expression, ...] = ()
+    #: Las cotas inferiores y superiores, entre ``bounds`` y ``limits``.
+    minimum_bounds: tuple[Function, ...] = ()
+    minimums: tuple[Expression, ...] = ()
+    maximum_bounds: tuple[Function, ...] = ()
+    maximums: tuple[Expression, ...] = ()
 
 
 def _compile_durative(
-    action: DurativeAction,
+    action: DurativeAction, changing: frozenset[str]
 ) -> tuple[list[Action], _Durative, list[Predicate], list[Function]]:
+    """Compila una acción durativa. ``changing``: funciones que algo modifica (las cotas de
+    la duración que no dependen de ellas se comparan tal cual, sin función intermedia: así
+    la heurística ve cuánto falta)."""
     name, parameters = action.name, action.parameters
     variables = tuple(p.variable for p in parameters)
     running = Predicate(f"running@{name}", parameters)
@@ -516,12 +733,31 @@ def _compile_durative(
         *(_formula_with(c, clock_term) for c in conditions[END]),
     ]
     bounds: list[Function] = []
+    limits: list[Expression] = []
+    minimum_bounds: list[Function] = []
+    minimums: list[Expression] = []
+    maximum_bounds: list[Function] = []
+    maximums: list[Expression] = []
     for constraint in action.duration:
+        lower = constraint.comparator in ("=", ">=")
+        upper = constraint.comparator in ("=", "<=")
         if constraint.time == END:  # se evalúa al terminar
             end_conditions += _bound_conditions(constraint, clock_term, constraint.value)
             continue
+        if not set(_functions_of(constraint.value)) & changing:  # fija
+            end_conditions += _bound_conditions(constraint, clock_term, constraint.value)
+            limits.append(constraint.value)
+            if lower:
+                minimums.append(constraint.value)
+            if upper:
+                maximums.append(constraint.value)
+            continue
         bound = Function(f"bound@{name}@{len(bounds)}", parameters)
         bounds.append(bound)
+        if lower:
+            minimum_bounds.append(bound)
+        if upper:
+            maximum_bounds.append(bound)
         term = FluentTerm(bound.name, variables)
         start_effects.append(NumericEffect("assign", term, constraint.value))
         end_conditions += _bound_conditions(constraint, clock_term, term)
@@ -553,8 +789,57 @@ def _compile_durative(
         numeric = NumericEffect(item.effect.op, item.effect.fluent, rate)  # type: ignore[arg-type]
         rates.append(ForallEffect(item.parameters, numeric) if item.parameters else numeric)
     run = Action(f"{name}@{_RUN}", parameters, running_atom, And(tuple(rates)))
-    compiled = _Durative(action, running, clock, tuple(bounds), invariant)
+    compiled = _Durative(
+        action,
+        running,
+        clock,
+        tuple(bounds),
+        invariant,
+        tuple(limits),
+        tuple(minimum_bounds),
+        tuple(minimums),
+        tuple(maximum_bounds),
+        tuple(maximums),
+    )
     return [start, end, run], compiled, [running, *flags], [clock, *bounds]
+
+
+def _variables(
+    functions: Sequence[Function], args: tuple[str, ...], var_index: Mapping[Fact, int]
+) -> tuple[int, ...]:
+    """Las variables de unas funciones de la acción instanciada (las que existen)."""
+    return tuple(var_index[(f.name, args)] for f in functions if (f.name, args) in var_index)
+
+
+def _constants(
+    expressions: Sequence[Expression], binding: Binding, context: GroundingContext
+) -> tuple[float, ...]:
+    """Los valores de unas expresiones fijas (sin las que no se pueden evaluar)."""
+    values = (context.expression(e, binding) for e in expressions)
+    return tuple(v.value for v in values if isinstance(v, Const))
+
+
+def _changing_functions(domain: Domain) -> frozenset[str]:
+    """Funciones que modifica algo: una acción, una acción durativa, un evento o un
+    proceso."""
+    result: set[str] = set()
+
+    def visit(node: object) -> None:
+        if isinstance(node, NumericEffect | ContinuousEffect):
+            result.add(node.fluent.function)
+        elif isinstance(node, And | DurativeAnd):
+            for arg in node.args:
+                visit(arg)
+        elif isinstance(node, ForallEffect | When | TimedEffect | DurativeForallEffect):
+            visit(node.arg)
+
+    effects: list[object] = [a.effect for a in domain.actions]
+    effects += [e.effect for e in domain.events]
+    effects += [a.effect for a in domain.durative_actions]
+    effects += [p.effect for p in domain.processes]
+    for effect in effects:
+        visit(effect)
+    return frozenset(result)
 
 
 def _effect_with(effect: Effect, duration: Expression | None) -> Effect:
@@ -603,8 +888,11 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
     actions: list[Action] = list(domain.actions)
     predicates: list[Predicate] = list(domain.predicates)
     functions: list[Function] = list(domain.functions)
+    changing = _changing_functions(domain)
     for durative_action in domain.durative_actions:
-        schemas, item, extra_predicates, extra_functions = _compile_durative(durative_action)
+        schemas, item, extra_predicates, extra_functions = _compile_durative(
+            durative_action, changing
+        )
         compiled[durative_action.name] = item
         actions += schemas
         predicates += extra_predicates
@@ -668,8 +956,23 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
         )
         invariant = None if item.invariant is None else context.conditions(item.invariant, binding)
         running = task.fact_index[Atom(item.running.name, tuple(Constant(a) for a in args))]
+        limits = _constants(item.limits, binding, context)
         instance_of[(base, args)] = len(running_actions)
-        running_actions.append(RunningAction(base, args, running, clock, bounds, invariant))
+        running_actions.append(
+            RunningAction(
+                base,
+                args,
+                running,
+                clock,
+                bounds,
+                invariant,
+                limits,
+                _variables(item.minimum_bounds, args, var_index),
+                _constants(item.minimums, binding, context),
+                _variables(item.maximum_bounds, args, var_index),
+                _constants(item.maximums, binding, context),
+            )
+        )
 
     real: list[GroundAction] = []
     kinds: list[int] = []
@@ -725,8 +1028,14 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
         durative_of=tuple(durative_of),
         metric_is_makespan=is_makespan,
     )
+    # Los relojes empiezan en 0 (aunque cada inicio lo vuelve a poner): con un valor
+    # indefinido, la heurística no podría contar las esperas que faltan para el final.
+    values = list(task.init.values)
+    for instance in running_actions:
+        if values[instance.clock] is None:
+            values[instance.clock] = 0.0
     # Los eventos que se cumplen al principio se disparan en el instante 0.
-    init = discrete.settle(State(task.init.facts, _round(task.init.values)))
+    init = discrete.settle(State(task.init.facts, _round(tuple(values))))
     if init is None:
         notes.append("el estado inicial rompe una invariante o sus eventos no se detienen")
         return replace(discrete, goal=(), notes=tuple(notes))

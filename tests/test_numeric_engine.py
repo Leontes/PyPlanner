@@ -261,6 +261,22 @@ def test_non_constant_effects_are_optimistic() -> None:
     assert evaluate(task, "ff").value == 1
 
 
+@pytest.mark.parametrize("device", ["python", *ACCELERATED_DEVICES])
+def test_constant_assignments_achieve_only_what_they_satisfy(device: str) -> None:
+    """Asignar una constante a la única variable de una condición la consigue si, y solo
+    si, ese valor la cumple: el reloj a 0 no deja terminar una acción de duración 5. Si la
+    variable no está definida, sí cuenta: la define para que otras la aumenten."""
+    reset = "(:action reset :parameters () :precondition (and) :effect (assign (x) 0))"
+    fill = "(:action fill :parameters () :precondition (and) :effect (assign (x) 7))"
+    inc = "(:action inc :parameters () :precondition (and) :effect (increase (x) 1))"
+    unreachable = numeric_task(reset, "(= (x) 3)", "(>= (x) 5)")
+    assert evaluate(unreachable, "hadd", device).is_dead_end
+    task = numeric_task(reset + fill, "(= (x) 3)", "(>= (x) 5)")
+    assert evaluate(task, "ff", device).preferred == (by_name(task, "(fill)"),)
+    undefined = numeric_task(reset + inc, "(= (y) 0)", "(>= (x) 5)")
+    assert evaluate(undefined, "ff", device).preferred == (by_name(undefined, "(reset)"),)
+
+
 # Desempate (coste, nivel): q se logra con coste 2 por "slow" (nivel 2, índice menor) y
 # por "direct" (nivel 1). El soportador es "direct" aunque tenga un índice mayor.
 TIES = build(
