@@ -80,6 +80,11 @@ Notas:
   como una errata y se ha escrito `(= (d) 0)` (también `a` y `v`).
 - (‡) En `generator`, el proceso `refuelling` tenía un guion pegado al tipo
   (`?t -tank`). Se ha separado (`?t - tank`). Los planes valen lo mismo para VAL.
+- (‡) Los problemas de `generator` no daban valor inicial a `(ptime ?t)`, que usa el
+  ritmo del proceso `refuelling`. Con la función sin valor, VAL rechaza cualquier plan que
+  reposte ("Attempt to access undefined expression") y, sin repostar, el combustible no
+  llega: no había ningún plan válido. Se ha añadido `(= (ptime <tanque>) 0)` para cada
+  tanque (SMTPlan debía de suponer 0).
 - (†) `greenhouse` **no es un benchmark oficial**. Se ha creado ad hoc para probar casos
   límite de expresividad de PDDL 2.1 temporal que no aparecen en ningún benchmark público
   encontrado (ni en las IPC ni en los de COLIN/OPTIC o VAL): efectos continuos dentro de

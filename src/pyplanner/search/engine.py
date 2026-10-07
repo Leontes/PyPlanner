@@ -255,7 +255,9 @@ class _BestFirstSearch:
         self.closed: list[bool] = []
         self.width: list[int] = []
         self.novelty = (
-            NoveltyTable(config.novelty, len(task.facts), negated_facts(task))
+            NoveltyTable(
+                config.novelty, len(task.facts), negated_facts(task), task.continuous_variables
+            )
             if config.novelty
             else None
         )
@@ -370,15 +372,12 @@ class _BestFirstSearch:
         Con una cota, una búsqueda inmediata con reapertura (A* o WA*) demuestra que no hay
         plan mejor que ella (``lower_bound``)."""
         status = SearchStatus.UNSOLVABLE
+        caveat = self.task.unsolvability_caveat(self.lost_paths)
         if self.stats.pruned:
             status = SearchStatus.FAILED
-        elif self.lost_paths:
+        elif caveat is not None:
             status = SearchStatus.FAILED
-            self._message = (
-                "sin plan, pero no se demuestra que no lo haya: la búsqueda temporal ha "
-                "descartado estados repetidos, que con otra línea temporal podrían llegar "
-                "al objetivo"
-            )
+            self._message = caveat
         exact = not self.config.lazy and self.config.algorithm in ("astar", "wastar")
         if status is SearchStatus.UNSOLVABLE and exact and self.limit < float("inf"):
             self._lower_bound = self.limit + BOUND_TOLERANCE

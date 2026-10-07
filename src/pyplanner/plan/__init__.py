@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pyplanner.grounding import GroundTask
+from pyplanner.grounding.discrete import DiscreteTask
 from pyplanner.grounding.preferences import final_state
 from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.schema import SCHEMA_VERSION
@@ -68,9 +69,10 @@ class Plan:
         """Construye el plan a partir de índices de acciones de ``task``.
 
         En una tarea temporal, los índices son pasos (inicios, fines y acciones
-        instantáneas) y el plan se construye con su planificación en el tiempo.
+        instantáneas) y el plan se construye con su planificación en el tiempo. En una con
+        procesos y eventos (PDDL+), además esperas, que no salen en el plan.
         """
-        if isinstance(task, TemporalTask):
+        if isinstance(task, TemporalTask | DiscreteTask):
             scheduled, makespan = task.schedule(indices)
             makespan = _clean(makespan)
             return cls(

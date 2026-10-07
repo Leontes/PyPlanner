@@ -437,6 +437,64 @@ alcanzar el límite de memoria.
   VAL calcula mal las preferencias del objetivo si el problema tiene una sección
   `(:constraints (and))` vacía.
 
+## Procesos y eventos (iteración 6b)
+
+Los dominios con procesos y eventos (PDDL+) van a un motor con el **tiempo discretizado**
+(`pyplanner.grounding.discrete`), al estilo de ENHSP, DiNo o UPMurphi. Las tareas
+temporales sin `:time` siguen en el motor de la 3b, que es más preciso, salvo las que este
+no admite por sus efectos continuos (ritmos no lineales, como el repostaje de
+generator-nonlinear, donde el caudal crece con el tiempo que lleva repostando): esas pasan
+al motor discretizado, con una nota. Si tampoco las admite, el error es el de la 3b.
+
+- **Pasos de la búsqueda:** las acciones instantáneas, el inicio y el fin de cada acción
+  durativa, y una acción `_wait` que deja pasar δ unidades de tiempo (1 por defecto;
+  `--delta` en la CLI, `delta` en `solve`). La espera se acorta si antes una acción
+  durativa llega a una cota de su duración, para que pueda terminar justo a tiempo.
+- **Integración exacta** (`pyplanner.grounding.flows`): durante una espera, las variables
+  siguen la dinámica de los procesos activos. Se integra con series de Taylor, que en
+  dinámicas polinómicas (car: la velocidad crece con la aceleración y la distancia con la
+  velocidad; generator: un caudal que crece con el cuadrado del tiempo) **terminan** y dan
+  los mismos valores que VAL. Si la serie no termina, Runge-Kutta 4 con 100 subpasos por
+  unidad. Los valores se redondean a 9 decimales: las sumas de pasos no arrastran ruido y
+  las igualdades como `(= (v) 0)` se pueden cumplir.
+- **Eventos en su instante exacto.** Tras cada cambio, los eventos se disparan en cascada.
+  Si durante una espera se cumple la precondición de un evento (o cambia qué procesos están
+  activos), el instante se busca por bisección sobre el flujo exacto, como hace VAL, y la
+  espera sigue hasta completar δ. Sin esto, un evento se detectaba al final de la espera:
+  en generator, un depósito quedaba con combustible negativo y el generador recibía de
+  más, y la búsqueda acababa aprovechando ese error (5 de 8 instancias de
+  generator-events; 8 de 8 con el instante exacto).
+- **Invariantes:** las condiciones `over all` de las acciones durativas en curso se
+  comprueban tras cada cambio (no en mitad de una espera).
+- **Una acción instantánea** va seguida de una espera de ε = 0,01: VAL no admite dos
+  acciones en el mismo instante, y durante ese ε los procesos siguen actuando, igual que en
+  VAL.
+- **Acciones durativas:** se compilan en un inicio (pone en marcha un reloj y fija las
+  cotas de su duración), un proceso `a@run` (el reloj y los efectos continuos) y un fin
+  (el reloj dentro de la duración). Las condiciones `over all` son invariantes.
+- **Coste:** δ por espera y 2ε por acción (ε por el tiempo que pasa y ε por ser un paso
+  más; sin el segundo, A* devolvía planes con decenas de acciones inútiles que hacían
+  pasar el tiempo de ε en ε). La métrica que se informa es la duración del plan.
+- **Heurística:** en la relajación, la espera es una acción con un efecto condicional por
+  proceso (sus ritmos × δ); *h^hbd* cuenta las repeticiones si el ritmo es constante, como
+  el reloj de una acción durativa. Los eventos son reglas relajadas de coste 0 sobre
+  hechos.
+- **Novedad:** las variables que cambian de forma continua no cuentan. Toman un valor
+  nuevo en cada espera, así que todo estado parecía nuevo y la tabla crecía sin fin (en
+  generator-events p06, 85 000 átomos y 2 GB en 20 s). Limitar sus valores distintos (16,
+  64, 256, 1024) en lugar de ignorarlas da resultados que dependen del límite sin ninguna
+  tendencia.
+- **Validación con un paso más fino:** el plan se vuelve a simular con δ/10. Si falla (una
+  invariante que se rompe en mitad de una espera, por ejemplo), `solve` busca otra vez con
+  δ/2, hasta 3 veces, dentro del límite de tiempo. Es más estricto que VAL, que solo
+  comprueba las invariantes en los *happenings*: en generator p02, un plan que VAL daba
+  por válido dejaba la gasolina en −1,08 entre dos *happenings*.
+- **Sin plan:** agotar la búsqueda no demuestra nada (con un δ menor podría haber plan):
+  termina con `failed`.
+- **Límites** (error claro): literales iniciales temporizados, restricciones de
+  trayectoria y preferencias con procesos y eventos; efectos condicionales que dependen de
+  condiciones `over all` y efectos continuos condicionales en las acciones durativas.
+
 ## Heurísticas
 
 | Nombre | Admisible | Acciones útiles | Numba | PyTorch |

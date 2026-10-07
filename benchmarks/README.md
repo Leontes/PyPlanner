@@ -24,8 +24,8 @@ la memoria disponible: dos medidas sin esas garantías agotaron la memoria de WS
 | `pddlplus/car-nodrag` | p01–p10 | SMTPlan (car_nodrag) | PDDL+ (iteración 6): un proceso con dinámica cuadrática y un evento |
 | `pddlplus/generator-events` | p01–p08 | SMTPlan (generator_events) | PDDL+ (iteración 6): acción durativa, un proceso no lineal y dos eventos |
 | `continuous-effects/generator-linear` | p01–p08 | SMTPlan (generator_linear) | PDDL 2.1 con efectos continuos lineales (motor temporal de la 3b) |
-| `continuous-effects/generator-nonlinear` | p01–p08 | SMTPlan (generator_nonlinear) | PDDL 2.1 con efectos continuos no lineales: fuera de la programación lineal de la 3b |
-| `continuous-effects/generator-toricelli` | p01–p09 | SMTPlan (generator_toricelli) | PDDL 2.1 con efectos continuos y duraciones que dependen del estado |
+| `continuous-effects/generator-nonlinear` | p01–p08 | SMTPlan (generator_nonlinear) | PDDL 2.1 con efectos continuos no lineales: fuera de la programación lineal de la 3b, van al motor discretizado (iteración 6b) |
+| `continuous-effects/generator-toricelli` | p01–p09 | SMTPlan (generator_toricelli) | PDDL 2.1 con efectos continuos no lineales y duraciones que dependen del estado (motor discretizado) |
 
 Mismas convenciones que en `dominios/`: los ficheros se copian sin modificar, salvo las
 erratas de `:requirements`, que se marcan con (*), y las discordancias de otro tipo que se
@@ -38,8 +38,10 @@ Las de SMTPlan:
 
 - `car-nodrag` y `generator-events` son las colecciones de donde salen car y generator del
   tier 6 (p01 y p02 son las mismas), con sus erratas: (‡) funciones sin paréntesis en los
-  problemas de car (`(= d 0)`), (‡) un guion pegado al tipo en generator (`?t -tank`) y
-  (*) `:continuous-effects` sin declarar en generator.
+  problemas de car (`(= d 0)`), (‡) un guion pegado al tipo en generator (`?t -tank`),
+  (‡) sin valor inicial para `(ptime ?t)` en los problemas de generator (sin él no hay
+  ningún plan válido, tampoco para VAL) y (*) `:continuous-effects` sin declarar en
+  generator.
 - Las tres de `continuous-effects` no son PDDL+ (no tienen procesos ni eventos), sino
   PDDL 2.1 con efectos continuos. (*) Ninguna declaraba `:continuous-effects`.
   (‡) Los problemas de `generator-nonlinear` y `generator-toricelli` eran de un dominio
@@ -49,6 +51,9 @@ Las de SMTPlan:
   interrogación.
 
 Storage tiene otra (‡), la misma que en el tier 5: el dominio declaraba dos veces el tipo
-`area` y se ha quitado la primera declaración. p01 y p02 son las del tier 5. Con
-preferencias, `scripts/benchmark.py` usa la búsqueda *anytime*: cada problema agota el
-límite de tiempo salvo que se demuestre el óptimo antes.
+`area` y se ha quitado la primera declaración. p01 y p02 son las del tier 5.
+
+`scripts/benchmark.py` resuelve con `solve`, como el planificador: con preferencias, la
+búsqueda es *anytime* (cada problema agota el límite de tiempo salvo que se demuestre el
+óptimo antes); con procesos y eventos, el plan se valida con un paso de tiempo más fino y,
+si falla, se busca otra vez con δ/2 (la tabla da el δ final cuando no es 1).

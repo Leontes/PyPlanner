@@ -840,6 +840,18 @@ class TemporalTask(GroundTask):
         # (ver TemporalState).
         return TemporalState(successor.facts, values, source=(self, state, action.index))
 
+    def unsolvability_caveat(self, lost_paths: bool) -> str | None:
+        """Dos estados iguales con distinta línea temporal son el mismo nodo (memoización
+        al estilo de POPF): al descartar un repetido se pierde un camino que quizá cumplía
+        unos plazos que el otro no cumple."""
+        if not lost_paths:
+            return None
+        return (
+            "sin plan, pero no se demuestra que no lo haya: la búsqueda temporal ha "
+            "descartado estados repetidos, que con otra línea temporal podrían llegar "
+            "al objetivo"
+        )
+
     def recompute_timeline(self, parent: State, state: State, action: int) -> Timeline:
         """Línea temporal de ``state``, al que se llegó desde ``parent`` con ``action``."""
         timeline = parent.timeline if isinstance(parent, TemporalState) else Timeline()

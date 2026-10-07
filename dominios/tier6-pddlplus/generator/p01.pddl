@@ -6,6 +6,7 @@
 		(= (capacity gen) 1600)
 
 		(= (fuelInTank tank1) 40)
+		(= (ptime tank1) 0)
 
 		(available tank1)
 

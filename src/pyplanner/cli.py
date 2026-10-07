@@ -25,6 +25,7 @@ from pathlib import Path
 from pyplanner import __version__
 from pyplanner.errors import PDDLError
 from pyplanner.frontend import read_domain, read_problem
+from pyplanner.grounding.discrete import DiscreteTask
 from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.heuristics import DEVICES
 from pyplanner.pddl import parse_file
@@ -97,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="memoria total en MB para las búsquedas, repartida entre ellas "
         "(por defecto, el 80%% de la disponible)",
+    )
+    solve_cmd.add_argument(
+        "--delta",
+        type=float,
+        help="paso de tiempo de las tareas con procesos y eventos (PDDL+; por defecto, 1)",
     )
     solve_cmd.add_argument("--batch-size", type=int, help="tamaño de lote de evaluación")
     solve_cmd.add_argument(
@@ -208,8 +214,15 @@ def _solve(args: argparse.Namespace) -> int:
 
     domain = read_domain(args.domain)
     problem = read_problem(args.problem, domain)
+    if args.delta is not None and args.delta <= 0:
+        raise ConfigError("--delta tiene que ser positivo")
     result = solve(
-        domain, problem, configs, time_limit=args.time_limit, memory_limit=args.memory_limit
+        domain,
+        problem,
+        configs,
+        time_limit=args.time_limit,
+        memory_limit=args.memory_limit,
+        delta=args.delta,
     )
     if not args.quiet:
         _report(result)
@@ -238,6 +251,11 @@ def _report(result: PlanningResult) -> None:
         actions = (
             f"{len(task.durative)} acciones durativas "
             f"({len(task.actions)} acciones de inicio, fin o instantáneas)"
+        )
+    elif isinstance(task, DiscreteTask):
+        actions = (
+            f"{len(task.actions) - 1} acciones, {len(task.processes)} procesos y "
+            f"{len(task.events)} eventos, δ = {task.delta:g}"
         )
     else:
         actions = f"{len(task.actions)} acciones"

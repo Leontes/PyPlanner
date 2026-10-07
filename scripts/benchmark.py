@@ -15,6 +15,9 @@ Con preferencias, la búsqueda es *anytime* (el mejor plan en el límite de tiem
 da además la métrica del plan (con la de VAL si no coincide) y si es óptimo, y el resumen,
 la suma de las métricas.
 
+Cada trabajo va en un proceso nuevo: uno reutilizado conservaría la memoria de la búsqueda
+anterior y llegaría antes a su límite.
+
 **Memoria:** como mucho 5 procesos a la vez y siempre con límite de memoria (dos medidas
 agotaron la memoria de WSL y obligaron a reiniciar). Cada proceso tiene dos límites:
 
@@ -58,29 +61,34 @@ def run_one(domain: str, problem: str, config: str, limit: float, memory: int) -
         resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
 
     from pyplanner.frontend import read_domain, read_problem
-    from pyplanner.grounding import ground
-    from pyplanner.plan import Plan
-    from pyplanner.search import PRESETS, SearchStatus, search
-    from pyplanner.search.anytime import search_anytime
+    from pyplanner.grounding.discrete import DiscreteTask
+    from pyplanner.planner import solve
+    from pyplanner.search import PRESETS, SearchStatus
 
     start = time.perf_counter()
     loaded = read_domain(domain)
-    task = ground(loaded, read_problem(problem, loaded))
-    grounding = time.perf_counter() - start
-    settings = PRESETS[config].with_changes(max_time=limit, max_memory=memory)
+    settings = PRESETS[config].with_changes(max_memory=memory)
+    # solve: con preferencias, búsqueda anytime; con procesos y eventos, la validación con
+    # un paso más fino (y los reintentos con δ/2), todo dentro del límite de tiempo.
+    solved = solve(
+        loaded, read_problem(problem, loaded), [settings], time_limit=limit, memory_limit=memory
+    )
+    elapsed = time.perf_counter() - start
+    task, result = solved.task, solved.search
     anytime = task.preferences is not None
-    result = search_anytime(task, settings) if anytime else search(task, settings)
     row: dict[str, Any] = {
         "problem": Path(problem).stem,
         "config": config,
         "status": result.status.value,
-        "time": round(grounding + result.statistics.time, 3),
+        "time": round(elapsed, 3),
         "expanded": result.statistics.expanded,
         "dead_ends": result.statistics.dead_ends,
         "valid": None,
     }
-    if result.status is SearchStatus.SOLVED and result.plan is not None:
-        plan = Plan.from_indices(task, result.plan)
+    if isinstance(task, DiscreteTask):
+        row["delta"] = task.delta
+    if result.status is SearchStatus.SOLVED and solved.plan is not None:
+        plan = solved.plan
         row["length"] = len(plan)
         row["makespan"] = plan.makespan
         row["metric"] = plan.metric
@@ -136,7 +144,11 @@ def main() -> None:
     ]
     context = multiprocessing.get_context("spawn")
     rows: list[dict[str, Any]] = []
-    with ProcessPoolExecutor(max_workers=args.workers, mp_context=context) as pool:
+    # Un proceso nuevo por trabajo: uno reutilizado conserva la memoria de la búsqueda
+    # anterior (llegaría antes a su límite) y no puede subir su límite duro.
+    with ProcessPoolExecutor(
+        max_workers=args.workers, mp_context=context, max_tasks_per_child=1
+    ) as pool:
         futures = [pool.submit(run_one, *job) for job in jobs]
         for job, future in zip(jobs, futures, strict=True):
             try:
@@ -154,6 +166,8 @@ def main() -> None:
                     quality += f" (VAL {val_metric:g})"
                 if row.get("optimal"):
                     quality += " óptimo"
+            if row.get("delta") not in (None, 1.0):
+                quality += f" δ={row['delta']:g}"
             if row.get("error"):
                 quality = f" {row['error'] or 'MemoryError'}"
             print(

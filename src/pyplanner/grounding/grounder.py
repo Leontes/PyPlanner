@@ -98,7 +98,11 @@ from pyplanner.loader.ast import (
     Constraint,
     ConstraintAnd,
     ConstraintForall,
+    ContinuousEffect,
     Domain,
+    DurativeAnd,
+    DurativeForallEffect,
+    DurativeWhen,
     Effect,
     Exists,
     Expression,
@@ -124,12 +128,17 @@ from pyplanner.loader.ast import (
 Binding = dict[str, str]
 
 
-def ground(domain: Domain, problem: Problem) -> GroundTask:
+def ground(domain: Domain, problem: Problem, delta: float | None = None) -> GroundTask:
     """Instancia y normaliza un dominio y un problema.
 
-    Si el dominio tiene acciones durativas o el problema literales iniciales temporizados,
-    devuelve una tarea temporal
-    (:func:`pyplanner.grounding.temporal.ground_temporal`).
+    Si el dominio tiene procesos o eventos (PDDL+), devuelve una tarea con el tiempo
+    discretizado en pasos de ``delta`` (:func:`pyplanner.grounding.discrete.ground_discrete`;
+    por defecto, 1). Si no, y tiene acciones durativas o el problema literales iniciales
+    temporizados, una tarea temporal
+    (:func:`pyplanner.grounding.temporal.ground_temporal`). Si el motor temporal no la
+    admite y tiene efectos continuos (ritmos no lineales, por ejemplo), también una con el
+    tiempo discretizado, si ese motor sí la admite; si tampoco, el error es el del motor
+    temporal.
 
     Returns:
         La tarea instanciada, con hechos, variables y acciones en un orden determinista.
@@ -139,9 +148,13 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
             disyuntiva, o si usa algo que el motor temporal todavía no admite.
     """
     if domain.processes or domain.events:
-        raise UnsupportedFeatureError(
-            "el motor de búsqueda todavía no admite procesos ni eventos (PDDL+)"
-        )
+        from pyplanner.grounding.discrete import DELTA, ground_discrete
+
+        if _has_preferences(domain, problem):
+            raise UnsupportedFeatureError(
+                "el motor de búsqueda todavía no admite preferencias con procesos y eventos"
+            )
+        return ground_discrete(domain, problem, DELTA if delta is None else delta)
     if domain.durative_actions or problem.timed_literals:
         if _has_preferences(domain, problem):
             raise UnsupportedFeatureError(
@@ -149,8 +162,36 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
             )
         from pyplanner.grounding.temporal import ground_temporal
 
-        return ground_temporal(domain, problem, _marker_times(domain, problem))
+        try:
+            return ground_temporal(domain, problem, _marker_times(domain, problem))
+        except UnsupportedFeatureError as temporal_error:
+            if not any(_has_continuous(a.effect) for a in domain.durative_actions):
+                raise
+            # Lo que la programación lineal no puede expresar (ritmos que dependen de
+            # variables que cambian de forma continua...), con el tiempo discretizado.
+            from pyplanner.grounding.discrete import DELTA, ground_discrete
+
+            try:
+                task = ground_discrete(domain, problem, DELTA if delta is None else delta)
+            except UnsupportedFeatureError:
+                raise temporal_error from None
+            note = (
+                f"el motor temporal no admite esta tarea ({temporal_error}): se usa el motor "
+                "con el tiempo discretizado"
+            )
+            return replace(task, notes=(*task.notes, note))
     return ground_with_context(domain, problem)[0]
+
+
+def _has_continuous(effect: object) -> bool:
+    """``True`` si el efecto de una acción durativa tiene algún efecto continuo."""
+    if isinstance(effect, ContinuousEffect):
+        return True
+    if isinstance(effect, DurativeAnd):
+        return any(_has_continuous(arg) for arg in effect.args)
+    if isinstance(effect, DurativeForallEffect | DurativeWhen):
+        return _has_continuous(effect.arg)
+    return False
 
 
 def _marker_times(domain: Domain, problem: Problem) -> frozenset[float]:

@@ -65,9 +65,20 @@ class NoveltyTable:
         num_facts: número de hechos de la tarea. El átomo "no p" del hecho ``p`` es el bit
             ``num_facts + p``, y los numéricos van detrás.
         negated: hechos cuya falsedad cuenta como átomo.
+        continuous: variables numéricas que cambian de forma continua (con procesos): no
+            cuentan. Toman un valor nuevo en cada espera, así que todo estado parecería
+            nuevo y la tabla crecería sin fin (en generator, 85 000 átomos y 2 GB en 20 s).
+            Limitar sus valores distintos (16, 64, 256 o 1024) en lugar de ignorarlas no
+            mejora: los resultados dependen del límite sin ninguna tendencia.
     """
 
-    def __init__(self, width: int, num_facts: int, negated: Iterable[int] = ()) -> None:
+    def __init__(
+        self,
+        width: int,
+        num_facts: int,
+        negated: Iterable[int] = (),
+        continuous: Iterable[int] = (),
+    ) -> None:
         if width not in (1, 2):
             raise ValueError("la anchura de la novedad tiene que ser 1 o 2")
         self.width = width
@@ -75,6 +86,7 @@ class NoveltyTable:
         self._shift = num_facts
         self._negated = mask_of(sorted(set(negated)))
         self._numeric: dict[tuple[int, float | None], int] = {}
+        self._continuous = frozenset(continuous)
         self._partitions: dict[Hashable, _Partition] = {}
 
     def _atoms(self, state: State) -> int:
@@ -84,7 +96,10 @@ class NoveltyTable:
         if state.values:
             numeric = self._numeric
             base = self._num_facts
+            continuous = self._continuous
             for variable, value in enumerate(state.values):
+                if variable in continuous:
+                    continue
                 key = (variable, value)
                 index = numeric.get(key)
                 if index is None:

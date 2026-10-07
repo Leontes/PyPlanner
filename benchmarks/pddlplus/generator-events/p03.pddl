@@ -8,6 +8,9 @@
 		(= (fuelInTank tank1) 40)
 		(= (fuelInTank tank2) 40)
 		(= (fuelInTank tank3) 40)
+		(= (ptime tank1) 0)
+		(= (ptime tank2) 0)
+		(= (ptime tank3) 0)
 
 		(available tank1)
 		(available tank2)

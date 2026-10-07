@@ -451,7 +451,11 @@ Se divide en tres partes (decidido el 2026-10-07):
   (válidos en PDDL 3.1; redundantes con el mundo cerrado, se ignoran). Ver
   [formato-json.md](formato-json.md#pddl-v7). El motor rechaza procesos y eventos hasta
   la 6b.
-- **6b, motor discretizado** (al estilo de ENHSP, DiNo o UPMurphi):
+- **6b, motor discretizado** (al estilo de ENHSP, DiNo o UPMurphi): ✅ tier 6 resuelto y
+  validado con VAL; car-nodrag 10 de 10 y generator-events 8 de 8 con `bfws-ff-pref` (ver
+  [motor-busqueda.md](motor-busqueda.md#procesos-y-eventos-iteración-6b)). Además de lo
+  previsto, los eventos se disparan en su instante exacto (bisección sobre el flujo, como
+  VAL), y las variables continuas no cuentan para la novedad.
   - la búsqueda tiene las acciones instantáneas y una acción "esperar δ", que integra los
     procesos activos durante δ, dispara los eventos en cascada y comprueba las
     invariantes;
@@ -475,7 +479,9 @@ Se divide en tres partes (decidido el 2026-10-07):
 
 **Tests:** tier 6 (car y generator, de SMTPlan) resuelto y validado con VAL, más medidas
 en `benchmarks/` con colecciones de PDDL+. Erratas de los ficheros del tier 6 (‡): en car,
-funciones sin paréntesis (`(= d 0)`); en generator, un guion pegado al tipo (`?t -tank`).
+funciones sin paréntesis (`(= d 0)`); en generator, un guion pegado al tipo (`?t -tank`) y
+sin valor inicial para `(ptime ?t)`, que el proceso de repostaje usa (ni VAL ni el
+planificador admitían ningún plan que repostara).
 
 ---
 
@@ -519,18 +525,18 @@ Nada por ahora.
   - **Opción B** (completa): `solve()` hace el grounding y la búsqueda en un proceso hijo
     con el límite duro. Cambia la API: `PlanningResult.task` no se puede devolver barato
     desde el hijo.
-- **Más allá de la programación lineal** (después de la iteración 6). El motor temporal
-  resuelve los efectos continuos lineales con un programa lineal por estado; lo que este
-  no puede expresar se rechaza con un error claro. Dos líneas posibles:
-  - **expresiones no lineales por discretización del tiempo**, reutilizando la maquinaria
-    de PDDL+ de la iteración 6 (paso δ, validación con un δ más fino);
+- **Más allá de la programación lineal**. El motor temporal resuelve los efectos continuos
+  lineales con un programa lineal por estado. Dos líneas:
+  - ✅ **expresiones no lineales por discretización del tiempo** (hecho en la 6b, a
+    petición del usuario): las tareas temporales que el motor de la 3b no admite por sus
+    efectos continuos pasan al motor discretizado de PDDL+ (paso δ, integración exacta,
+    validación con un δ más fino). generator-nonlinear: 8 de 8; generator-toricelli: 5 de 9
+    (ver `benchmarks/continuous-effects`);
   - **disyunciones sobre variables continuas** (condiciones de efectos condicionales,
     invariantes disyuntivas) con **programación lineal entera** (HiGHS, ya disponible con
-    `scipy.optimize.milp`).
-
-  El coste en eficiencia es importante (el espacio de estados crece con 1/δ; la
-  programación entera puede ser exponencial), así que se activarían solo en los dominios
-  que lo necesiten, como la programación lineal ahora: el resto no pagaría nada.
+    `scipy.optimize.milp`). El coste en eficiencia es importante (la programación entera
+    puede ser exponencial), así que se activaría solo en los dominios que lo necesiten,
+    como la programación lineal ahora.
 - **Grafo de planificación temporal completo** (opción B de la heurística temporal,
   decidida en la iteración 4). La iteración 4 añade la parte A: instantes más tempranos y
   ventanas de los TIL en la relajación, para descartar estados sin salida. La parte B es

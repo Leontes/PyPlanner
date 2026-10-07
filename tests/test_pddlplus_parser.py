@@ -9,10 +9,10 @@ from pyplanner.errors import (
     PDDLSyntaxError,
     SemanticError,
     UndeclaredRequirementError,
-    UnsupportedFeatureError,
 )
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.grounding import ground
+from pyplanner.grounding.discrete import DiscreteTask
 from pyplanner.loader import load_domain, load_problem
 from pyplanner.loader.ast import (
     And,
@@ -222,8 +222,9 @@ def test_tier6_problems_load() -> None:
             assert read_problem(TIER6 / name / f"{problem}.pddl", domain).values
 
 
-def test_the_engine_rejects_processes_for_now() -> None:
+def test_processes_ground_to_a_discrete_task() -> None:
     domain = load_domain(document(TANK))
     problem = load_problem(document(TANK_PROBLEM), domain)
-    with pytest.raises(UnsupportedFeatureError, match="procesos ni eventos"):
-        ground(domain, problem)
+    task = ground(domain, problem)
+    assert isinstance(task, DiscreteTask)
+    assert [p.name for p in task.processes] == ["filling@process", "filling@process"]

@@ -438,6 +438,18 @@ class GroundTask:
             return self.monitor_evaluator.update(state, successor)
         return successor
 
+    @property
+    def continuous_variables(self) -> frozenset[int]:
+        """Variables numéricas que cambian de forma continua (con procesos; ninguna en una
+        tarea sin ellos)."""
+        return frozenset()
+
+    def unsolvability_caveat(self, lost_paths: bool) -> str | None:
+        """Por qué una búsqueda que agota la cola no demuestra que no haya plan (``None``:
+        sí lo demuestra). ``lost_paths``: si la búsqueda ha descartado estados repetidos
+        (solo cuenta en las tareas temporales; ver :mod:`pyplanner.search.engine`)."""
+        return None
+
     def atoms(self, state: State) -> list[Atom]:
         """Los hechos ciertos en ``state`` (para depurar y mostrar)."""
         return [self.facts[i] for i in bits(state.facts)]

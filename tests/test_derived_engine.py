@@ -6,11 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding import GroundTask, State
 from pyplanner.grounding.axioms import AxiomEvaluator
+from pyplanner.grounding.discrete import DiscreteTask
 from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.heuristics import TENSOR_HEURISTICS, create_heuristic
+from pyplanner.pddl import parse_pddl, write_pddl
 from pyplanner.plan import Plan
 from pyplanner.search import PRESETS, SearchStatus, search
 from pyplanner.search.engine import EagerSearch
@@ -272,7 +273,9 @@ def test_temporal_steps_are_ordered_after_what_derived_facts_depend_on(tmp_path:
         assert "Plan valid" in output
 
 
-def test_derived_facts_on_continuous_variables_are_rejected() -> None:
+def test_derived_facts_on_continuous_variables_use_the_discrete_engine(tmp_path: Path) -> None:
+    """El programa lineal de la 3b no puede decidir un hecho derivado de una variable que
+    cambia de forma continua: la tarea pasa al motor con el tiempo discretizado (6b)."""
     domain = """
 (define (domain tank)
   (:requirements :durative-actions :derived-predicates :numeric-fluents :continuous-effects)
@@ -285,5 +288,23 @@ def test_derived_facts_on_continuous_variables_are_rejected() -> None:
     :effect (at end (done))))
 """
     problem = "(define (problem t) (:domain tank) (:init (= (level) 0)) (:goal (done)))"
-    with pytest.raises(UnsupportedFeatureError, match="el programa lineal no puede decidir"):
-        build(domain, problem)
+    task = build(domain, problem)
+    assert isinstance(task, DiscreteTask)
+    assert any("el programa lineal no puede decidir" in note for note in task.notes)
+    result = search(task, PRESETS["gbfs-ff"])
+    assert result.status is SearchStatus.SOLVED and result.plan is not None
+    plan = Plan.from_indices(task, result.plan)
+    times = {step.name: step.time for step in plan.steps}
+    assert times["finish"] is not None and times["finish"] >= 10  # el depósito, lleno
+    if VALIDATE.exists():
+        # Escrito con el writer: VAL exige :parameters, que este dominio no lleva.
+        (tmp_path / "domain.pddl").write_text(write_pddl(parse_pddl(domain, locations=False)))
+        (tmp_path / "problem.pddl").write_text(problem)
+        (tmp_path / "plan").write_text(plan.to_ipc())
+        output = subprocess.run(
+            [VALIDATE, tmp_path / "domain.pddl", tmp_path / "problem.pddl", tmp_path / "plan"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        assert "Plan valid" in output, output
