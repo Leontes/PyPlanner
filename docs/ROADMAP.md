@@ -180,10 +180,10 @@ El portfolio se monta encima de todo eso.
 | Exploración por tipos (Xie et al., 2014) | salir de mesetas y zonas con callejones sin salida | iteración 2 |
 | Heurísticas compiladas con Numba | h_max, h_add y h_FF 12–19 veces más rápidas | iteración 2 |
 | Generación de sucesores compilada con Numba | mismo orden que la referencia; del 46% al 5% del tiempo de búsqueda | iteración 2 |
-| Enforced hill-climbing (FF) | búsqueda local rápida | opcional |
-| Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional |
-| Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional |
-| Landmarks (h_LM) | heurística informada más potente | opcional |
+| Enforced hill-climbing (FF) | búsqueda local rápida | opcional (5.º) |
+| Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional (5.º) |
+| Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional (2.º, con landmarks) |
+| Landmarks (h_LM) | heurística informada más potente | opcional (2.º) |
 | Búsqueda por novedad (IW, BFWS) | salir de mesetas; diversidad en el portfolio | final de la iteración 3b ✅ |
 | HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
 | Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
@@ -525,50 +525,72 @@ Nada por ahora.
 
 ## Trabajo opcional (al final del proyecto, fuera de las iteraciones)
 
-- Técnicas opcionales del repertorio (ver la tabla de "Motor de búsqueda").
-- **Preferencias en tareas temporales** (de la iteración 5c): la fase final como pasos
-  instantáneos al final del plan, y los monitores blandos con las marcas de instante de
-  la 5b. El tier 5 no tiene ningún dominio que las use.
-- **Límite de memoria duro en las búsquedas** (de la iteración 5c). Hoy el límite del
-  planificador (`max_memory`, `-m`) se mira durante la búsqueda cada 32 iteraciones y no
-  cubre el grounding; una medida de storage agotó la memoria de WSL por eso (el script de
-  benchmarks ya pone un límite duro por proceso). Medido el 2026-10-06:
-  - `RLIMIT_AS` no sirve con CUDA (reserva 34 GB de memoria virtual). `RLIMIT_DATA` sí:
-    CUDA y Numba arrancan, al pasarlo Python y NumPy reciben `MemoryError`, y en
-    búsquedas sin GPU sigue de cerca a la memoria residente (142 MB frente a 170; 405
-    frente a 430 con storage p20). Con CUDA el proceso parte de 1,2 GB.
-  - El límite no cuesta nada en la búsqueda; lanzarla en un proceso hijo con `fork`
-    cuesta de 10 a 14 ms (con `spawn`, de 1 a 3 s).
-  - **Opción A** (barata, sin cambiar la API): cada miembro del portfolio fija
-    `RLIMIT_DATA` a su parte (con el margen de CUDA en el miembro con GPU) y un
-    `MemoryError` es `limit_reached`; la CLI se lo pone a sí misma antes del grounding.
-    Como librería, el grounding y las búsquedas de una configuración siguen con el límite
-    blando (no se puede limitar el proceso anfitrión).
-  - **Opción B** (completa): `solve()` hace el grounding y la búsqueda en un proceso hijo
-    con el límite duro. Cambia la API: `PlanningResult.task` no se puede devolver barato
-    desde el hijo.
-- **Más allá de la programación lineal**. El motor temporal resuelve los efectos continuos
-  lineales con un programa lineal por estado. Dos líneas:
-  - ✅ **expresiones no lineales por discretización del tiempo** (hecho en la 6b, a
-    petición del usuario): las tareas temporales que el motor de la 3b no admite por sus
-    efectos continuos pasan al motor discretizado de PDDL+ (paso δ, integración exacta,
-    validación con un δ más fino). generator-nonlinear: 8 de 8; generator-toricelli: 5 de 9,
-    y 9 de 9 con la heurística de la 6c (ver `benchmarks/continuous-effects`);
-  - **disyunciones sobre variables continuas** (condiciones de efectos condicionales,
-    invariantes disyuntivas) con **programación lineal entera** (HiGHS, ya disponible con
-    `scipy.optimize.milp`). El coste en eficiencia es importante (la programación entera
-    puede ser exponencial), así que se activaría solo en los dominios que lo necesiten,
-    como la programación lineal ahora.
-- **Grafo de planificación temporal completo** (opción B de la heurística temporal,
-  decidida en la iteración 4). La iteración 4 añade la parte A: instantes más tempranos y
-  ventanas de los TIL en la relajación, para descartar estados sin salida. La parte B es
-  extraer además un plan relajado que respete los tiempos (como POPF y OPTIC) y usarlo como
-  heurística de las tareas temporales en lugar de h_FF, en Python, Numba y PyTorch con
-  valores idénticos. Incluye evaluarla frente a h_FF con la parte A en los benchmarks
-  temporales: en POPF no es mejor en todos los dominios.
-- **Estudio de la integración de HTN** (planificación jerárquica): viabilidad de aceptar
-  dominios HTN (HDDL, el lenguaje del track HTN de las IPC) y de combinar la
-  descomposición jerárquica con nuestro motor de búsqueda.
+**Orden acordado** (2026-10-07), para retomarlo así. El proyecto principal ya funciona con
+la v0.6, así que nada de esto es crítico. El orden pesa si arregla un problema real, cuánto
+mejora el planificador y cuánto cuesta; lo cambiaría que el proyecto principal necesitara
+algo concreto. La eficiencia va primero: lo que promete mejoras de rendimiento empieza
+midiendo.
+
+1. **Límite de memoria duro en las búsquedas** (de la iteración 5c): el único que ya ha
+   causado problemas reales. Hoy el límite del planificador (`max_memory`, `-m`) se mira
+   durante la búsqueda cada 32 iteraciones y no cubre el grounding; una medida de storage
+   agotó la memoria de WSL por eso (el script de benchmarks ya pone un límite duro por
+   proceso). Medido el 2026-10-06:
+   - `RLIMIT_AS` no sirve con CUDA (reserva 34 GB de memoria virtual). `RLIMIT_DATA` sí:
+     CUDA y Numba arrancan, al pasarlo Python y NumPy reciben `MemoryError`, y en
+     búsquedas sin GPU sigue de cerca a la memoria residente (142 MB frente a 170; 405
+     frente a 430 con storage p20). Con CUDA el proceso parte de 1,2 GB.
+   - El límite no cuesta nada en la búsqueda; lanzarla en un proceso hijo con `fork`
+     cuesta de 10 a 14 ms (con `spawn`, de 1 a 3 s).
+   - **Opción A** (barata, sin cambiar la API): cada miembro del portfolio fija
+     `RLIMIT_DATA` a su parte (con el margen de CUDA en el miembro con GPU) y un
+     `MemoryError` es `limit_reached`; la CLI se lo pone a sí misma antes del grounding.
+     Como librería, el grounding y las búsquedas de una configuración siguen con el límite
+     blando (no se puede limitar el proceso anfitrión).
+   - **Opción B** (completa): `solve()` hace el grounding y la búsqueda en un proceso hijo
+     con el límite duro. Cambia la API: `PlanningResult.task` no se puede devolver barato
+     desde el hijo.
+2. **Landmarks (h_LM) con colas alternadas**, al estilo de LAMA: la mayor mejora esperable
+   en las tareas clásicas y numéricas (suele ganar cobertura y calidad de los planes frente
+   a h_FF sola). Las colas alternadas sirven también para combinar otras heurísticas.
+   Empezar midiendo dónde se queda corta h_FF.
+3. **Grafo de planificación temporal completo** (opción B de la heurística temporal,
+   decidida en la iteración 4). La iteración 4 añade la parte A: instantes más tempranos y
+   ventanas de los TIL en la relajación, para descartar estados sin salida. La parte B es
+   extraer además un plan relajado que respete los tiempos (como POPF y OPTIC) y usarlo como
+   heurística de las tareas temporales en lugar de h_FF, en Python, Numba y PyTorch con
+   valores idénticos. Incluye evaluarla frente a h_FF con la parte A en los benchmarks
+   temporales: en POPF no es mejor en todos los dominios.
+   Empezar midiendo dónde se queda corta h_FF: con la parte A, `lazy-ff-pref` no resuelve
+   satellite p02 (tier 4, con TIL) en 60 s, aunque `bfws-ff-pref` sí.
+4. **Huecos de cobertura.** Hoy dan un error claro y ningún tier los usa:
+   - **preferencias en tareas temporales** (de la iteración 5c): la fase final como pasos
+     instantáneos al final del plan, y los monitores blandos con las marcas de instante de
+     la 5b. El tier 5 no tiene ningún dominio que las use;
+   - **límites del motor discretizado** (iteración 6): literales iniciales temporizados,
+     restricciones de trayectoria y preferencias con procesos y eventos; efectos
+     condicionales que dependen de condiciones `over all` y efectos continuos condicionales
+     en las acciones durativas.
+5. **Más diversidad en el portfolio**: *enforced hill-climbing* (FF) y paseos aleatorios
+   (Arvand). El portfolio ya es diverso (BFWS, exploración por tipos, goalcount aleatorio):
+   solo si aparece un dominio que lo pida.
+6. **Más allá de la programación lineal**. Ha perdido valor con la 6b: las invariantes
+   disyuntivas con efectos continuos ya pasan al motor discretizado. El motor temporal
+   resuelve los efectos continuos lineales con un programa lineal por estado. Dos líneas:
+   - ✅ **expresiones no lineales por discretización del tiempo** (hecho en la 6b, a
+     petición del usuario): las tareas temporales que el motor de la 3b no admite por sus
+     efectos continuos pasan al motor discretizado de PDDL+ (paso δ, integración exacta,
+     validación con un δ más fino). generator-nonlinear: 8 de 8; generator-toricelli: 5 de 9,
+     y 9 de 9 con la heurística de la 6c (ver `benchmarks/continuous-effects`);
+   - **disyunciones sobre variables continuas** (condiciones de efectos condicionales,
+     invariantes disyuntivas) con **programación lineal entera** (HiGHS, ya disponible con
+     `scipy.optimize.milp`). El coste en eficiencia es importante (la programación entera
+     puede ser exponencial), así que se activaría solo en los dominios que lo necesiten,
+     como la programación lineal ahora.
+7. **Estudio de la integración de HTN** (planificación jerárquica): viabilidad de aceptar
+   dominios HTN (HDDL, el lenguaje del track HTN de las IPC) y de combinar la
+   descomposición jerárquica con nuestro motor de búsqueda. Sería una mejora bienvenida
+   para organizar mejor la información en el proyecto principal, pero no es crítica.
 
 ---
 
