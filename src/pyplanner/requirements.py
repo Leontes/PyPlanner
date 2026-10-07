@@ -37,7 +37,12 @@ PDDL 2.1:
 * ``preference`` (en objetivos, precondiciones, condiciones y restricciones) e
   ``is-violated`` → ``:preferences``. Una métrica que solo usa números, aritmética e
   ``is-violated`` también se acepta con ``:preferences`` (es la de las preferencias de la
-  IPC 2006).
+  IPC 2006);
+* procesos y eventos (PDDL+) → ``:time``. Los efectos continuos de un proceso no necesitan
+  además ``:continuous-effects`` (ese es el de las acciones durativas), pero sí
+  ``:numeric-fluents``, como cualquier efecto numérico.
+
+Un literal negado en ``:init`` (PDDL 3.1) no necesita nada: es redundante.
 
 ``(not <átomo>)`` en un efecto es un borrado STRIPS y no necesita nada.
 """
@@ -140,6 +145,8 @@ SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
         ":constraints",
         ":preferences",
         ":object-fluents",
+        # Iteración 6 (PDDL+)
+        ":time",
     }
 )
 
@@ -253,6 +260,15 @@ def requirement_uses(
         yield RequirementUse(":derived-predicates", "un predicado derivado", path, _loc(rule))
         yield from _typed_items(rule.get("parameters", []), f"{path}.parameters")
         yield from _formula_uses(rule["condition"], f"{path}.condition", objects)
+    for key, kind in (("processes", "un proceso"), ("events", "un evento")):
+        for i, happening in enumerate(document.get(key, [])):
+            path = f"{key}[{i}]"
+            yield RequirementUse(":time", kind, path, _loc(happening))
+            yield from _typed_items(happening.get("parameters", []), f"{path}.parameters")
+            if "precondition" in happening:
+                yield from _formula_uses(happening["precondition"], f"{path}.precondition", objects)
+            if "effect" in happening:
+                yield from _effect_uses(happening["effect"], f"{path}.effect", objects)
     for i, element in enumerate(document.get("init", [])):
         is_object = element["op"] == "=" and (
             isinstance(element["value"], str) or element["fluent"]["function"] in objects

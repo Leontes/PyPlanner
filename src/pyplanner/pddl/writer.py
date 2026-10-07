@@ -70,6 +70,15 @@ def _write_domain(document: Mapping[str, Any]) -> str:
         lines.append(f"{_INDENT * 2}:condition {_timed(condition, _formula)}")
         lines.append(f"{_INDENT * 2}:effect {_timed(action.get('effect', _EMPTY), _effect)}")
         lines.append(f"{_INDENT})")
+    for key, section in (("processes", ":process"), ("events", ":event")):
+        for happening in document.get(key, []):
+            lines.append(f"{_INDENT}({section} {happening['name']}")
+            parameters = _typed_list(happening.get("parameters", []))
+            lines.append(f"{_INDENT * 2}:parameters ({parameters})")
+            precondition = happening.get("precondition", _EMPTY)
+            lines.append(f"{_INDENT * 2}:precondition {_formula(precondition)}")
+            lines.append(f"{_INDENT * 2}:effect {_effect(happening.get('effect', _EMPTY))}")
+            lines.append(f"{_INDENT})")
     if "constraints" in document:
         lines.append(f"{_INDENT}(:constraints {_constraint(document['constraints'])})")
     lines.append(")")

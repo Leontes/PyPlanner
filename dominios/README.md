@@ -75,6 +75,11 @@ Notas:
   parser no admite un nombre declarado dos veces en ningún sitio. Se ha renombrado el
   dominio a `satellite-time-windows` (el nombre de su colección en la IPC 2004), en el
   dominio y en el `(:domain …)` de los problemas. Los tipos y los planes no cambian.
+- (‡) Los problemas de `car` daban valor inicial a las funciones sin argumentos sin
+  paréntesis (`(= d 0)`). El dominio las declara y las usa como `(d)`, así que se trata
+  como una errata y se ha escrito `(= (d) 0)` (también `a` y `v`).
+- (‡) En `generator`, el proceso `refuelling` tenía un guion pegado al tipo
+  (`?t -tank`). Se ha separado (`?t - tank`). Los planes valen lo mismo para VAL.
 - (†) `greenhouse` **no es un benchmark oficial**. Se ha creado ad hoc para probar casos
   límite de expresividad de PDDL 2.1 temporal que no aparecen en ningún benchmark público
   encontrado (ni en las IPC ni en los de COLIN/OPTIC o VAL): efectos continuos dentro de

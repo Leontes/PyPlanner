@@ -138,6 +138,10 @@ def ground(domain: Domain, problem: Problem) -> GroundTask:
         UnsupportedFeatureError: si una fórmula es demasiado grande en forma normal
             disyuntiva, o si usa algo que el motor temporal todavía no admite.
     """
+    if domain.processes or domain.events:
+        raise UnsupportedFeatureError(
+            "el motor de búsqueda todavía no admite procesos ni eventos (PDDL+)"
+        )
     if domain.durative_actions or problem.timed_literals:
         if _has_preferences(domain, problem):
             raise UnsupportedFeatureError(

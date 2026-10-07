@@ -443,16 +443,39 @@ dominio compilado).
 ## Iteración 6: PDDL+
 
 **Requisitos:** `:time`.
-- **Parser:** `:process`, `:event` y `#t` en los efectos de los procesos.
-- **Motor:**
-  - semántica de PDDL+ por discretización del tiempo, al estilo UPMurphi, DiNo o ENHSP.
-    Tiene tres partes:
-    - paso δ configurable;
-    - disparo en cascada de los eventos;
-    - avance de los procesos activos;
-  - validación del plan con una δ más fina (*plan validation*);
-  - heurística que tiene en cuenta los procesos (extensión de la heurística numérica);
-  - salida con `@end` y horizonte temporal.
+
+Se divide en tres partes (decidido el 2026-10-07):
+
+- **6a, parser** (esquema JSON v7): ✅ `:process` y `:event` (parámetros, precondición y
+  efecto; en los procesos, efectos continuos con `#t`), y literales negados en `:init`
+  (válidos en PDDL 3.1; redundantes con el mundo cerrado, se ignoran). Ver
+  [formato-json.md](formato-json.md#pddl-v7). El motor rechaza procesos y eventos hasta
+  la 6b.
+- **6b, motor discretizado** (al estilo de ENHSP, DiNo o UPMurphi):
+  - la búsqueda tiene las acciones instantáneas y una acción "esperar δ", que integra los
+    procesos activos durante δ, dispara los eventos en cascada y comprueba las
+    invariantes;
+  - **δ = 1 por defecto**, configurable. El plan se valida además con un δ más fino; si
+    falla (por ejemplo, un evento que debía dispararse a mitad de un paso), se reintenta
+    con δ/2 un número limitado de veces;
+  - **integración exacta** de los procesos con series de Taylor, que terminan en las
+    dinámicas polinómicas (car, generator) y dan los mismos valores que VAL; si la serie no
+    termina (un crecimiento exponencial, por ejemplo), Runge-Kutta 4 con subpasos;
+  - **acciones durativas** de los dominios PDDL+ compiladas en el motor discretizado: un
+    inicio, un proceso que hace de reloj y un fin cuando el reloj llega a la duración; las
+    condiciones `over all` son invariantes. Las tareas temporales sin `:time` siguen en el
+    motor de la 3b, que es más preciso;
+  - plan con marcas de tiempo y las acciones simultáneas separadas en ε (VAL no admite dos
+    acciones en el mismo instante). VAL simula hasta el último *happening*: no puede
+    validar un plan cuyo objetivo solo se cumple esperando tras la última acción, que se
+    comprueba con la simulación propia.
+- **6c, heurística y rendimiento:** los procesos (su ritmo por δ) y los eventos en la
+  relajación numérica de la 3a; medidas en `benchmarks/`, y esperas más largas cuando no
+  cambia nada (generator necesita unas 1000 esperas con δ = 1).
+
+**Tests:** tier 6 (car y generator, de SMTPlan) resuelto y validado con VAL, más medidas
+en `benchmarks/` con colecciones de PDDL+. Erratas de los ficheros del tier 6 (‡): en car,
+funciones sin paréntesis (`(= d 0)`); en generator, un guion pegado al tipo (`?t -tank`).
 
 ---
 

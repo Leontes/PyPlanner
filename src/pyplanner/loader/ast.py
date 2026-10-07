@@ -614,6 +614,29 @@ class Action:
 
 
 @dataclass(frozen=True)
+class Process:
+    """Proceso (PDDL+): mientras se cumple su precondición, sus efectos continuos cambian las
+    funciones con el paso del tiempo. El efecto solo tiene efectos continuos, y ``and`` y
+    ``forall`` de ellos (los contenedores de las acciones durativas)."""
+
+    name: str
+    parameters: tuple[Parameter, ...]
+    precondition: Formula
+    effect: DurativeEffect
+
+
+@dataclass(frozen=True)
+class Event:
+    """Evento (PDDL+): sucede en cuanto se cumple su precondición, con efectos instantáneos
+    como los de una acción. Una precondición o un efecto ausentes son ``And(())``."""
+
+    name: str
+    parameters: tuple[Parameter, ...]
+    precondition: Formula
+    effect: Effect
+
+
+@dataclass(frozen=True)
 class Domain:
     """Un dominio PDDL.
 
@@ -636,6 +659,9 @@ class Domain:
     #: Funciones de objetos, ya compiladas a predicados (ver
     #: :mod:`pyplanner.loader.object_fluents`); hacen falta para compilar los problemas.
     object_fluents: tuple["ObjectFunction", ...] = ()
+    #: Procesos y eventos (PDDL+).
+    processes: tuple[Process, ...] = ()
+    events: tuple[Event, ...] = ()
 
     @cached_property
     def preference_names(self) -> frozenset[str]:

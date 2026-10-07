@@ -19,7 +19,7 @@
 )
 
 (:process refuelling
- :parameters (?g - generator ?t -tank)
+ :parameters (?g - generator ?t - tank)
  :precondition (and (using ?t ?g))
  :effect (and (decrease (fuelInTank ?t) (* #t (* 0.001 (* (ptime ?t) (ptime ?t))))) 
 	      (increase (ptime ?t) (* #t 1))

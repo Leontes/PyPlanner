@@ -156,6 +156,8 @@ def _check(args: argparse.Namespace) -> int:
         if domain.derived
         else ""
     )
+    if domain.processes or domain.events:
+        derived += f", {len(domain.processes)} procesos, {len(domain.events)} eventos"
     timed = (
         f", {len(problem.timed_literals)} literales iniciales temporizados"
         if problem.timed_literals

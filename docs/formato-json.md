@@ -29,16 +29,17 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
   - v3: PDDL 2.1 numérico y costes de acción (`:action-costs`);
   - v4: PDDL 2.1 temporal (acciones durativas);
   - v5: PDDL 2.2 (predicados derivados y literales iniciales temporizados);
-  - v6 (actual): PDDL 3 (restricciones de trayectoria, preferencias, `is-violated` y
-    funciones de objetos).
+  - v6: PDDL 3 (restricciones de trayectoria, preferencias, `is-violated` y funciones de
+    objetos);
+  - v7 (actual): PDDL+ (procesos, eventos y literales negados en el estado inicial).
 
   Cada versión solo **añade** construcciones, así que un documento v1 sigue siendo
   válido.
 - Los nombres siguen el patrón `[A-Za-z][A-Za-z0-9_-]*`. La fase 2 los pasa a minúsculas,
   porque PDDL no distingue mayúsculas.
 - **Cada nombre se declara una sola vez, en cualquier sitio:** el dominio, el problema, los
-  tipos (incluido `object`), las constantes, los objetos, los predicados, las funciones y
-  las acciones no pueden compartir nombre. El error dice qué era el nombre repetido
+  tipos (incluido `object`), las constantes, los objetos, los predicados, las funciones,
+  las acciones, los procesos y los eventos no pueden compartir nombre. El error dice qué era el nombre repetido
   (`el nombre 'satellite' ya se ha definido previamente como nombre del dominio`). La única
   excepción son las preferencias, que pueden compartir nombre entre sí (pero no con otra
   cosa). Las variables (`?x`) tienen su propio ámbito.
@@ -64,6 +65,7 @@ fichero PDDL ──(fase 1: pyplanner.pddl)──► JSON ──(fase 2: pyplann
 | `durative_actions` | no | acciones durativas (v4); ver [Acciones durativas](#acciones-durativas-v4) |
 | `derived` | no | reglas de predicados derivados (v5); ver [PDDL 2.2](#pddl-22-v5) |
 | `constraints` | no | restricciones de trayectoria duras (v6); ver [PDDL 3](#pddl-3-v6) |
+| `processes`, `events` | no | procesos y eventos (v7); ver [PDDL+](#pddl-v7) |
 
 Una acción tiene `name`, `parameters` y, opcionalmente, `precondition` (una fórmula) y
 `effect` (un efecto). Si falta alguno de los dos, se toma como vacío. Las acciones y las
@@ -78,7 +80,7 @@ acciones durativas comparten espacio de nombres.
 | `goal` | sí | fórmula |
 | `requirements` | no | se suman a los del dominio |
 | `objects` | no | como `constants`. No pueden repetir ningún nombre del dominio (ni una constante) |
-| `init` | no | lista de átomos sin variables, de valores iniciales `{"op": "=", "fluent": …, "value": 3.5}` (v3) y de literales iniciales temporizados `{"op": "at", "time": 10, "literal": …}` (v5) |
+| `init` | no | lista de átomos sin variables, de valores iniciales `{"op": "=", "fluent": …, "value": 3.5}` (v3), de literales iniciales temporizados `{"op": "at", "time": 10, "literal": …}` (v5) y de literales negados `{"op": "not", "arg": <átomo>}` (v7, redundantes) |
 | `metric` | no | `{"direction": "minimize" \| "maximize", "expression": …}` (v3) |
 | `constraints` | no | restricciones de trayectoria, que pueden ser preferencias (v6); ver [PDDL 3](#pddl-3-v6) |
 
@@ -117,8 +119,12 @@ Las reglas están en `pyplanner/requirements.py`:
 | `preference`, `is-violated` | `:preferences` |
 | funciones con `type`, términos de función como argumento, `assign` de un objeto o `undefined`, valores iniciales de objeto | `:object-fluents` |
 | métrica de números, aritmética e `is-violated` | `:numeric-fluents` o `:preferences` |
+| `processes`, `events` | `:time` |
 
-- `not` en un efecto es un borrado STRIPS y no necesita nada.
+- `not` en un efecto es un borrado STRIPS y no necesita nada, y un literal negado en
+  `init`, tampoco.
+- Los efectos continuos de un proceso necesitan `:time` y `:numeric-fluents`, no
+  `:continuous-effects` (que es el de las acciones durativas).
 - `:adl` y `:quantified-preconditions` equivalen a sus requisitos componentes, y
   `:fluents` equivale a `:numeric-fluents`.
 
@@ -319,6 +325,33 @@ documento compilado, escrito con el conversor inverso.
 **`is-violated`.** `{"op": "is-violated", "name": "p1"}` es el número de incumplimientos de
 la preferencia `p1` (de todas sus instancias), y solo puede aparecer en la métrica. El
 nombre tiene que ser el de alguna preferencia del dominio o del problema.
+
+## PDDL+ (v7)
+
+**Procesos.** `(:process p :parameters (…) :precondition <fórmula> :effect <efecto>)` es un
+elemento de `processes`. Mientras se cumple la precondición, sus efectos continuos cambian
+las funciones con el paso del tiempo:
+
+```json
+{"name": "moving", "parameters": [],
+ "precondition": {"op": "atom", "predicate": "running", "args": []},
+ "effect": {"op": "increase", "fluent": {"op": "fluent", "function": "d", "args": []},
+            "value": {"op": "*", "args": [{"op": "#t"},
+                                          {"op": "fluent", "function": "v", "args": []}]}}}
+```
+
+- El efecto solo tiene efectos continuos (`increase` o `decrease` con `#t`, con la misma
+  forma que los de las acciones durativas: `#t` o `(* #t <expresión>)`), y `and` y
+  `forall` de ellos.
+- La precondición es una fórmula sin preferencias.
+
+**Eventos.** `(:event e :parameters (…) :precondition <fórmula> :effect <efecto>)` es un
+elemento de `events`, con la forma de una acción: sucede en cuanto se cumple su
+precondición, con efectos instantáneos (sin `#t`).
+
+**Literales negados en el estado inicial.** `(not (p))` en `:init` (válido en PDDL 3.1) es
+`{"op": "not", "arg": <átomo>}`. Es redundante, porque lo que no se declara es falso, pero
+no puede negar un hecho que el mismo `init` declara cierto.
 
 ## Ejemplo
 

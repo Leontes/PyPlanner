@@ -19,7 +19,8 @@ def test_supported_tiers_load(instance: Instance) -> None:
     assert problem.init or problem.values
 
 
-@pytest.mark.parametrize("instance", UNSUPPORTED, ids=lambda i: i.id)
+@pytest.mark.skipif(not UNSUPPORTED, reason="el parser acepta todos los tiers")
+@pytest.mark.parametrize("instance", UNSUPPORTED or [None], ids=lambda i: i.id if i else "-")
 def test_unsupported_tiers_fail_cleanly(instance: Instance) -> None:
     """Un fichero de un tier no soportado da un error PDDL legible, nunca otra excepción."""
     with pytest.raises(PDDLError):

@@ -72,6 +72,7 @@ from pyplanner.loader.ast import (
     DurativeWhen,
     Effect,
     Equals,
+    Event,
     Exists,
     Expression,
     FluentTerm,
@@ -91,6 +92,7 @@ from pyplanner.loader.ast import (
     Predicate,
     Preference,
     Problem,
+    Process,
     Term,
     TimedCondition,
     TimedEffect,
@@ -187,6 +189,13 @@ def load_domain(document: JSON) -> Domain:
     constraints = None
     if "constraints" in document:
         constraints = ctx.constraint(document["constraints"], "constraints", scope)
+    processes = tuple(
+        ctx.process(node, f"processes[{i}]", scope)
+        for i, node in enumerate(document.get("processes", []))
+    )
+    events = tuple(
+        ctx.event(node, f"events[{i}]", scope) for i, node in enumerate(document.get("events", []))
+    )
 
     return Domain(
         name=document["name"].lower(),
@@ -200,6 +209,8 @@ def load_domain(document: JSON) -> Domain:
         derived=derived,
         constraints=constraints,
         object_fluents=fluents,
+        processes=processes,
+        events=events,
     )
 
 
@@ -244,11 +255,16 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
     )
 
     init: set[Atom] = set()
+    negated: list[tuple[Atom, JSON, str]] = []
     values: dict[FluentTerm, float] = {}
     timed: dict[tuple[float, Atom], TimedLiteral] = {}
     for i, node in enumerate(document.get("init", [])):
         path = f"init[{i}]"
-        if node["op"] == "=":
+        if node["op"] == "not":
+            # Redundante (lo que no se declara es falso), pero no puede contradecir el resto.
+            atom = ctx.basic_atom(node["arg"], f"{path}.arg", scope, "el estado inicial")
+            negated.append((atom, node, path))
+        elif node["op"] == "=":
             fluent = ctx.fluent(node["fluent"], f"{path}.fluent", scope)
             if fluent in values:
                 ctx.fail(f"la función {fluent} tiene dos valores iniciales", node, path)
@@ -265,6 +281,9 @@ def load_problem(document: JSON, domain: Domain) -> Problem:
                 )
         else:
             init.add(ctx.basic_atom(node, path, scope, "el estado inicial"))
+    for atom, node, path in negated:
+        if atom in init:
+            ctx.fail(f"el estado inicial declara {atom} cierto y falso a la vez", node, path)
     goal = ctx.formula(document["goal"], "goal", scope)
     constraints = None
     if "constraints" in document:
@@ -350,6 +369,8 @@ class _Names:
             ("functions", "función"),
             ("actions", "acción"),
             ("durative_actions", "acción durativa"),
+            ("processes", "proceso"),
+            ("events", "evento"),
         ):
             for i, node in enumerate(document.get(key, [])):
                 self.add(node["name"], kind, node, f"{key}[{i}]")
@@ -372,6 +393,8 @@ class _Names:
             ),
             ("acción", [a.name for a in domain.actions]),
             ("acción durativa", [a.name for a in domain.durative_actions]),
+            ("proceso", [p.name for p in domain.processes]),
+            ("evento", [e.name for e in domain.events]),
             ("preferencia", sorted(domain.preference_names)),
         ):
             for name in names:
@@ -744,6 +767,48 @@ class _Context:
         return TimedLiteral(
             float(node["time"]), self.basic_atom(literal, f"{path}.literal", scope, where)
         )
+
+    # --- Procesos y eventos (iteración 6, PDDL+) -------------------------------------
+
+    def process(self, node: JSON, path: str, scope: _Scope) -> Process:
+        parameters = self.parameters(node.get("parameters", []), path)
+        inner = scope.bind(parameters)
+        precondition: Formula = And()
+        effect: DurativeEffect = DurativeAnd()
+        if "precondition" in node:
+            precondition = self.formula(node["precondition"], f"{path}.precondition", inner)
+        if "effect" in node:
+            effect = self.process_effect(node["effect"], f"{path}.effect", inner)
+        return Process(node["name"].lower(), parameters, precondition, effect)
+
+    def process_effect(self, node: JSON, path: str, scope: _Scope) -> DurativeEffect:
+        """Efectos continuos (``(increase|decrease f (* #t e))``), y ``and`` y ``forall`` de
+        ellos."""
+        op = node["op"]
+        if op == "and":
+            return DurativeAnd(
+                tuple(
+                    self.process_effect(arg, f"{path}.args[{i}]", scope)
+                    for i, arg in enumerate(node["args"])
+                )
+            )
+        if op == "forall":
+            parameters, inner = self.quantified(node, path, scope)
+            return DurativeForallEffect(
+                parameters, self.process_effect(node["arg"], f"{path}.arg", inner)
+            )
+        return self.continuous_effect(node, path, scope)
+
+    def event(self, node: JSON, path: str, scope: _Scope) -> Event:
+        parameters = self.parameters(node.get("parameters", []), path)
+        inner = scope.bind(parameters)
+        precondition: Formula = And()
+        effect: Effect = And()
+        if "precondition" in node:
+            precondition = self.formula(node["precondition"], f"{path}.precondition", inner)
+        if "effect" in node:
+            effect = self.effect(node["effect"], f"{path}.effect", inner)
+        return Event(node["name"].lower(), parameters, precondition, effect)
 
     # --- Acciones durativas (iteración 3b) -------------------------------------------
 

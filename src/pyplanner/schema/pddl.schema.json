@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Leontes/PyPlanner/schema/pddl.schema.json",
   "title": "PyPlanner PDDL-JSON",
-  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos). Versión 5: PDDL 2.2 (predicados derivados y literales iniciales temporizados). Versión 6: PDDL 3 (restricciones de trayectoria, preferencias, is-violated y funciones de objetos).",
+  "description": "Representación JSON de un dominio, un problema o un plan PDDL. Dominios y problemas son la entrada del planificador (fase 2 del parser); los planes, su salida. Versión 1: STRIPS. Versión 2: PDDL 1.2 (subconjunto ADL: tipos, precondiciones negativas, disyunciones, cuantificadores, igualdad y efectos condicionales). Versión 3: PDDL 2.1 numérico (funciones, expresiones, comparaciones, efectos numéricos, valores iniciales y métrica) y costes de acción. Versión 4: PDDL 2.1 temporal (acciones durativas, restricciones de duración, condiciones y efectos en at start, at end y over all, y efectos continuos). Versión 5: PDDL 2.2 (predicados derivados y literales iniciales temporizados). Versión 6: PDDL 3 (restricciones de trayectoria, preferencias, is-violated y funciones de objetos). Versión 7: PDDL+ (procesos, eventos y literales negados en el estado inicial).",
   "type": "object",
   "required": [
     "kind"
@@ -56,10 +56,10 @@
   ],
   "$defs": {
     "version": {
-      "description": "Versión del formato (1 a 6). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
+      "description": "Versión del formato (1 a 7). Las versiones nuevas solo añaden construcciones, así que un documento de una versión anterior sigue siendo válido.",
       "type": "integer",
       "minimum": 1,
-      "maximum": 6
+      "maximum": 7
     },
     "loc": {
       "description": "Posición opcional en el fichero PDDL original (el fichero va en 'source' a nivel de documento).",
@@ -813,6 +813,18 @@
             "$ref": "#/$defs/derived_rule"
           }
         },
+        "processes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/process"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event"
+          }
+        },
         "constraints": {
           "$ref": "#/$defs/con_gd"
         }
@@ -1544,7 +1556,7 @@
       "additionalProperties": false
     },
     "init_element": {
-      "description": "Elemento del estado inicial: un átomo, el valor inicial de una función o un literal inicial temporizado (v5).",
+      "description": "Elemento del estado inicial: un átomo, el valor inicial de una función o un literal inicial temporizado (v5), o un literal negado (v7; redundante: lo que no se declara es falso).",
       "type": "object",
       "required": [
         "op"
@@ -1554,7 +1566,8 @@
           "enum": [
             "atom",
             "=",
-            "at"
+            "at",
+            "not"
           ]
         }
       },
@@ -1659,6 +1672,34 @@
                     "additionalProperties": false
                   }
                 ]
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "not"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "not"
+              },
+              "arg": {
+                "$ref": "#/$defs/atom"
               },
               "loc": {
                 "$ref": "#/$defs/loc"
@@ -2872,6 +2913,162 @@
           }
         }
       ]
+    },
+    "process": {
+      "description": "Proceso (v7, PDDL+): mientras se cumple su precondición, sus efectos continuos cambian las funciones con el paso del tiempo.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        },
+        "precondition": {
+          "$ref": "#/$defs/formula"
+        },
+        "effect": {
+          "$ref": "#/$defs/process_effect"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
+    },
+    "process_effect": {
+      "description": "Efecto de un proceso (v7): efectos continuos (increase o decrease cuyo valor usa '#t'), o and y forall de ellos.",
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "and",
+            "forall",
+            "increase",
+            "decrease"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "and"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "args"
+            ],
+            "properties": {
+              "op": {
+                "const": "and"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/process_effect"
+                }
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "forall"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "op",
+              "parameters",
+              "arg"
+            ],
+            "properties": {
+              "op": {
+                "const": "forall"
+              },
+              "parameters": {
+                "$ref": "#/$defs/parameters"
+              },
+              "arg": {
+                "$ref": "#/$defs/process_effect"
+              },
+              "loc": {
+                "$ref": "#/$defs/loc"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "increase"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "decrease"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/numeric_effect"
+          }
+        }
+      ]
+    },
+    "event": {
+      "description": "Evento (v7, PDDL+): sucede en cuanto se cumple su precondición, con efectos instantáneos como los de una acción.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "parameters": {
+          "$ref": "#/$defs/parameters"
+        },
+        "precondition": {
+          "$ref": "#/$defs/formula"
+        },
+        "effect": {
+          "$ref": "#/$defs/effect"
+        },
+        "loc": {
+          "$ref": "#/$defs/loc"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from pyplanner.errors import PDDLSyntaxError, UnsupportedFeatureError
+from pyplanner.errors import PDDLSyntaxError, UndeclaredRequirementError, UnsupportedFeatureError
 from pyplanner.pddl import parse_domain, parse_pddl, parse_problem
 from pyplanner.schema import SCHEMA_VERSION, validate_document
 from tests.samples import DOMAIN, PROBLEM
@@ -47,6 +47,8 @@ def test_domain_document() -> None:
         ],
         "durative_actions": [],
         "derived": [],
+        "processes": [],
+        "events": [],
     }
 
 
@@ -144,17 +146,15 @@ def test_syntax_errors(text: str, message: str) -> None:
         parse_pddl(text)
 
 
-@pytest.mark.parametrize(
-    ("text", "requirement"),
-    [
-        ("(define (domain d) (:requirements :time))", ":time"),
-        ("(define (domain d) (:process p))", ":time"),
-        ("(define (domain d) (:event e))", ":time"),
-    ],
-)
-def test_future_features_are_unsupported(text: str, requirement: str) -> None:
-    with pytest.raises(UnsupportedFeatureError, match=requirement):
-        parse_pddl(text)
+def test_unsupported_requirements_are_rejected() -> None:
+    with pytest.raises(UnsupportedFeatureError, match=":open-world"):
+        parse_pddl("(define (domain d) (:requirements :open-world))")
+
+
+@pytest.mark.parametrize("section", ["(:process p)", "(:event e)"])
+def test_processes_and_events_need_time(section: str) -> None:
+    with pytest.raises(UndeclaredRequirementError, match=":time"):
+        parse_pddl(f"(define (domain d) {section})")
 
 
 def test_at_is_an_ordinary_predicate_in_init() -> None:

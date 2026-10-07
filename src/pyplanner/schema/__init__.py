@@ -16,7 +16,7 @@ from jsonschema.exceptions import ValidationError, best_match
 from pyplanner.errors import SchemaValidationError
 
 #: Versión más reciente del formato JSON que genera y acepta el planificador.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 @cache

@@ -44,11 +44,10 @@ _NUMBER = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 
 # Secciones y operadores de versiones posteriores de PDDL, con el requisito que los introduce.
 # Sirven para dar un error de "no soportado" en lugar de uno de sintaxis.
-_FUTURE_DOMAIN_SECTIONS = {
-    ":process": ":time",
-    ":event": ":time",
-}
+_FUTURE_DOMAIN_SECTIONS: dict[str, str] = {}
 _FUTURE_PROBLEM_SECTIONS: dict[str, str] = {}
+#: Secciones del dominio que pueden repetirse (una por acción, regla, proceso o evento).
+_REPEATED_SECTIONS = (":action", ":durative-action", ":derived", ":process", ":event")
 #: Operadores lógicos: no pueden usarse como nombre de predicado dentro de un borrado.
 _OPERATORS = frozenset({"and", "or", "not", "imply", "exists", "forall", "=", "when"})
 
@@ -200,11 +199,13 @@ class _Parser:
             actions=[],
             durative_actions=[],
             derived=[],
+            processes=[],
+            events=[],
         )
         seen: set[str] = set()
         for keyword, section in sections:
             key = keyword.value
-            if key not in (":action", ":durative-action", ":derived"):
+            if key not in _REPEATED_SECTIONS:
                 self._check_unique_section(key, keyword, seen)
             body = section.items[1:]
             if key == ":requirements":
@@ -223,6 +224,10 @@ class _Parser:
                 document["durative_actions"].append(self._durative_action(section))
             elif key == ":derived":
                 document["derived"].append(self._derived(section))
+            elif key == ":process":
+                document["processes"].append(self._process(section))
+            elif key == ":event":
+                document["events"].append(self._event(section))
             elif key == ":constraints":
                 document["constraints"] = self._constraints_section(section, preferences=False)
             else:
@@ -283,6 +288,65 @@ class _Parser:
         if not has_duration:
             raise PDDLSyntaxError("falta :duration en la acción durativa", section.location)
         return self._with_loc(node, section)
+
+    def _process(self, section: SList) -> JSONDict:
+        """``(:process p :parameters (...) :precondition <fórmula> :effect <efecto>)``
+        (PDDL+): mientras se cumple la precondición, los efectos continuos (``increase`` o
+        ``decrease`` con ``#t``) cambian las funciones."""
+        return self._happening(section, "proceso", self._process_effect)
+
+    def _event(self, section: SList) -> JSONDict:
+        """``(:event e :parameters (...) :precondition <fórmula> :effect <efecto>)``
+        (PDDL+): sucede en cuanto se cumple la precondición, con efectos instantáneos."""
+        return self._happening(section, "evento", self._effect)
+
+    def _happening(
+        self, section: SList, kind: str, effect: Callable[[SExpr], JSONDict]
+    ) -> JSONDict:
+        node: JSONDict = {"name": self._action_name(section), "parameters": []}
+        for keyword, value in self._action_fields(section):
+            if keyword.value == ":parameters":
+                node["parameters"] = self._parameters(
+                    self._list(value, "la lista de parámetros").items
+                )
+            elif keyword.value == ":precondition":
+                if not self._is_empty_list(value):
+                    node["precondition"] = self._formula(value)
+            elif keyword.value == ":effect":
+                if not self._is_empty_list(value):
+                    node["effect"] = effect(value)
+            else:
+                raise PDDLSyntaxError(
+                    f"clave de {kind} desconocida '{keyword.value}'", keyword.location
+                )
+        return self._with_loc(node, section)
+
+    def _process_effect(self, expr: SExpr) -> JSONDict:
+        """Efecto de un proceso: ``(increase|decrease <función> (* #t <expresión>))``, o
+        ``and`` y ``forall`` de ellos. La fase 2 comprueba el ``#t``."""
+        effect = self._list(expr, "un efecto de proceso")
+        if not effect.items:
+            raise PDDLSyntaxError("efecto vacío", effect.location)
+        head = self._symbol(effect.items[0], "un operador")
+        op, rest = head.value, effect.items[1:]
+        if op == "and":
+            args = [self._process_effect(item) for item in rest]
+            return self._with_loc({"op": "and", "args": args}, effect)
+        if op == "forall":
+            self._arity(effect, rest, 2, "(forall (<variables>) <efecto de proceso>)")
+            node = {
+                "op": "forall",
+                "parameters": self._quantified(rest[0]),
+                "arg": self._process_effect(rest[1]),
+            }
+            return self._with_loc(node, effect)
+        if op in ("increase", "decrease"):
+            return self._effect(effect)
+        raise PDDLSyntaxError(
+            "un proceso solo tiene efectos continuos ((increase|decrease <función> "
+            "(* #t <expresión>))), y 'and' y 'forall' de ellos",
+            effect.location,
+        )
 
     def _derived(self, section: SList) -> JSONDict:
         """``(:derived (p ?x - t ...) <fórmula>)``: una regla del predicado derivado ``p``."""
@@ -357,6 +421,9 @@ class _Parser:
     def _init_element(self, expr: SExpr) -> JSONDict:
         element = self._list(expr, "un átomo")
         head = element.items[0] if element.items else None
+        if isinstance(head, Symbol) and head.value == "not":
+            # Un literal negado (PDDL 3.1): redundante, porque lo que no se declara es falso.
+            return self._literal(element)
         if isinstance(head, Symbol):
             if head.value == "=":
                 rest = element.items[1:]

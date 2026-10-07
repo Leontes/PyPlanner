@@ -37,7 +37,8 @@ def test_unsupported_requirements_are_reported_expanded() -> None:
     assert unsupported_requirements([":derived-predicates"]) == []  # PDDL 2.2: iteración 4
     assert unsupported_requirements([":fluents"]) == []  # numérico: iteración 3a
     assert unsupported_requirements([":durative-actions"]) == []  # temporal: iteración 3b
-    assert unsupported_requirements([":adl", ":time"]) == [":time"]
+    assert unsupported_requirements([":time"]) == []  # PDDL+: iteración 6
+    assert unsupported_requirements([":adl", ":open-world"]) == [":open-world"]
 
 
 def test_adl_is_supported() -> None:

@@ -121,8 +121,8 @@ def test_loading_a_problem_as_domain_fails(domain: Domain) -> None:
 
 
 def test_unsupported_requirements_in_json() -> None:
-    document = {"version": 1, "kind": "domain", "name": "d", "requirements": [":time"]}
-    with pytest.raises(UnsupportedFeatureError, match=":time"):
+    document = {"version": 1, "kind": "domain", "name": "d", "requirements": [":open-world"]}
+    with pytest.raises(UnsupportedFeatureError, match=":open-world"):
         load_domain(document)
 
 
@@ -229,8 +229,8 @@ def test_problem_semantic_errors(body: str, message: str | None, path: str | Non
 def test_unsupported_requirements_in_problem_json() -> None:
     domain = load_domain(parse_domain(domain_with("")))
     document = problem_with("(:goal (q))")
-    document["requirements"] = [":time"]
-    with pytest.raises(UnsupportedFeatureError, match=":time"):
+    document["requirements"] = [":open-world"]
+    with pytest.raises(UnsupportedFeatureError, match=":open-world"):
         load_problem(document, domain)
 
 
