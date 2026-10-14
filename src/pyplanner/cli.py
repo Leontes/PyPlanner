@@ -14,6 +14,11 @@ Subcomandos:
 Códigos de salida: 0 plan encontrado (o comando correcto), 2 entrada no válida, 3 se ha
 demostrado que no hay plan, 4 no se ha encontrado plan (dentro de los límites, o con una
 búsqueda que no puede demostrar que no lo haya).
+
+**Memoria:** ``solve`` se pone a sí mismo un límite duro (``RLIMIT_DATA``, ver
+:mod:`pyplanner.search.memory`) con la memoria total de ``-m`` antes del grounding, que es
+donde una tarea demasiado grande puede agotar la de la máquina. Si se agota al instanciar,
+termina con el código 4.
 """
 
 import argparse
@@ -29,7 +34,7 @@ from pyplanner.grounding.discrete import DiscreteTask
 from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.heuristics import DEVICES
 from pyplanner.pddl import parse_file
-from pyplanner.planner import PlanningResult, available_cores, solve
+from pyplanner.planner import PlanningResult, available_cores, default_memory_limit, solve
 from pyplanner.search import (
     DEFAULT_CORES,
     PORTFOLIOS,
@@ -38,6 +43,7 @@ from pyplanner.search import (
     SearchStatus,
     portfolio_for_cores,
 )
+from pyplanner.search.memory import hard_limit_mb, limit_process
 
 #: Código de salida cuando la entrada no es válida.
 EXIT_INVALID_INPUT = 2
@@ -96,8 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-m",
         "--memory-limit",
         type=float,
-        help="memoria total en MB para las búsquedas, repartida entre ellas "
-        "(por defecto, el 80%% de la disponible)",
+        help="memoria total en MB para las búsquedas, repartida entre ellas (por defecto, el "
+        "80%% de la disponible); también es el límite duro del grounding y de cada búsqueda",
     )
     solve_cmd.add_argument(
         "--delta",
@@ -212,18 +218,27 @@ def _solve(args: argparse.Namespace) -> int:
     if overrides:
         configs = [c.with_changes(**overrides) for c in configs]
 
+    total = args.memory_limit if args.memory_limit is not None else default_memory_limit()
+    if total is not None:
+        limit_process(hard_limit_mb(total))  # el grounding y lo que se busque en este proceso
     domain = read_domain(args.domain)
     problem = read_problem(args.problem, domain)
     if args.delta is not None and args.delta <= 0:
         raise ConfigError("--delta tiene que ser positivo")
-    result = solve(
-        domain,
-        problem,
-        configs,
-        time_limit=args.time_limit,
-        memory_limit=args.memory_limit,
-        delta=args.delta,
-    )
+    try:
+        result = solve(
+            domain,
+            problem,
+            configs,
+            time_limit=args.time_limit,
+            memory_limit=args.memory_limit,
+            delta=args.delta,
+        )
+    except MemoryError:
+        limit = "" if total is None else f" ({total:.0f} MB)"
+        print(f"error: se ha agotado la memoria permitida{limit} al instanciar la tarea",
+              file=sys.stderr)  # fmt: skip
+        return EXIT_NO_PLAN
     if not args.quiet:
         _report(result)
 

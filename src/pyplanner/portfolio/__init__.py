@@ -36,6 +36,11 @@ hijo de ``spawn`` que no llega a buscar, uno que muere por falta de memoria…),
 es ``ERROR`` con la causa en cuanto se detecta, y el portfolio sigue con los demás. Ningún
 fallo queda solo en la salida de error de un hilo o de un hijo.
 
+**Memoria:** cada miembro, en su proceso, se pone un límite duro de memoria
+(:func:`pyplanner.search.memory.limit_process`) algo por encima de su ``max_memory``, después
+de cargar PyTorch y CUDA si los usa. Al pasarlo, su búsqueda termina con ``LIMIT_REACHED``
+sin afectar a los demás ni a la máquina.
+
 Resultado: el plan del ganador, o, si ninguno lo encuentra, el estado más informativo.
 Por orden de prioridad: ``UNSOLVABLE`` si alguno lo ha demostrado; si no, ``LIMIT_REACHED``;
 si no, ``FAILED`` (una búsqueda incompleta que se rindió); si no, ``ERROR``.
@@ -66,6 +71,7 @@ from pyplanner.grounding import GroundTask
 from pyplanner.heuristics import numba_available
 from pyplanner.search import SearchConfig, SearchResult, SearchStatus, search
 from pyplanner.search.anytime import SharedBound, search_anytime
+from pyplanner.search.memory import hard_limit_mb, limit_process
 
 #: Segundos que se espera a que un proceso cancelado termine antes de forzarlo.
 JOIN_TIMEOUT = 2.0
@@ -402,6 +408,7 @@ def _anytime_worker(
     """Punto de entrada de cada proceso en modo anytime: informa de cada plan mejor y, al
     terminar, del resultado final."""
     try:
+        _limit_memory(config)
         task = _load(source)
         result = search_anytime(
             task,
@@ -410,6 +417,8 @@ def _anytime_worker(
             on_plan=lambda plan: results_queue.put(("plan", config.name, plan)),
             shared_bound=bound,
         )
+    except MemoryError:
+        result = _out_of_memory(config)
     except Exception as exc:  # noqa: BLE001 - se informa al padre en lugar de perderse
         result = SearchResult(
             SearchStatus.ERROR, config_name=config.name, message=f"{type(exc).__name__}: {exc}"
@@ -422,12 +431,42 @@ def _worker(
 ) -> None:
     """Punto de entrada de cada proceso: busca e informa del resultado."""
     try:
+        _limit_memory(config)
         result = search(_load(source), config, stop=stop)
+    except MemoryError:
+        result = _out_of_memory(config)
     except Exception as exc:  # noqa: BLE001 - se informa al padre en lugar de perderse
         result = SearchResult(
             SearchStatus.ERROR, config_name=config.name, message=f"{type(exc).__name__}: {exc}"
         )
     results_queue.put(result)
+
+
+def _out_of_memory(config: SearchConfig) -> SearchResult:
+    """Resultado de un miembro que agota su memoria al preparar la búsqueda (al cargar
+    PyTorch o la tarea): la que se agota buscando ya la trata :func:`search`."""
+    return SearchResult(
+        SearchStatus.LIMIT_REACHED,
+        config_name=config.name,
+        message="límite de memoria: se ha agotado al preparar la búsqueda (límite duro)",
+    )
+
+
+def _limit_memory(config: SearchConfig) -> None:
+    """Pone a este proceso (un miembro) su límite duro de memoria, si tiene ``max_memory``.
+
+    Antes carga PyTorch, y CUDA, si el miembro los usa: son cientos de MB (unos 630 solo al
+    importar PyTorch) que, si se cargaran después, harían saltar el límite.
+    """
+    if config.max_memory is None:
+        return
+    cuda = config.device in ("cuda", "hybrid")
+    if config.device in ("cpu", "cuda", "hybrid"):
+        import torch
+
+        if cuda and torch.cuda.is_available():
+            torch.zeros(1, device="cuda")  # inicializa CUDA
+    limit_process(hard_limit_mb(config.max_memory, cuda))
 
 
 def _context(

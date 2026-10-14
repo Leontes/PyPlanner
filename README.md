@@ -146,6 +146,10 @@ Para integrarlo en otro sistema:
 - **Python embebido** (en un programa en C++, por ejemplo): `spawn` lanza
   `sys.executable`, que entonces es el programa anfitrión. Antes de llamar a `solve`, hay
   que indicarle el intérprete con `multiprocessing.set_executable(...)`.
+- **Memoria:** cada miembro del portfolio tiene un límite duro (`RLIMIT_DATA`) algo por
+  encima de su parte de `memory_limit`; al pasarlo, su búsqueda termina con
+  `limit_reached`. El proceso que llama a `solve` no se limita: el grounding y una búsqueda
+  con una sola configuración solo tienen el límite blando. La CLI sí se limita a sí misma.
 - **Límite de tiempo:** sin `time_limit`, cada búsqueda sigue hasta encontrar plan,
   demostrar que no lo hay o agotar la memoria; en un problema difícil eso puede ser mucho
   tiempo. Desde otro programa conviene pasarlo siempre.
