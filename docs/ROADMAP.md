@@ -548,7 +548,7 @@ funcione.
   - los tiers 1 a 5 hacen las mismas búsquedas;
   - el motor discretizado es más rápido, pero los planes de car-nodrag son más largos;
   - Settlers p01 sigue sin plan: el dominio tiene una trampa que se arregla en el proyecto
-    principal (ver `benchmarks/pddlplus/settlers/CAMBIOS-DOMINIO.md` en la rama).
+    principal.
 
   Quedan por decidir dos mejoras que pide Settlers: podar los objetos intercambiables
   (simetrías) y una heurística que cuente el consumo de recursos.
