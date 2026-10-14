@@ -553,6 +553,15 @@ funcione.
   Quedan por decidir dos mejoras que pide Settlers: podar los objetos intercambiables
   (simetrías) y una heurística que cuente el consumo de recursos.
 
+- **Límite de memoria duro** (el punto 1 de la lista de abajo; rama
+  `opcional/limite-memoria`, 2026-10-14), con la opción A:
+  - cada miembro del portfolio fija `RLIMIT_DATA` en su proceso, algo por encima de su
+    parte del límite blando, después de cargar PyTorch y CUDA si los usa;
+  - agotar la memoria al preparar la búsqueda o al buscar termina con `LIMIT_REACHED`;
+  - la CLI se pone el total a sí misma antes del grounding, y si se agota al instanciar
+    termina con el código 4;
+  - como librería no se limita al proceso que llama.
+
 **Pendiente, en este orden:**
 
 1. **Límite de memoria duro en las búsquedas** (de la iteración 5c): el único que ya ha
