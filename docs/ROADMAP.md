@@ -529,7 +529,31 @@ Nada por ahora.
 la v0.6, así que nada de esto es crítico. El orden pesa si arregla un problema real, cuánto
 mejora el planificador y cuánto cuesta; lo cambiaría que el proyecto principal necesitara
 algo concreto. La eficiencia va primero: lo que promete mejoras de rendimiento empieza
-midiendo.
+midiendo. Cada tarea va en su rama, y las ramas se fusionan juntas cuando todo lo opcional
+funcione.
+
+**Hecho en rama, pendiente de fusionar:**
+
+- **Ritmos que fijan las acciones** (rama `pddlplus/settlers`, 2026-10-14), a petición del
+  proyecto principal, que no encontraba plan en su dominio de Settlers (una economía con
+  un proceso de producción cuyo ritmo fijan las acciones). Son mecanismos generales, no
+  específicos de ese dominio:
+  - la relajación solo cuenta un incremento variable si es positivo, y cuenta las esperas
+    con el ritmo del estado;
+  - `_wait-until`, una espera hasta el siguiente cambio que cuesta lo que avanza;
+  - el coste de las acciones instantáneas pasa a 1/64, para que las sumas sean exactas;
+  - la validación con δ/10 termina cada espera en el estado de la búsqueda.
+
+  Resultados:
+  - los tiers 1 a 5 hacen las mismas búsquedas;
+  - el motor discretizado es más rápido, pero los planes de car-nodrag son más largos;
+  - Settlers p01 sigue sin plan: el dominio tiene una trampa que se arregla en el proyecto
+    principal (ver `benchmarks/pddlplus/settlers/CAMBIOS-DOMINIO.md` en la rama).
+
+  Quedan por decidir dos mejoras que pide Settlers: podar los objetos intercambiables
+  (simetrías) y una heurística que cuente el consumo de recursos.
+
+**Pendiente, en este orden:**
 
 1. **Límite de memoria duro en las búsquedas** (de la iteración 5c): el único que ya ha
    causado problemas reales. Hoy el límite del planificador (`max_memory`, `-m`) se mira
