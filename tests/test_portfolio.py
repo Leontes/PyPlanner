@@ -1,17 +1,32 @@
 """Tests del portfolio paralelo."""
 
+import os
+import subprocess
 import sys
+import textwrap
 import threading
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from pyplanner import portfolio
+from pyplanner.grounding import GroundTask
 from pyplanner.heuristics import numba_available
 from pyplanner.plan import simulate
 from pyplanner.portfolio import run_portfolio
-from pyplanner.search import DEFAULT_PORTFOLIO, PRESETS, SearchConfig, SearchStatus
+from pyplanner.search import (
+    DEFAULT_PORTFOLIO,
+    PRESETS,
+    SearchConfig,
+    SearchResult,
+    SearchStatus,
+)
 from tests.tasks import chain, token
 from tests.test_search import GRIPPER
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_first_solution_wins_and_the_rest_are_cancelled() -> None:
@@ -128,3 +143,66 @@ def test_members_started_in_the_background_are_waited_for(monkeypatch: pytest.Mo
     monkeypatch.setattr(portfolio, "_fork_is_safe", lambda config: False)
     result = run_portfolio(chain(), [PRESETS["gbfs-ff"], PRESETS["lazy-ff-pref"]], time_limit=60)
     assert result.best.solved
+
+
+# --- Miembros que fallan ------------------------------------------------------------------
+
+
+def test_members_that_cannot_start_are_reported() -> None:
+    """Un miembro de spawn cuya tarea no se puede serializar no llega a arrancar: el error
+    (que antes se quedaba en el hilo que lo arranca) es su resultado."""
+    task = replace(chain(), notes=(lambda: None,))  # type: ignore[arg-type]
+    result = run_portfolio(task, [PRESETS["gbfs-ff"]], start_method="spawn")
+    assert result.best.status is SearchStatus.ERROR
+    assert "no se pudo arrancar el proceso" in result.best.message
+
+
+def _crashing_worker(task: GroundTask, config: SearchConfig, stop: Any, results_queue: Any) -> None:
+    """Sustituye a ``_worker``: "crash" muere sin informar; el otro informa al poco."""
+    if config.name == "crash":
+        os._exit(3)
+    stop.wait(timeout=1)
+    results_queue.put(SearchResult(SearchStatus.LIMIT_REACHED, config_name=config.name))
+
+
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
+def test_members_that_die_without_reporting_are_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(portfolio, "_worker", _crashing_worker)
+    configs = [PRESETS["gbfs-ff"].with_changes(name=name) for name in ("crash", "other")]
+    result = run_portfolio(chain(), configs, start_method="fork")
+    assert result.results["crash"].status is SearchStatus.ERROR
+    assert "terminó sin informar (código 3)" in result.results["crash"].message
+    assert result.results["other"].status is SearchStatus.LIMIT_REACHED
+
+
+def test_spawn_without_main_guard_explains_the_cause(tmp_path: Path) -> None:
+    """Un script que llama al portfolio sin ``if __name__ == "__main__":``: con spawn, el
+    hijo vuelve a importarlo y se encuentra la llamada a mitad de su arranque. Termina con
+    código 1 sin buscar (sin repetir el trabajo del script) y el resultado lo explica."""
+    script = tmp_path / "unguarded.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            from pyplanner.portfolio import run_portfolio
+            from pyplanner.search import PRESETS
+            from tests.tasks import chain
+
+            result = run_portfolio(chain(), [PRESETS["gbfs-ff"]], start_method="spawn")
+            print("RESULT", result.best.status.value, result.best.message)
+            """
+        )
+    )
+    env = dict(os.environ, PYTHONPATH=str(ROOT))
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        cwd=tmp_path,
+        check=False,
+    )
+    [line] = [x for x in completed.stdout.splitlines() if x.startswith("RESULT")]  # el padre
+    assert line.startswith("RESULT error")
+    assert "código 1" in line and 'if __name__ == "__main__":' in line
+    assert "se ha llamado al importar el script principal" in completed.stderr  # el hijo

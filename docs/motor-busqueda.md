@@ -767,9 +767,14 @@ contiene al anterior:
   [Preferencias y búsqueda anytime](#preferencias-y-búsqueda-anytime-iteración-5c)): se
   queda con el mejor plan dentro del límite de tiempo.
 - Se usa `fork` cuando es seguro: sin CUDA, sin PyTorch cargado en el padre y con un
-  solo hilo. En cualquier otro caso se usa `spawn`.
+  solo hilo (también del sistema: un programa que embebe Python suele tener muchos). En
+  cualquier otro caso se usa `spawn`, y cada hijo vuelve a importar el script principal:
+  si este llama al planificador fuera de `if __name__ == "__main__":`, el hijo lanza un
+  error claro en lugar de repetir el trabajo del script, y el padre informa de la causa.
 - Si un miembro falla, informa con estado `ERROR` y un mensaje, pero no tumba el
-  portfolio.
+  portfolio. Eso incluye no poder arrancarlo (antes, el error se quedaba en el hilo que
+  arranca los de `spawn`) y terminar sin informar (se detecta al momento, con el código
+  de salida).
 - **Precompilación de Numba:** antes de lanzar los hijos, el padre compila (o carga de la
   caché) los núcleos de Numba si algún miembro los va a usar. Sin esto, un hijo cancelado
   a mitad de compilar dejaba la caché incompleta, y cada ejecución pagaba la compilación

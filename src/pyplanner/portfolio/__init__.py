@@ -22,6 +22,19 @@ Arranque de los procesos:
   La señal de parada y la cola de resultados se crean con ``spawn`` si algún miembro lo
   usa: sus semáforos tienen nombre y sirven también a los hijos de ``fork`` (al revés no).
 
+  Con ``spawn``, cada hijo vuelve a importar el script principal del padre: si ese script
+  llama al planificador fuera de ``if __name__ == "__main__":``, el hijo se encontraría la
+  llamada a mitad de su propio arranque. El portfolio lo detecta y lanza un error (como
+  hace ``multiprocessing`` al arrancar procesos): el hijo termina sin buscar y el padre
+  informa de la causa.
+  Con Python embebido en otro programa, además, ``spawn`` lanza ``sys.executable``, que
+  tiene que ser un intérprete de Python (``multiprocessing.set_executable``).
+
+**Miembros que fallan:** si un proceso no se puede arrancar o termina sin informar (un
+hijo de ``spawn`` que no llega a buscar, uno que muere por falta de memoria…), su resultado
+es ``ERROR`` con la causa en cuanto se detecta, y el portfolio sigue con los demás. Ningún
+fallo queda solo en la salida de error de un hilo o de un hijo.
+
 Resultado: el plan del ganador, o, si ninguno lo encuentra, el estado más informativo.
 Por orden de prioridad: ``UNSOLVABLE`` si alguno lo ha demostrado; si no, ``LIMIT_REACHED``;
 si no, ``FAILED`` (una búsqueda incompleta que se rindió); si no, ``ERROR``.
@@ -58,6 +71,15 @@ WINNER_JOIN_TIMEOUT = 0.05
 #: Cada cuántos segundos se consulta la cola de resultados.
 POLL_INTERVAL = 0.05
 
+#: Causa probable cuando un hijo de ``spawn`` termina con código 1 sin informar: ``_worker``
+#: informa de cualquier excepción de la búsqueda, así que falló al arrancar.
+SPAWN_HINT = (
+    ". Con el arranque 'spawn', cada proceso vuelve a importar el script principal: la "
+    "llamada al planificador tiene que ir dentro de 'if __name__ == \"__main__\":' (y, con "
+    "Python embebido, multiprocessing.set_executable tiene que apuntar a un intérprete de "
+    "Python)"
+)
+
 
 @dataclass
 class PortfolioResult:
@@ -91,6 +113,14 @@ def run_portfolio(
         start_method: ``"fork"`` o ``"spawn"``; por defecto se elige según los dispositivos.
         anytime: modo anytime (ver la documentación del módulo).
     """
+    if getattr(mp.current_process(), "_inheriting", False):
+        # Un hijo de spawn que importa el script principal del padre y se encuentra la
+        # llamada al planificador: como hace el propio multiprocessing, se para aquí (si
+        # no, cada hijo repetiría el trabajo del script antes de buscar).
+        raise RuntimeError(
+            "el planificador se ha llamado al importar el script principal en un proceso "
+            "hijo de 'spawn': la llamada tiene que ir dentro de 'if __name__ == \"__main__\":'"
+        )
     names = [c.name for c in configs]
     if not configs:
         raise ValueError("el portfolio necesita al menos una configuración")
@@ -121,17 +151,11 @@ def run_portfolio(
         for c in configs
     }
     start = time.perf_counter()
-    # Los de fork arrancan al instante. Los de spawn (GPU) se arrancan en un hilo: hay que
-    # serializarles la tarea, y mientras tanto el padre ya puede recoger los resultados de
-    # los demás (en las tareas pequeñas, un miembro de CPU gana antes de que acaben).
-    slow = [p for n, p in processes.items() if contexts[n].get_start_method() != "fork"]
-    for name, process in processes.items():
-        if contexts[name].get_start_method() == "fork":
-            process.start()
-    starter = threading.Thread(target=lambda: [p.start() for p in slow], daemon=True)
-    starter.start()
+    spawned = {name for name, ctx in contexts.items() if ctx.get_start_method() != "fork"}
+    members = _Members(processes, spawned)
+    members.start()
     if anytime:
-        return _collect_anytime(processes, starter, stop, results_queue, start, time_limit)
+        return _collect_anytime(members, stop, results_queue, start, time_limit)
 
     results: dict[str, SearchResult] = {}
     winner: SearchResult | None = None
@@ -143,7 +167,8 @@ def run_portfolio(
             try:
                 result: SearchResult = results_queue.get(timeout=POLL_INTERVAL)
             except queue.Empty:
-                if not starter.is_alive() and not any(p.is_alive() for p in processes.values()):
+                results.update(members.failed(results))
+                if not members.running():
                     break  # todos han terminado; lo que quede en la cola se recoge abajo
                 continue
             results[result.config_name] = result
@@ -151,7 +176,7 @@ def run_portfolio(
                 winner = result
     finally:
         stop.set()
-        starter.join()
+        members.starter.join()
         # Con un ganador, los demás solo pueden aportar resultados descartables: se les da
         # un margen corto (un miembro con GPU puede estar aún importando PyTorch).
         _shutdown(processes.values(), WINNER_JOIN_TIMEOUT if winner else JOIN_TIMEOUT)
@@ -165,26 +190,83 @@ def run_portfolio(
             winner = result
 
     elapsed = time.perf_counter() - start
-    for name, process in processes.items():
+    for name in processes:
         if name not in results:
-            crashed = winner is None and process.exitcode not in (0, -15)
-            status = SearchStatus.ERROR if crashed else SearchStatus.CANCELLED
-            message = (
-                f"el proceso terminó sin informar (código {process.exitcode})" if crashed else ""
-            )
-            results[name] = SearchResult(status, config_name=name, message=message)
+            results[name] = members.final(name, cancelled=winner is not None)
     return PortfolioResult(winner or _most_informative(results), results, elapsed)
 
 
+class _Members:
+    """Los procesos del portfolio: los arranca y sabe cuáles ya no van a informar.
+
+    Los de ``fork`` arrancan al instante. Los de ``spawn`` (GPU) se arrancan en un hilo: hay
+    que serializarles la tarea, y mientras tanto el padre ya puede recoger los resultados de
+    los demás (en las tareas pequeñas, un miembro de CPU gana antes de que acaben). Si uno
+    no se puede arrancar, el error se guarda y se informa como su resultado.
+    """
+
+    def __init__(self, processes: dict[str, Any], spawned: set[str]) -> None:
+        self.processes = processes
+        self.spawned = spawned
+        self.start_errors: dict[str, str] = {}
+        self.starter = threading.Thread(target=self._start_spawned, daemon=True)
+
+    def start(self) -> None:
+        for name, process in self.processes.items():
+            if name not in self.spawned:
+                process.start()
+        self.starter.start()
+
+    def _start_spawned(self) -> None:
+        for name, process in self.processes.items():
+            if name in self.spawned:
+                try:
+                    process.start()
+                except Exception as exc:  # noqa: BLE001 - se informa como resultado del miembro
+                    self.start_errors[name] = f"{type(exc).__name__}: {exc}"
+
+    def running(self) -> bool:
+        """``True`` si alguno puede informar todavía (o está arrancando)."""
+        return self.starter.is_alive() or any(p.is_alive() for p in self.processes.values())
+
+    def failed(self, reported: dict[str, SearchResult]) -> dict[str, SearchResult]:
+        """Resultado ``ERROR`` de los que no han informado y ya no lo harán: no se pudieron
+        arrancar o han terminado. Si informaron justo antes de terminar, su resultado real
+        sustituye a este al recogerlo."""
+        return {
+            name: self._error(name)
+            for name, process in self.processes.items()
+            if name not in reported and (name in self.start_errors or process.exitcode is not None)
+        }
+
+    def final(self, name: str, cancelled: bool) -> SearchResult:
+        """Resultado de un miembro que no ha informado cuando el portfolio termina:
+        cancelado (con un ganador, o parado por el portfolio) o ``ERROR``."""
+        exitcode = self.processes[name].exitcode
+        if name not in self.start_errors and (cancelled or exitcode in (0, -15)):
+            return SearchResult(SearchStatus.CANCELLED, config_name=name)
+        return self._error(name)
+
+    def _error(self, name: str) -> SearchResult:
+        if name in self.start_errors:
+            message = f"no se pudo arrancar el proceso ({self.start_errors[name]})"
+        else:
+            exitcode = self.processes[name].exitcode
+            message = f"el proceso terminó sin informar (código {exitcode})"
+            if name in self.spawned and exitcode == 1:
+                message += SPAWN_HINT
+        return SearchResult(SearchStatus.ERROR, config_name=name, message=message)
+
+
 def _collect_anytime(
-    processes: dict[str, Any],
-    starter: threading.Thread,
+    members: _Members,
     stop: Any,
     results_queue: Any,
     start: float,
     time_limit: float | None,
 ) -> PortfolioResult:
     """Recoge los planes de los miembros en modo anytime y se queda con el mejor."""
+    processes = members.processes
     results: dict[str, SearchResult] = {}  # resultado final de cada miembro
     best: SearchResult | None = None
     lower: float | None = None  # cota inferior demostrada del coste de los planes
@@ -213,26 +295,21 @@ def _collect_anytime(
                 break
             if best is not None and best.optimal:
                 break
-            if not receive(POLL_INTERVAL) and not (
-                starter.is_alive() or any(p.is_alive() for p in processes.values())
-            ):
-                break
+            if not receive(POLL_INTERVAL):
+                results.update(members.failed(results))
+                if not members.running():
+                    break
     finally:
         stop.set()
-        starter.join()
+        members.starter.join()
         _shutdown(processes.values(), JOIN_TIMEOUT)
     while receive(POLL_INTERVAL):  # mensajes enviados justo antes de terminar
         pass
 
     elapsed = time.perf_counter() - start
-    for name, process in processes.items():
+    for name in processes:
         if name not in results:
-            crashed = process.exitcode not in (0, -15)
-            status = SearchStatus.ERROR if crashed else SearchStatus.CANCELLED
-            message = (
-                f"el proceso terminó sin informar (código {process.exitcode})" if crashed else ""
-            )
-            results[name] = SearchResult(status, config_name=name, message=message)
+            results[name] = members.final(name, cancelled=False)
     return PortfolioResult(best or _most_informative(results), results, elapsed)
 
 
@@ -326,6 +403,9 @@ def _os_threads() -> int:
 
 
 def _shutdown(processes: Any, timeout: float) -> None:
+    """Espera a que terminen los procesos y, pasado ``timeout``, los fuerza (los que no se
+    llegaron a arrancar no cuentan)."""
+    processes = [p for p in processes if p.pid is not None]
     deadline = time.perf_counter() + timeout
     for process in processes:
         process.join(timeout=max(0.0, deadline - time.perf_counter()))

@@ -139,7 +139,16 @@ Para integrarlo en otro sistema:
 - **Salida en JSON:** el plan es un documento con `"kind": "plan"`.
 - **Errores:** todos los errores de entrada heredan de `pyplanner.errors.PDDLError`.
 - **Procesos:** el portfolio crea procesos, así que el código que llama a `solve` debe ir
-  dentro de `if __name__ == "__main__":`.
+  dentro de `if __name__ == "__main__":`. Con el arranque `spawn` (si PyTorch está cargado,
+  si el proceso tiene varios hilos o para los miembros con GPU), cada proceso vuelve a
+  importar el script principal; sin esa guarda, el planificador lo detecta y devuelve
+  `ERROR` con la causa.
+- **Python embebido** (en un programa en C++, por ejemplo): `spawn` lanza
+  `sys.executable`, que entonces es el programa anfitrión. Antes de llamar a `solve`, hay
+  que indicarle el intérprete con `multiprocessing.set_executable(...)`.
+- **Límite de tiempo:** sin `time_limit`, cada búsqueda sigue hasta encontrar plan,
+  demostrar que no lo hay o agotar la memoria; en un problema difícil eso puede ser mucho
+  tiempo. Desde otro programa conviene pasarlo siempre.
 
 ## Documentación
 
