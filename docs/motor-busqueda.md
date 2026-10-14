@@ -775,6 +775,11 @@ contiene al anterior:
   portfolio. Eso incluye no poder arrancarlo (antes, el error se quedaba en el hilo que
   arranca los de `spawn`) y terminar sin informar (se detecta al momento, con el código
   de salida).
+- Los miembros de `spawn` leen la tarea de un fichero temporal, serializada una vez para
+  todos. Antes viajaba por la tubería de arranque de cada hijo, y CPython mantiene abierto
+  el otro extremo mientras escribe: si el hijo moría al arrancar y la tarea no cabía en la
+  tubería (64 KB; slitherlink p02 ocupa 589 KB), el padre se quedaba esperando para
+  siempre, aunque hubiera límite de tiempo.
 - **Precompilación de Numba:** antes de lanzar los hijos, el padre compila (o carga de la
   caché) los núcleos de Numba si algún miembro los va a usar. Sin esto, un hijo cancelado
   a mitad de compilar dejaba la caché incompleta, y cada ejecución pagaba la compilación

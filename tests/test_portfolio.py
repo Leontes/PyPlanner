@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 from dataclasses import replace
@@ -25,6 +26,7 @@ from pyplanner.search import (
 )
 from tests.tasks import chain, token
 from tests.test_search import GRIPPER
+from tests.tiers import DOMINIOS_DIR
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -192,7 +194,7 @@ def test_spawn_without_main_guard_explains_the_cause(tmp_path: Path) -> None:
             """
         )
     )
-    env = dict(os.environ, PYTHONPATH=str(ROOT))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / "src"), str(ROOT)]))
     completed = subprocess.run(
         [sys.executable, str(script)],
         capture_output=True,
@@ -206,3 +208,49 @@ def test_spawn_without_main_guard_explains_the_cause(tmp_path: Path) -> None:
     assert line.startswith("RESULT error")
     assert "código 1" in line and 'if __name__ == "__main__":' in line
     assert "se ha llamado al importar el script principal" in completed.stderr  # el hijo
+
+
+def test_spawn_without_main_guard_does_not_hang_with_large_tasks(tmp_path: Path) -> None:
+    """Con una tarea grande (slitherlink p02, unos 600 KB serializada), que no cabe en la
+    tubería hacia el hijo: si el hijo muere al arrancar, enviarle la tarea por la tubería
+    dejaba al padre esperando para siempre. Con el fichero temporal, termina con ERROR."""
+    problem = DOMINIOS_DIR / "tier2-adl" / "slitherlink"
+    script = tmp_path / "unguarded_large.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            from pyplanner.frontend import read_domain, read_problem
+            from pyplanner.grounding import ground
+            from pyplanner.portfolio import run_portfolio
+            from pyplanner.search import PRESETS
+
+            domain = read_domain("{problem / "domain.pddl"}")
+            task = ground(domain, read_problem("{problem / "p02.pddl"}", domain))
+            result = run_portfolio(task, [PRESETS["gbfs-ff"]], time_limit=30, start_method="spawn")
+            print("RESULT", result.best.status.value)
+            """
+        )
+    )
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(ROOT / "src"), str(ROOT)]))
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert [x for x in completed.stdout.splitlines() if x.startswith("RESULT")] == ["RESULT error"]
+
+
+def test_spawn_members_read_the_task_from_a_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La tarea se escribe una vez en un fichero temporal para los miembros de spawn, y el
+    fichero se borra al terminar."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    configs = [PRESETS["gbfs-ff"], PRESETS["lazy-ff-pref"]]
+    result = run_portfolio(GRIPPER, configs, start_method="spawn")
+    assert result.best.solved
+    assert list(tmp_path.glob("pyplanner-task-*")) == []

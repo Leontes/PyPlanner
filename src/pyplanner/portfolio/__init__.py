@@ -8,8 +8,9 @@ ven (o se les fuerza a terminar si tardan).
 Arranque de los procesos:
 
 * ``fork`` (por defecto en Linux): los hijos heredan la tarea instanciada sin copiarla.
-* ``spawn``: los hijos arrancan un intérprete nuevo y reciben la tarea serializada. Es más
-  lento de arrancar (unos segundos con PyTorch), pero seguro. Se usa:
+* ``spawn``: los hijos arrancan un intérprete nuevo y leen la tarea de un fichero temporal,
+  serializada una sola vez para todos (:class:`_TaskFile`). Es más lento de arrancar (unos
+  segundos con PyTorch), pero seguro. Se usa:
 
   * para los miembros que evalúan en ``"cuda"`` o ``"hybrid"``, porque CUDA no se puede
     usar en un proceso creado con ``fork`` (el proceso padre nunca inicializa CUDA). Los
@@ -49,11 +50,14 @@ mejor plan.
 
 import multiprocessing as mp
 import os
+import pickle
 import queue
 import sys
+import tempfile
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from typing import Any
@@ -141,22 +145,44 @@ def run_portfolio(
     stop = shared.Event()
     results_queue = shared.Queue()
     bound = shared.Value("d", float("inf")) if anytime else None
+    spawned = {name for name, ctx in contexts.items() if ctx.get_start_method() != "fork"}
+    task_file = _TaskFile() if spawned else None
     processes = {
         c.name: contexts[c.name].Process(
             target=_anytime_worker if anytime else _worker,
-            args=(task, c, stop, results_queue, *((bound,) if anytime else ())),
+            args=(
+                task_file if c.name in spawned else task,
+                c,
+                stop,
+                results_queue,
+                *((bound,) if anytime else ()),
+            ),
             name=f"pyplanner-{c.name}",
             daemon=True,
         )
         for c in configs
     }
     start = time.perf_counter()
-    spawned = {name for name, ctx in contexts.items() if ctx.get_start_method() != "fork"}
-    members = _Members(processes, spawned)
+    members = _Members(processes, spawned, None if task_file is None else task_file.writer(task))
     members.start()
-    if anytime:
-        return _collect_anytime(members, stop, results_queue, start, time_limit)
+    try:
+        collect = _collect_anytime if anytime else _collect_first
+        return collect(members, stop, results_queue, start, time_limit)
+    finally:
+        if task_file is not None:
+            task_file.remove()
 
+
+def _collect_first(
+    members: "_Members",
+    stop: Any,
+    results_queue: Any,
+    start: float,
+    time_limit: float | None,
+) -> PortfolioResult:
+    """Recoge los resultados de los miembros hasta el primer plan (o hasta que todos
+    terminan o se agota el tiempo)."""
+    processes = members.processes
     results: dict[str, SearchResult] = {}
     winner: SearchResult | None = None
     deadline = None if time_limit is None else start + time_limit + JOIN_TIMEOUT
@@ -205,9 +231,15 @@ class _Members:
     no se puede arrancar, el error se guarda y se informa como su resultado.
     """
 
-    def __init__(self, processes: dict[str, Any], spawned: set[str]) -> None:
+    def __init__(
+        self,
+        processes: dict[str, Any],
+        spawned: set[str],
+        prepare: Callable[[], None] | None = None,
+    ) -> None:
         self.processes = processes
         self.spawned = spawned
+        self.prepare = prepare  # lo que hay que hacer antes de arrancar los de spawn
         self.start_errors: dict[str, str] = {}
         self.starter = threading.Thread(target=self._start_spawned, daemon=True)
 
@@ -218,6 +250,13 @@ class _Members:
         self.starter.start()
 
     def _start_spawned(self) -> None:
+        if self.prepare is not None and self.spawned:
+            try:
+                self.prepare()
+            except Exception as exc:  # noqa: BLE001 - se informa como resultado de cada miembro
+                for name in self.spawned:
+                    self.start_errors[name] = f"{type(exc).__name__}: {exc}"
+                return
         for name, process in self.processes.items():
             if name in self.spawned:
                 try:
@@ -313,12 +352,57 @@ def _collect_anytime(
     return PortfolioResult(best or _most_informative(results), results, elapsed)
 
 
+class _TaskFile:
+    """La tarea serializada una sola vez en un fichero temporal, para los miembros de
+    ``spawn``.
+
+    Si viajara con el proceso (en los argumentos de ``Process``), ``Process.start()`` la
+    escribiría en una tubería hacia el hijo, y CPython mantiene abierto el otro extremo hasta
+    acabar de escribir: si el hijo muere al arrancar (falta la guarda de ``__main__``, el
+    ejecutable no es Python…) y la tarea no cabe en la tubería (64 KB), la escritura no
+    termina nunca, y el portfolio con ella. Con el fichero, el arranque solo escribe su
+    ruta. Además, la tarea se serializa una vez para todos los miembros, no una por miembro.
+    """
+
+    def __init__(self) -> None:
+        handle, self.path = tempfile.mkstemp(prefix="pyplanner-task-", suffix=".pickle")
+        os.close(handle)
+
+    def writer(self, task: GroundTask) -> Callable[[], None]:
+        """La escritura de la tarea, para hacerla en el hilo que arranca los miembros."""
+
+        def write() -> None:
+            with open(self.path, "wb") as handle:
+                pickle.dump(task, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        return write
+
+    def load(self) -> GroundTask:
+        with open(self.path, "rb") as handle:
+            task: GroundTask = pickle.load(handle)
+        return task
+
+    def remove(self) -> None:
+        with suppress(OSError):
+            os.unlink(self.path)
+
+
+def _load(source: "GroundTask | _TaskFile") -> GroundTask:
+    """La tarea de un miembro: la heredada (``fork``) o la del fichero (``spawn``)."""
+    return source.load() if isinstance(source, _TaskFile) else source
+
+
 def _anytime_worker(
-    task: GroundTask, config: SearchConfig, stop: Any, results_queue: Any, bound: SharedBound
+    source: "GroundTask | _TaskFile",
+    config: SearchConfig,
+    stop: Any,
+    results_queue: Any,
+    bound: SharedBound,
 ) -> None:
     """Punto de entrada de cada proceso en modo anytime: informa de cada plan mejor y, al
     terminar, del resultado final."""
     try:
+        task = _load(source)
         result = search_anytime(
             task,
             config,
@@ -333,10 +417,12 @@ def _anytime_worker(
     results_queue.put(("done", config.name, result))
 
 
-def _worker(task: GroundTask, config: SearchConfig, stop: Any, results_queue: Any) -> None:
+def _worker(
+    source: "GroundTask | _TaskFile", config: SearchConfig, stop: Any, results_queue: Any
+) -> None:
     """Punto de entrada de cada proceso: busca e informa del resultado."""
     try:
-        result = search(task, config, stop=stop)
+        result = search(_load(source), config, stop=stop)
     except Exception as exc:  # noqa: BLE001 - se informa al padre en lugar de perderse
         result = SearchResult(
             SearchStatus.ERROR, config_name=config.name, message=f"{type(exc).__name__}: {exc}"
