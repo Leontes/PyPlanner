@@ -562,6 +562,18 @@ funcione.
     termina con el código 4;
   - como librería no se limita al proceso que llama.
 
+- **Grounding de tareas grandes** (rama `opcional/grounding`, 2026-10-17), encontrado al
+  medir los landmarks: 9 de las 340 instancias clásicas no llegaban a buscar. Ver
+  [motor-busqueda.md](motor-busqueda.md#trabajo-opcional-grounding-de-tareas-grandes):
+  - punto fijo semi-ingenuo (cada esquema solo busca candidatos con algún hecho nuevo);
+  - el join usa las disyunciones de átomos y las igualdades de la precondición;
+  - hechos compartidos entre candidatos y conjunciones de literales sin una DNF por
+    literal.
+
+  Las tareas son idénticas en 236 instancias, y el grounding pasa de 1420 s a 217 s:
+  folding p02, de 629 s y 3,5 GB a 16 s y 459 MB; recharging-robots p05, de 364 s y
+  5,7 GB a 75 s y 2,9 GB.
+
 **Pendiente, en este orden:**
 
 1. **Límite de memoria duro en las búsquedas** (de la iteración 5c): el único que ya ha

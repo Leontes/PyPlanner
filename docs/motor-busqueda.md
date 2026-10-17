@@ -39,6 +39,12 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
   vacío y la tarea se reconoce como irresoluble sin buscar.
 - **Alcanzabilidad relajada:** los literales negativos se suponen alcanzables, y un
   efecto condicional cuenta si alguna cláusula de su condición es alcanzable.
+- **Candidatos:** solo se normalizan las asignaciones que hacen alcanzables los átomos
+  necesarios de la precondición: los de la conjunción exterior y, de cada disyunción de
+  átomos, los de alguno de sus disyuntos. Las igualdades de la conjunción exterior juntan
+  los parámetros iguales o los fijan a una constante. El punto fijo es **semi-ingenuo**:
+  en cada vuelta, un esquema solo busca los candidatos que usan algún hecho nuevo (ver
+  `grounding/grounder.py` y "Rendimiento medido").
 
 ## Tarea instanciada y estados
 
@@ -1129,3 +1135,47 @@ cuentan 60 s):
   búsqueda llegó a 10 GB en menos de 3 minutos. De ahí la línea temporal bajo demanda y el
   límite de memoria (ver "Motor temporal" y "Uso desde la terminal").
 
+
+### Trabajo opcional: grounding de tareas grandes
+
+Al medir los landmarks, 9 de 340 instancias clásicas no llegaban a buscar: se quedaban sin
+memoria en el grounding (recharging-robots p05 tardaba 364 s y 5,7 GB). Tres causas:
+
+- **El punto fijo rehacía todo en cada vuelta.** Cada vuelta volvía a buscar todos los
+  candidatos de todos los esquemas. En recharging-robots cada nivel de batería se alcanza
+  en una vuelta (13 en p02): salían 976 000 candidatos para 139 000 distintos. Ahora es
+  semi-ingenuo: cada esquema solo busca los que usan algún hecho nuevo.
+- **El join no usaba las disyunciones ni las igualdades.** Un parámetro que solo aparece en
+  `(or (connected ?a ?b) (connected ?b ?a))` o en `(= ?y1 ?y2)` probaba todos los objetos,
+  y la normalización descartaba casi todos (en labyrinth, 1 millón de candidatos para
+  78 000 acciones). Ahora cada disyunto es una alternativa del join, y los parámetros
+  iguales se ligan a la vez.
+- **Memoria de los candidatos.** Cada candidato tenía sus propias tuplas de hechos; ahora
+  se comparten (unos pocos cientos de hechos distintos). Los candidatos que nunca son
+  aplicables comparten una sola instancia vacía, y cada candidato se suelta en cuanto da
+  sus acciones. Además, las conjunciones de literales se normalizan sin una DNF por
+  literal.
+
+Las tareas son **idénticas** (la misma representación completa) en 236 instancias: los
+tiers, las colecciones de `benchmarks/`, las cinco primeras de cada colección clásica y
+folding y labyrinth (IPC 2023). Tiempo y pico de memoria del grounding:
+
+| Instancia | Acciones | Antes | Ahora |
+|-----------|----------|-------|-------|
+| folding p02 | 117 537 | 629 s · 3504 MB | 15,9 s · 459 MB |
+| recharging-robots p05 | 1 394 580 | 364 s · 5703 MB | 74,7 s · 2897 MB |
+| folding p01 | 35 801 | 105 s · 837 MB | 4,6 s · 139 MB |
+| recharging-robots p04 | 339 400 | 62,6 s · 1403 MB | 16,9 s · 728 MB |
+| labyrinth p01 | 78 273 | 29,6 s · 769 MB | 4,8 s · 205 MB |
+| storage p20 | 31 759 | 5,5 s · 306 MB | 3,5 s · 231 MB |
+| las 236 | | 1420 s | 217 s |
+
+- Ninguna instancia es más lenta. Las clásicas pasan de 552 s a 135 s; las de los tiers
+  y las de PDDL+ ya eran de décimas.
+- De las 9 que no llegaban a buscar, scanalyzer p18 (373 000 acciones, 18 s y 872 MB) se
+  resuelve ahora con `bfws-ff-pref` y con `lazy-ff-pref`, y recharging-robots p15 con
+  `lazy-ff-pref`. Recharging-robots p13 y p17 llegan a buscar, pero no terminan en 60 s
+  con medio millón de acciones; p05, p16 y p18–p20 siguen sin caber en 1,5 GB.
+- **Satellite con TIL** gasta casi 1 GB en p17 con 17 000 acciones. No es el grounding:
+  la tarea temporal tiene 58 000 hechos (casi todos `running@a`, uno por acción durativa
+  instanciada), y los bitsets de cada acción son enteros de varios KB.
