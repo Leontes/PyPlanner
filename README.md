@@ -54,12 +54,12 @@ claro.
 - **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles; con procesos,
   además, la proyección de las invariantes de las acciones en curso.
 - **Búsquedas:** GBFS, A* y WA*, con evaluación inmediata o perezosa, acciones útiles,
-  exploración por tipos, búsqueda por novedad (IW y BFWS), evaluación por lotes y búsqueda
-  *anytime* (con preferencias).
+  exploración por tipos, búsqueda por novedad (IW y BFWS), landmarks en colas alternadas
+  (al estilo de LAMA), evaluación por lotes y búsqueda *anytime* (con preferencias).
 - **Rendimiento:** heurísticas y generación de sucesores compiladas con Numba, con
   resultados idénticos a la implementación de referencia en Python. También hay evaluación
   por lotes en GPU con PyTorch.
-- **Portfolio paralelo:** conjuntos de búsquedas predefinidos para 1, 2, 4, 5, 6 y 7 núcleos;
+- **Portfolio paralelo:** conjuntos de búsquedas predefinidos para 1 a 7 núcleos;
   gana la primera que encuentra un plan (con preferencias, el mejor plan que encuentren
   todas en el tiempo dado, compartiendo la cota).
 - **Planes** en formato IPC (el que lee VAL) o en JSON.

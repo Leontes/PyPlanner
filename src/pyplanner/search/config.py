@@ -39,6 +39,10 @@ class SearchConfig:
             ``"lifo"`` o ``"random"`` (con ``seed``).
         exploration: ``"type-based"`` añade una cola de exploración por tipos (h, g) que
             se alterna con las demás; ayuda a salir de mesetas.
+        landmarks: añade la heurística de landmarks (h_LM, ver
+            :mod:`pyplanner.heuristics.landmarks`) con sus propias colas, que se alternan con
+            las de ``heuristic``, al estilo de LAMA. Las acciones útiles de cada nodo son las
+            de las dos. Solo con GBFS sin novedad.
         novelty: anchura de la novedad (0: no se usa; 1 o 2). Con ``"gbfs"`` es BFWS: la
             prioridad es (novedad, h), con la novedad medida entre los estados del mismo
             valor h. Con ``"iw"`` es la k de IW(k). Ver :mod:`pyplanner.search.novelty`.
@@ -69,6 +73,7 @@ class SearchConfig:
     lazy: bool = False
     tie_breaking: TieBreaking = "fifo"
     exploration: Exploration = "none"
+    landmarks: bool = False
     novelty: int = 0
     seed: int = 0
     batch_size: int = 1
@@ -111,6 +116,8 @@ class SearchConfig:
             raise ConfigError(f"{self.name}: la novedad solo se usa con GBFS (BFWS) o con IW")
         if self.novelty and self.lazy:
             raise ConfigError(f"{self.name}: la novedad necesita evaluación inmediata")
+        if self.landmarks and (self.algorithm != "gbfs" or self.novelty):
+            raise ConfigError(f"{self.name}: los landmarks solo se usan con GBFS sin novedad")
         if self.batch_size < 1:
             raise ConfigError(f"{self.name}: batch_size tiene que ser ≥ 1")
         if self.max_batch_size < self.batch_size:
@@ -162,6 +169,20 @@ PRESETS: dict[str, SearchConfig] = {
             exploration="type-based",
             seed=1,
         ),
+        SearchConfig("gbfs-ff-lm-pref", "gbfs", "ff", preferred_operators=True, landmarks=True),
+        SearchConfig(
+            "lazy-ff-lm-pref", "gbfs", "ff", preferred_operators=True, lazy=True, landmarks=True
+        ),
+        SearchConfig(
+            "lazy-ff-lm-pref-tb",
+            "gbfs",
+            "ff",
+            preferred_operators=True,
+            lazy=True,
+            landmarks=True,
+            exploration="type-based",
+            seed=1,
+        ),
         SearchConfig("gbfs-add", "gbfs", "hadd"),
         SearchConfig("wastar-add-3", "wastar", "hadd", weight=3.0),
         SearchConfig("gbfs-goalcount-rnd", "gbfs", "goalcount", tie_breaking="random", seed=1),
@@ -195,51 +216,54 @@ PRESETS: dict[str, SearchConfig] = {
     )
 }
 
-#: Portfolios por número de núcleos. Cada uno contiene al anterior y añade las
-#: configuraciones que más aportan. Elegidos en la iteración 3b con los tiers 1 a 3 y las
-#: instancias de driverlog y zenotravel temporales hasta la 17 (ver motor-busqueda.md):
+#: Portfolios por número de núcleos. Cada uno contiene al anterior y añade la configuración
+#: que más aporta. Elegidos con los landmarks (trabajo opcional, punto 2) en 475 instancias:
+#: 17 colecciones clásicas de las IPC 2011 y 2023, los tiers y las colecciones de
+#: ``benchmarks/`` (ver motor-busqueda.md). Cada portfolio resuelve todos los tiers:
 #:
-#: * 1 núcleo: BFWS con h_FF y acciones útiles, la configuración individual más robusta y
-#:   rápida en esas pruebas;
-#: * 2 núcleos: + la búsqueda perezosa, la más rápida en tareas grandes y fáciles;
-#: * 4 núcleos: + la perezosa con exploración por tipos (otra semilla) y la más barata y
-#:   aleatoria (objetivos pendientes);
-#: * 5 núcleos: + GBFS con exploración por tipos, la más rápida en slitherlink;
+#: * 1 núcleo: BFWS con h_FF y acciones útiles, la configuración más robusta (resuelve
+#:   todos los tiers) y con los mejores planes con preferencias;
+#: * 2 núcleos: + la perezosa con landmarks y exploración por tipos, la mejor individual
+#:   en las clásicas;
+#: * 3 núcleos: + la más barata y aleatoria (objetivos pendientes);
+#: * 4 núcleos: + WA* con h_add, que da los mejores planes con preferencias;
+#: * 5 núcleos: + la búsqueda perezosa;
 #: * 6 núcleos (por defecto): + GBFS con lote adaptativo y evaluación híbrida (Numba o
-#:   GPU según el lote), el único miembro con GPU: en las pruebas es la mejor sexta
-#:   configuración (de 100,9 s a 93,8 s). Sin GPU, evalúa todo con Numba;
-#: * 7 núcleos: + WA* con h_add, que no mejora los tiempos pero tiende a planes más
-#:   cortos: diversidad a cambio de un núcleo más.
+#:   GPU según el lote), el único miembro con GPU. Casi empata con GBFS con exploración
+#:   por tipos (una instancia menos, un 1 % más rápido), y se queda para las tareas
+#:   grandes, donde la GPU rinde. Sin GPU, evalúa todo con Numba;
+#: * 7 núcleos: + GBFS con exploración por tipos.
 #:
 #: Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
 #: no pagan el arranque de PyTorch y CUDA (unos segundos) en las tareas pequeñas.
 PORTFOLIOS: dict[int, tuple[str, ...]] = {
     1: ("bfws-ff-pref",),
-    2: ("bfws-ff-pref", "lazy-ff-pref"),
-    4: ("bfws-ff-pref", "lazy-ff-pref", "lazy-ff-pref-tb", "gbfs-goalcount-rnd"),
+    2: ("bfws-ff-pref", "lazy-ff-lm-pref-tb"),
+    3: ("bfws-ff-pref", "lazy-ff-lm-pref-tb", "gbfs-goalcount-rnd"),
+    4: ("bfws-ff-pref", "lazy-ff-lm-pref-tb", "gbfs-goalcount-rnd", "wastar-add-3"),
     5: (
         "bfws-ff-pref",
-        "lazy-ff-pref",
-        "lazy-ff-pref-tb",
+        "lazy-ff-lm-pref-tb",
         "gbfs-goalcount-rnd",
-        "gbfs-ff-pref-tb",
+        "wastar-add-3",
+        "lazy-ff-pref",
     ),
     6: (
         "bfws-ff-pref",
-        "lazy-ff-pref",
-        "lazy-ff-pref-tb",
+        "lazy-ff-lm-pref-tb",
         "gbfs-goalcount-rnd",
-        "gbfs-ff-pref-tb",
+        "wastar-add-3",
+        "lazy-ff-pref",
         "gbfs-ff-pref-hybrid",
     ),
     7: (
         "bfws-ff-pref",
-        "lazy-ff-pref",
-        "lazy-ff-pref-tb",
+        "lazy-ff-lm-pref-tb",
         "gbfs-goalcount-rnd",
-        "gbfs-ff-pref-tb",
-        "gbfs-ff-pref-hybrid",
         "wastar-add-3",
+        "lazy-ff-pref",
+        "gbfs-ff-pref-hybrid",
+        "gbfs-ff-pref-tb",
     ),
 }
 
