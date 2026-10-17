@@ -182,8 +182,8 @@ El portfolio se monta encima de todo eso.
 | Generación de sucesores compilada con Numba | mismo orden que la referencia; del 46% al 5% del tiempo de búsqueda | iteración 2 |
 | Enforced hill-climbing (FF) | búsqueda local rápida | opcional (5.º) |
 | Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional (5.º) |
-| Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional (2.º, con landmarks) |
-| Landmarks (h_LM) | heurística informada más potente | opcional (2.º) |
+| Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional (2.º, con landmarks) ✅ en rama |
+| Landmarks (h_LM) | heurística informada más potente | opcional (2.º) ✅ en rama |
 | Búsqueda por novedad (IW, BFWS) | salir de mesetas; diversidad en el portfolio | final de la iteración 3b ✅ |
 | HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
 | Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
@@ -561,6 +561,42 @@ funcione.
   - la CLI se pone el total a sí misma antes del grounding, y si se agota al instanciar
     termina con el código 4;
   - como librería no se limita al proceso que llama.
+
+- **Landmarks con colas alternadas** (el punto 2 de la lista de abajo; rama
+  `opcional/landmarks`, 2026-10-17), al estilo de LAMA (ver
+  [motor-busqueda.md](motor-busqueda.md#landmarks)):
+  - landmarks de la relajación, calculados una vez con un punto fijo, también numéricos;
+    ordenaciones naturales y codiciosas-necesarias; h_LM según el camino, con los
+    landmarks que hay que volver a conseguir;
+  - dos colas más ordenadas por h_LM, que se turnan con las de h_FF, y acciones útiles de
+    las dos;
+  - tres configuraciones nuevas: `gbfs-ff-lm-pref`, `lazy-ff-lm-pref` y
+    `lazy-ff-lm-pref-tb`.
+
+  Medido en 475 instancias (17 colecciones clásicas de las IPC 2011 y 2023, los tiers y
+  `benchmarks/`; 60 s): la búsqueda perezosa con landmarks resuelve 73–75 clásicas más y
+  `lazy-ff-lm-pref-tb` es la mejor individual (317 frente a 304 de BFWS). Con eso se
+  rehicieron los portfolios de 1 a 7 núcleos (hay uno nuevo de 3): el de 6 pasa de 361 a
+  376 resueltas, y todos resuelven los tiers. El script de medida pone también un límite
+  duro de memoria a los miembros con PyTorch y valida con VAL cuando ya no hay búsquedas.
+
+- **Grounding de tareas grandes** (rama `opcional/grounding`, 2026-10-17), encontrado al
+  medir los landmarks: 9 de las 340 instancias clásicas no llegaban a buscar. Ver
+  [motor-busqueda.md](motor-busqueda.md#trabajo-opcional-grounding-de-tareas-grandes):
+  - punto fijo semi-ingenuo (cada esquema solo busca candidatos con algún hecho nuevo);
+  - el join usa las disyunciones de átomos y las igualdades de la precondición;
+  - hechos compartidos entre candidatos y conjunciones de literales sin una DNF por
+    literal.
+
+  Las tareas son idénticas en 236 instancias, y el grounding pasa de 1420 s a 217 s:
+  folding p02, de 629 s y 3,5 GB a 16 s y 459 MB; recharging-robots p05, de 364 s y
+  5,7 GB a 75 s y 2,9 GB. Scanalyzer p18 y recharging-robots p15 ya se resuelven; las
+  recharging-robots más grandes siguen sin caber en 1,5 GB.
+
+  Encontrado al medir, pendiente: la memoria de las tareas temporales con muchas acciones
+  durativas. Satellite con TIL (p17, 17 000 acciones) llega a casi 1 GB porque tiene
+  58 000 hechos `running@a` (uno por acción durativa instanciada): los bitsets de cada
+  acción, y los de los estados con acciones en curso, son enteros de varios KB.
 
 **Pendiente, en este orden:**
 
