@@ -600,7 +600,9 @@ funcione.
 
 **Pendiente, en este orden:**
 
-1. **Límite de memoria duro en las búsquedas** (de la iteración 5c): el único que ya ha
+1. ✅ **Límite de memoria duro en las búsquedas** (de la iteración 5c; hecho con la opción
+   A en la rama `opcional/limite-memoria`, ver
+   [motor-busqueda.md](motor-busqueda.md#uso-desde-la-terminal)): el único que ya había
    causado problemas reales. Hoy el límite del planificador (`max_memory`, `-m`) se mira
    durante la búsqueda cada 32 iteraciones y no cubre el grounding; una medida de storage
    agotó la memoria de WSL por eso (el script de benchmarks ya pone un límite duro por

@@ -117,11 +117,22 @@ def search(
             módulo); si no los hay, la búsqueda termina con ``UNSOLVABLE``.
         on_plan: con preferencias, activa el **incumbente** (ver la documentación del
             módulo): se llama con cada plan mejor que encuentra.
+
+    Si se agota la memoria (el límite duro de :mod:`pyplanner.search.memory`, o la de la
+    máquina), termina con ``LIMIT_REACHED``.
     """
-    if heuristic is None:
-        heuristic = create_heuristic(config.heuristic, task, config.device)
-    engine_class = LazySearch if config.lazy else EagerSearch
-    return engine_class(task, config, heuristic, stop, bound, on_plan).run()
+    try:
+        if heuristic is None:
+            heuristic = create_heuristic(config.heuristic, task, config.device)
+        engine_class = LazySearch if config.lazy else EagerSearch
+        return engine_class(task, config, heuristic, stop, bound, on_plan).run()
+    except MemoryError:
+        pass  # el resultado se crea fuera: la traza retiene la memoria de la búsqueda
+    return SearchResult(
+        SearchStatus.LIMIT_REACHED,
+        config_name=config.name,
+        message="límite de memoria: se ha agotado la memoria permitida (límite duro)",
+    )
 
 
 class _TypeBuckets:

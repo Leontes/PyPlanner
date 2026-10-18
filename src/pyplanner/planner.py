@@ -74,6 +74,13 @@ class PlanningResult:
     grounding_time: float
 
 
+def default_memory_limit() -> float | None:
+    """Memoria total por defecto para las búsquedas (MB): el :data:`DEFAULT_MEMORY_FRACTION`
+    de la disponible, o ``None`` si no se puede medir."""
+    available = available_memory_mb()
+    return None if available is None else available * DEFAULT_MEMORY_FRACTION
+
+
 def solve(
     domain: Domain,
     problem: Problem,
@@ -112,8 +119,7 @@ def solve(
     grounding_time = time.perf_counter() - start
 
     if memory_limit is None:
-        available = available_memory_mb()
-        memory_limit = None if available is None else available * DEFAULT_MEMORY_FRACTION
+        memory_limit = default_memory_limit()
     if memory_limit is not None:
         share = max(1, int(memory_limit / len(configs)))
         configs = [

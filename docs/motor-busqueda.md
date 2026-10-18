@@ -629,7 +629,8 @@ desarrollo, en tareas aleatorias con muchos empates y costes 0.
   "Lotes adaptativos");
 - `device`: `auto` (por defecto), `python`, `numba`, `cpu` o `cuda` (ver arriba);
 - `max_time`, `max_expansions` y `max_memory` (MB de memoria residente del proceso; se
-  consulta cada 32 iteraciones leyendo `/proc/self/statm`).
+  consulta cada 32 iteraciones leyendo `/proc/self/statm`). En los miembros del portfolio
+  y en la CLI hay además un límite duro (ver "Uso desde la terminal").
 
 Garantías:
 
@@ -806,6 +807,23 @@ pyplanner solve -t 30 dominio.pddl preferencias.pddl  # el mejor plan en 30 s
   que una búsqueda larga nunca agota la de la máquina (una búsqueda voraz puede generar
   cientos de miles de estados por segundo). Al llegar al límite, la búsqueda termina con
   `limit_reached` y lo explica en el detalle.
+- **Límite duro** (`pyplanner.search.memory`). El límite anterior se consulta cada 32
+  iteraciones y no ve lo que crece de golpe entre dos consultas ni el grounding (una
+  medida de storage agotó así la memoria de WSL). Por eso hay además un límite duro con
+  `RLIMIT_DATA`: al pasarlo, cualquier reserva falla y la búsqueda termina con
+  `limit_reached`.
+  - **Miembros del portfolio:** cada uno se lo pone en su proceso al arrancar, algo por
+    encima de su parte (el mayor entre su parte y lo que ya ocupa, más 512 MB o el 25 %).
+    Antes carga PyTorch y CUDA si los usa: importar PyTorch son unos 630 MB.
+  - **CLI:** se pone el total a sí misma antes del grounding. Si se agota al instanciar,
+    termina con el código 4.
+  - **Como librería**, no se limita al proceso que llama: el grounding y la búsqueda con
+    una sola configuración solo tienen el límite blando.
+
+  Se usa `RLIMIT_DATA` y no `RLIMIT_AS` porque CUDA reserva decenas de GB de memoria
+  virtual que no usa. Cuesta lo que una llamada al sistema por proceso. El miembro con GPU
+  resuelve slitherlink p02 igual con el límite (9 s), y con una parte de 300 MB, menos de lo
+  que ocupa CUDA (1 GB), para en la primera comprobación sin errores.
 - Códigos de salida:
   - 0: plan encontrado;
   - 2: entrada no válida;
