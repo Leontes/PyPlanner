@@ -154,13 +154,17 @@ class Normalizer:
         self.static_facts = static_facts
         self.static_functions = static_functions
         self.static_values: Mapping[Fact, float] = static_values or {}
+        # Cada hecho (y término de función) se guarda una sola vez: los candidatos de una
+        # tarea grande comparten unos pocos cientos de hechos, y con una tupla por candidato
+        # eran la mitad de la memoria del grounding.
+        self._facts: dict[Fact, Fact] = {}
 
     # --- Fórmulas ---------------------------------------------------------------------
 
     def dnf(self, formula: Formula, binding: Binding, negated: bool = False) -> DNF:
         """DNF de ``formula`` (o de su negación) con las variables de ``binding``."""
         if isinstance(formula, Atom):
-            fact = (formula.predicate, self._args(formula.args, binding))
+            fact = self._fact(formula.predicate, formula.args, binding)
             if formula.predicate in self.static_predicates:
                 return TRUE if (fact in self.static_facts) != negated else FALSE
             return [Clause(neg=frozenset([fact]))] if negated else [Clause(pos=frozenset([fact]))]
@@ -172,26 +176,74 @@ class Normalizer:
         if isinstance(formula, Not):
             return self.dnf(formula.arg, binding, not negated)
         if isinstance(formula, And | Or):
-            parts = [self.dnf(arg, binding, negated) for arg in formula.args]  # type: ignore[arg-type]
-            conjunctive = isinstance(formula, And) != negated
-            return _conjunction(parts) if conjunctive else _disjunction(parts)
+            if isinstance(formula, And) != negated:
+                return self._conjunction((arg, binding, negated) for arg in formula.args)  # type: ignore[misc]
+            return _disjunction(self.dnf(arg, binding, negated) for arg in formula.args)  # type: ignore[arg-type]
         if isinstance(formula, Imply):
             # a → b  ≡  ¬a ∨ b;   ¬(a → b)  ≡  a ∧ ¬b
             if negated:
-                return _conjunction(
-                    [self.dnf(formula.left, binding), self.dnf(formula.right, binding, True)]
+                return self._conjunction(
+                    [(formula.left, binding, False), (formula.right, binding, True)]
                 )
             return _disjunction(
                 [self.dnf(formula.left, binding, True), self.dnf(formula.right, binding)]
             )
         if isinstance(formula, Exists | Forall):
-            parts = [
-                self.dnf(formula.arg, extended, negated)
-                for extended in self.expand(formula.parameters, binding)
-            ]
-            conjunctive = isinstance(formula, Forall) != negated
-            return _conjunction(parts) if conjunctive else _disjunction(parts)
+            extensions = self.expand(formula.parameters, binding)
+            if isinstance(formula, Forall) != negated:
+                return self._conjunction((formula.arg, e, negated) for e in extensions)
+            return _disjunction(self.dnf(formula.arg, e, negated) for e in extensions)
         raise TypeError(f"fórmula desconocida: {formula!r}")
+
+    def _conjunction(self, items: Iterable[tuple[Formula, Binding, bool]]) -> DNF:
+        """DNF de la conjunción de ``items`` (fórmula, asignación, negada).
+
+        Da lo mismo que :func:`_conjunction` sobre las DNF de cada uno, pero mientras el
+        resultado es una sola cláusula (lo normal: conjunciones de literales), sus
+        literales se acumulan en conjuntos y la cláusula se construye al final, sin una DNF
+        por literal ni una cláusula intermedia por cada conjunción. Cuando una parte tiene
+        varias cláusulas, se sigue como :func:`_conjunction`. Termina en cuanto una parte es
+        falsa (sin instanciar las siguientes).
+        """
+        pos: set[Fact] = set()
+        neg: set[Fact] = set()
+        numeric: set[NumericCondition] = set()
+        result: DNF | None = None  # None: el resultado es la cláusula (pos, neg, numeric)
+        for formula, binding, negated in items:
+            if result is None and isinstance(formula, Atom):
+                fact = self._fact(formula.predicate, formula.args, binding)
+                if formula.predicate in self.static_predicates:
+                    if (fact in self.static_facts) == negated:
+                        return FALSE
+                else:
+                    (neg if negated else pos).add(fact)
+                continue
+            part = self.dnf(formula, binding, negated)
+            if not part:
+                return FALSE
+            if result is None:
+                if len(part) == 1:
+                    clause = part[0]
+                    pos |= clause.pos
+                    neg |= clause.neg
+                    numeric |= clause.numeric
+                    continue
+                if pos & neg:
+                    return FALSE
+                result = [Clause(frozenset(pos), frozenset(neg), frozenset(numeric))]
+            if part == TRUE:
+                continue
+            result = _conjunction([result, part])
+            if not result:
+                return FALSE
+            if len(result) == 1:  # vuelve a ser una sola cláusula
+                pos, neg, numeric = set(result[0].pos), set(result[0].neg), set(result[0].numeric)
+                result = None
+        if result is not None:
+            return result
+        if pos & neg:
+            return FALSE
+        return [Clause(frozenset(pos), frozenset(neg), frozenset(numeric))]
 
     def _comparison(self, formula: Comparison, binding: Binding, negated: bool) -> DNF:
         left = self.expression(formula.left, binding)
@@ -215,7 +267,7 @@ class Normalizer:
         if isinstance(expression, Number):
             return Const(expression.value)
         if isinstance(expression, FluentTerm):
-            key = (expression.function, self._args(expression.args, binding))
+            key = self._fact(expression.function, expression.args, binding)
             if expression.function in self.static_functions:
                 value = self.static_values.get(key)
                 return None if value is None else Const(value)
@@ -261,15 +313,15 @@ class Normalizer:
             for part in effect.args:
                 self._collect(part, binding, adds, deletes, numeric, conditional)  # type: ignore[arg-type]
         elif isinstance(effect, Atom):
-            adds.add((effect.predicate, self._args(effect.args, binding)))
+            adds.add(self._fact(effect.predicate, effect.args, binding))
         elif isinstance(effect, Not):
             assert isinstance(effect.arg, Atom)
-            deletes.add((effect.arg.predicate, self._args(effect.arg.args, binding)))
+            deletes.add(self._fact(effect.arg.predicate, effect.arg.args, binding))
         elif isinstance(effect, NumericEffect):
             value = self.expression(effect.value, binding)
             if value is None:
                 raise UndefinedEffect(str(effect))
-            key = (effect.fluent.function, self._args(effect.fluent.args, binding))
+            key = self._fact(effect.fluent.function, effect.fluent.args, binding)
             numeric.append(NumericAssignment(key, effect.op, value))
         elif isinstance(effect, ForallEffect):
             for extended in self.expand(effect.parameters, binding):
@@ -310,6 +362,12 @@ class Normalizer:
             extended = dict(binding)
             extended.update(zip((p.name for p in parameters), values, strict=True))
             yield extended
+
+    def _fact(self, name: str, terms: Iterable[Term], binding: Binding) -> Fact:
+        """El hecho (o término de función) ``name`` con los argumentos instanciados, siempre
+        el mismo objeto para el mismo hecho."""
+        fact = (name, self._args(terms, binding))
+        return self._facts.setdefault(fact, fact)
 
     @staticmethod
     def _args(terms: Iterable[Term], binding: Binding) -> tuple[str, ...]:

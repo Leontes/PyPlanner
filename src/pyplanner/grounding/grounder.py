@@ -6,18 +6,24 @@ son **alcanzables** en la relajación sin borrados. Los efectos de esas acciones
 alcanzables hechos nuevos, y el proceso se repite hasta llegar a un punto fijo.
 
 1. **Candidatos:** para cada esquema se buscan las asignaciones de parámetros que hacen
-   alcanzables sus *precondiciones necesarias* (los átomos positivos de la conjunción
-   exterior) y respetan los tipos. Los parámetros que no aparecen en ellas toman todos los
-   objetos de su tipo. Es un join: cada vez se toma el átomo con más posiciones ya ligadas
-   (y, a igualdad, el de menos hechos), y sus hechos se buscan en un índice por esas
-   posiciones.
+   alcanzables sus *precondiciones necesarias* y respetan los tipos. Son los átomos
+   positivos de la conjunción exterior y, de cada disyunción de átomos, los de alguno de
+   sus disyuntos (cada combinación es una alternativa). Las igualdades de la conjunción
+   exterior juntan los parámetros iguales en uno solo, o los fijan a una constante. Los
+   parámetros que no aparecen en ellas toman todos los objetos de su tipo. Es un join:
+   cada vez se toma el átomo con más posiciones ya ligadas (y, a igualdad, el de menos
+   hechos), y sus hechos se buscan en un índice por esas posiciones.
 2. **Normalización:** cada candidato se normaliza (:mod:`pyplanner.grounding.normalize`).
    La precondición pasa a DNF y los efectos a efectos simples con condición. Se hace una
    sola vez por candidato.
 3. **Punto fijo:** una cláusula de la precondición es alcanzable si lo son sus hechos
    positivos; los negativos se suponen alcanzables, como corresponde a una relajación.
    Sus efectos incondicionales, y los condicionales con alguna cláusula alcanzable, hacen
-   alcanzables sus añadidos.
+   alcanzables sus añadidos. Es **semi-ingenuo**, como en Datalog: en cada vuelta, cada
+   esquema solo busca los candidatos que usan algún hecho llegado desde su vuelta
+   anterior (los demás ya los encontró). Los candidatos que aún pueden añadir hechos (por
+   condiciones que no son necesarias o efectos condicionales) se vuelven a mirar en cada
+   vuelta, hasta que ya se alcanza todo lo que añaden.
 
 Después:
 
@@ -104,6 +110,7 @@ from pyplanner.loader.ast import (
     DurativeForallEffect,
     DurativeWhen,
     Effect,
+    Equals,
     Exists,
     Expression,
     FluentTerm,
@@ -317,22 +324,52 @@ def ground_with_context(
         reachable.setdefault(predicate, set()).add(args)
         reached.add((predicate, args))
 
+    # Punto fijo semi-ingenuo: cada esquema solo busca las asignaciones que usan algún hecho
+    # llegado desde la vez anterior (``arrived`` desde ``seen``). Las instancias que aún
+    # pueden añadir hechos (por condiciones que no son necesarias o efectos condicionales)
+    # se vuelven a mirar en cada vuelta hasta que ya no les queda nada por añadir.
     instances: dict[tuple[str, tuple[str, ...]], _Instance] = {}
+    arrived: list[Fact] = list(reached)
+    seen: dict[str, int | None] = dict.fromkeys((schema.name for schema in schemas), None)
+    pending: list[_Instance] = []
+
+    def fire(instance: _Instance) -> bool:
+        """Añade los hechos nuevos de ``instance``; ``True`` si añade alguno."""
+        new = list(instance.newly_reachable(reached))
+        for fact in new:
+            reached.add(fact)
+            reachable.setdefault(fact[0], set()).add(fact[1])
+            arrived.append(fact)
+        return bool(new)
+
     changed = True
     while changed:
         changed = False
         for schema in schemas:
+            start = seen[schema.name]
+            seen[schema.name] = len(arrived)
+            delta: dict[str, set[tuple[str, ...]]] | None = None
+            if start is not None:
+                delta = {}
+                for predicate, args in arrived[start:]:
+                    delta.setdefault(predicate, set()).add(args)
+                if not delta:
+                    continue
             # Se materializan antes de añadir hechos: el join recorre ``reachable``.
-            for binding in list(schema.bindings(reachable, universe)):
+            for binding in list(schema.bindings(reachable, universe, delta)):
                 key = (schema.name, tuple(binding[p] for p in schema.parameters))
-                instance = instances.get(key)
-                if instance is None:
-                    instance = _normalize(normalizer, schema, binding)
-                    instances[key] = instance
-                for fact in list(instance.newly_reachable(reached)):
-                    reached.add(fact)
-                    reachable.setdefault(fact[0], set()).add(fact[1])
-                    changed = True
+                if key in instances:
+                    continue
+                instance = instances[key] = _normalize(normalizer, schema, binding)
+                changed |= fire(instance)
+                if not instance.exhausted(reached):
+                    pending.append(instance)
+        still = []
+        for instance in pending:
+            changed |= fire(instance)
+            if not instance.exhausted(reached):
+                still.append(instance)
+        pending = still
 
     facts = sorted(f for f in reached if f[0] in fluent_predicates)
     if weights:
@@ -340,6 +377,7 @@ def ground_with_context(
     index = {fact: i for i, fact in enumerate(facts)}
     goal_dnf = _sorted_clauses(normalizer.dnf(goal_formula, {}))
     live = {key: inst for key, inst in instances.items() if inst.reachable_clauses(reached)}
+    instances.clear()  # los que no son alcanzables ya no hacen falta
     axiom_instances = {key: inst for key, inst in live.items() if key[0].startswith(":")}
     live = {key: inst for key, inst in live.items() if key not in axiom_instances}
     schema_of = {schema.name: schema for schema in schemas}
@@ -408,7 +446,10 @@ def ground_with_context(
     step = model.step_cost if model is not None else 0.0
 
     actions: list[GroundAction] = []
-    for key, instance in sorted(live.items()):
+    # Cada candidato se suelta en cuanto da sus acciones: así la memoria de los candidatos
+    # se reutiliza para las acciones en lugar de sumarse.
+    for key in sorted(live):
+        instance = live.pop(key)
         name, args = key
         instance_cost = costs[key]
         cost = instance_cost if metric_is_cost and instance_cost is not None else 1.0
@@ -907,11 +948,11 @@ def _build_axioms(
 def _normalize(normalizer: Normalizer, schema: "_Schema", binding: Binding) -> "_Instance":
     clauses = normalizer.dnf(schema.action.precondition, binding)
     if not clauses:
-        return _Instance([], [])
+        return _NEVER
     try:
         effects = normalizer.effects(schema.action.effect, binding)
     except UndefinedEffect:
-        return _Instance([], [])  # usa una función estática sin valor: nunca aplicable
+        return _NEVER  # usa una función estática sin valor: nunca aplicable
     return _Instance(clauses, effects)
 
 
@@ -939,6 +980,11 @@ class _Instance:
             if new and any(c.pos <= reached for c in effect.condition):
                 yield from new
 
+    def exhausted(self, reached: set[Fact]) -> bool:
+        """``True`` si ya no puede añadir hechos: nunca es aplicable o ya se alcanza todo lo
+        que añade."""
+        return not self.clauses or all(effect.adds <= reached for effect in self.effects)
+
     def numeric_keys(self) -> set[Fact]:
         """Términos de función que usan sus condiciones y efectos numéricos."""
         keys: set[Fact] = set()
@@ -953,6 +999,10 @@ class _Instance:
                 keys.add(assignment.variable)
                 keys |= variables_of(assignment.value)
         return keys
+
+
+#: Un candidato que nunca es aplicable (compartido: en las tareas grandes son muchos).
+_NEVER = _Instance([], [])
 
 
 def _build_action(
@@ -1059,42 +1109,110 @@ class _Schema:
         self.name = action.name
         self.parameters = [p.name for p in action.parameters]
         self.parameter_types = {p.name: p.types for p in action.parameters}
-        self._necessary = [
-            atom
-            for atom in _necessary_atoms(action.precondition)
-            if all(isinstance(t, Constant) or t.name in self.parameter_types for t in atom.args)
-        ]
+        # Igualdades de la conjunción exterior: los parámetros iguales comparten una sola
+        # variable en el join (la de su clase), y uno igual a una constante la toma. Así el
+        # join los liga a la vez en lugar de probar todas las combinaciones.
+        classes, self._impossible = _equality_classes(self.parameters, action.precondition)
+        self._class_of: dict[str, Constant | Variable] = classes
+        self._members: dict[str, list[str]] = {}
+        self._fixed: dict[str, str] = {}
+        for parameter, term in classes.items():
+            if isinstance(term, Variable):
+                self._members.setdefault(term.name, []).append(parameter)
+            else:
+                self._fixed[parameter] = term.name
+        # Las alternativas de átomos necesarios (ver _necessary_alternatives), sin los que
+        # usan variables que no son parámetros (de un exists, por ejemplo), con los
+        # parámetros cambiados por su clase.
+        alternatives = (
+            tuple(
+                Atom(atom.predicate, tuple(self._term(t) for t in atom.args))
+                for atom in alternative
+                if all(isinstance(t, Constant) or t.name in self.parameter_types for t in atom.args)
+            )
+            for alternative in _necessary_alternatives(action.precondition)
+        )
+        self._alternatives = list(dict.fromkeys(alternatives))
+
+    def _term(self, term: Constant | Variable) -> Constant | Variable:
+        return term if isinstance(term, Constant) else self._class_of[term.name]
 
     def bindings(
-        self, reachable: Mapping[str, set[tuple[str, ...]]], universe: "_TypedUniverse"
+        self,
+        reachable: Mapping[str, set[tuple[str, ...]]],
+        universe: "_TypedUniverse",
+        delta: Mapping[str, set[tuple[str, ...]]] | None = None,
     ) -> Iterator[Binding]:
         """Asignaciones de los parámetros que hacen alcanzables las precondiciones
-        necesarias y respetan los tipos de los parámetros."""
-        plan = self._join_plan(reachable)
-        indexes: list[dict[tuple[str, ...], list[tuple[str, ...]]] | None] = [None] * len(plan)
-        for binding in self._join(plan, indexes, 0, {}, reachable):
-            if not all(universe.has_type(v, self.parameter_types[p]) for p, v in binding.items()):
-                continue
-            free = [p for p in self.parameters if p not in binding]
-            if not free:
-                yield binding
-                continue
-            domains = [universe.objects_of(self.parameter_types[p]) for p in free]
-            for values in product(*domains):
-                yield {**binding, **dict(zip(free, values, strict=True))}
+        necesarias y respetan los tipos de los parámetros.
+
+        Con ``delta`` (los hechos de ``reachable`` que han llegado desde la última vez),
+        solo las que usan alguno de ellos (evaluación semi-ingenua): las demás ya salieron
+        la vez anterior. En cada alternativa de átomos necesarios, cada una sale una sola
+        vez: la del primer átomo cuyo hecho es nuevo, con los átomos anteriores sobre hechos
+        viejos. Si hay varias alternativas, una asignación puede salir en más de una (y en
+        otra llamada): aquí se quitan las repetidas de una misma llamada.
+        """
+        if self._impossible:
+            return
+        allowed = {p: universe.object_set(self.parameter_types[p]) for p in self.parameters}
+        # Valores posibles de cada clase: los que valen para todos sus parámetros.
+        values_of = {
+            root: [
+                o
+                for o in universe.objects_of(self.parameter_types[members[0]])
+                if all(o in allowed[m] for m in members)
+            ]
+            for root, members in self._members.items()
+        }
+        repeated: set[tuple[str, ...]] | None = set() if len(self._alternatives) > 1 else None
+        for necessary in self._alternatives:
+            if delta is None:
+                plans = [self._join_plan(necessary, reachable)]
+            else:
+                plans = [
+                    self._join_plan(necessary, reachable, first)
+                    for first, atom in enumerate(necessary)
+                    if delta.get(atom.predicate)
+                ]
+            for plan in plans:
+                indexes: list[dict[tuple[str, ...], list[tuple[str, ...]]] | None]
+                indexes = [None] * len(plan)
+                for partial in self._join(plan, indexes, 0, {}, reachable, delta or {}):
+                    free = [root for root in self._members if root not in partial]
+                    for values in product(*(values_of[root] for root in free)):
+                        roots = {**partial, **dict(zip(free, values, strict=True))}
+                        # En el orden del join (se ve en las etiquetas de las restricciones).
+                        binding = {m: v for r, v in roots.items() for m in self._members[r]}
+                        binding.update(self._fixed)
+                        if any(binding[p] not in allowed[p] for p in self.parameters):
+                            continue
+                        if repeated is not None:
+                            key = tuple(binding[p] for p in self.parameters)
+                            if key in repeated:
+                                continue
+                            repeated.add(key)
+                        yield binding
 
     def _join_plan(
-        self, reachable: Mapping[str, set[tuple[str, ...]]]
-    ) -> list[tuple[Atom, tuple[int, ...]]]:
-        """Orden del join y posiciones ya ligadas de cada átomo al llegar a él.
+        self,
+        necessary: tuple[Atom, ...],
+        reachable: Mapping[str, set[tuple[str, ...]]],
+        first: int | None = None,
+    ) -> list[tuple[Atom, tuple[int, ...], str]]:
+        """Orden del join, posiciones ya ligadas de cada átomo al llegar a él y de dónde
+        salen sus hechos: ``"all"`` (todos), ``"new"`` (solo los nuevos) u ``"old"`` (todos
+        menos los nuevos).
 
-        Cada vez se elige el átomo con más posiciones ligadas (constantes o variables de
-        los anteriores) y, a igualdad, el de menos hechos alcanzables: así los primeros
-        niveles generan pocas asignaciones parciales.
+        Con ``first``, ese átomo necesario va el primero y sobre los hechos nuevos, los
+        anteriores sobre los viejos y los siguientes sobre todos. Después, cada vez se elige
+        el átomo con más posiciones ligadas (constantes o variables de los anteriores) y, a
+        igualdad, el de menos hechos alcanzables: así los primeros niveles generan pocas
+        asignaciones parciales.
         """
-        remaining = list(self._necessary)
+        remaining = list(enumerate(necessary))
         bound: set[str] = set()
-        plan: list[tuple[Atom, tuple[int, ...]]] = []
+        plan: list[tuple[Atom, tuple[int, ...], str]] = []
 
         def positions(atom: Atom) -> tuple[int, ...]:
             return tuple(
@@ -1102,27 +1220,33 @@ class _Schema:
             )
 
         while remaining:
-            atom = min(
-                remaining,
-                key=lambda a: (-len(positions(a)), len(reachable.get(a.predicate, ()))),
-            )
-            remaining.remove(atom)
-            plan.append((atom, positions(atom)))
+            if first is not None and not plan:
+                k, atom = remaining.pop(first)
+            else:
+                k, atom = min(
+                    remaining,
+                    key=lambda a: (-len(positions(a[1])), len(reachable.get(a[1].predicate, ()))),
+                )
+                remaining.remove((k, atom))
+            source = "all" if first is None or k > first else "new" if k == first else "old"
+            plan.append((atom, positions(atom), source))
             bound.update(t.name for t in atom.args if isinstance(t, Variable))
         return plan
 
     def _join(
         self,
-        plan: list[tuple[Atom, tuple[int, ...]]],
+        plan: list[tuple[Atom, tuple[int, ...], str]],
         indexes: list[dict[tuple[str, ...], list[tuple[str, ...]]] | None],
         i: int,
         binding: Binding,
         reachable: Mapping[str, set[tuple[str, ...]]],
+        delta: Mapping[str, set[tuple[str, ...]]],
     ) -> Iterator[Binding]:
         if i == len(plan):
             yield binding
             return
-        atom, positions = plan[i]
+        atom, positions, source = plan[i]
+        facts = (delta if source == "new" else reachable).get(atom.predicate, ())
         candidates: Iterable[tuple[str, ...]]
         if positions:
             # Índice de los hechos del predicado por los valores de las posiciones ligadas
@@ -1130,16 +1254,19 @@ class _Schema:
             index = indexes[i]
             if index is None:
                 index = indexes[i] = {}
-                for args in reachable.get(atom.predicate, ()):
+                for args in facts:
                     index.setdefault(tuple(args[k] for k in positions), []).append(args)
             key = tuple(_value(atom.args[k], binding) for k in positions)
             candidates = index.get(key, ())
         else:
-            candidates = reachable.get(atom.predicate, ())
+            candidates = facts
+        new = delta.get(atom.predicate, ()) if source == "old" else ()
         for args in candidates:
+            if args in new:
+                continue
             extended = _unify(atom, args, binding)
             if extended is not None:
-                yield from self._join(plan, indexes, i + 1, extended, reachable)
+                yield from self._join(plan, indexes, i + 1, extended, reachable, delta)
 
 
 class _TypedUniverse:
@@ -1149,6 +1276,7 @@ class _TypedUniverse:
         self.domain = domain
         self.declarations = declarations
         self._cache: dict[tuple[str, ...], list[str]] = {}
+        self._sets: dict[tuple[str, ...], frozenset[str]] = {}
 
     def has_type(self, name: str, types: tuple[str, ...]) -> bool:
         return self.domain.is_subtype(self.declarations.get(name, (OBJECT,)), types)
@@ -1158,17 +1286,96 @@ class _TypedUniverse:
             self._cache[types] = sorted(n for n in self.declarations if self.has_type(n, types))
         return self._cache[types]
 
+    def object_set(self, types: tuple[str, ...]) -> frozenset[str]:
+        """Los objetos de :meth:`objects_of`, como conjunto (para comprobar tipos)."""
+        if types not in self._sets:
+            self._sets[types] = frozenset(self.objects_of(types))
+        return self._sets[types]
 
-def _necessary_atoms(formula: Formula) -> Iterator[Atom]:
-    """Átomos positivos que tiene que cumplir cualquier estado que satisfaga ``formula``.
 
-    Solo se miran la conjunción exterior y los átomos sueltos; es una aproximación segura.
+def _equality_classes(
+    parameters: Sequence[str], formula: Formula
+) -> tuple[dict[str, Constant | Variable], bool]:
+    """Clases de los parámetros según las igualdades de la conjunción exterior de
+    ``formula``: a cada parámetro, la variable de su clase o la constante a la que es igual.
+
+    También devuelve si las igualdades son imposibles (dos constantes distintas).
     """
-    if isinstance(formula, Atom):
-        yield formula
+    parent = {p: p for p in parameters}
+    fixed: dict[str, str] = {}
+
+    def find(p: str) -> str:
+        while parent[p] != p:
+            p = parent[p]
+        return p
+
+    impossible = False
+    for left, right in _necessary_equalities(formula):
+        if isinstance(left, Variable) and left.name not in parent:
+            continue
+        if isinstance(right, Variable) and right.name not in parent:
+            continue
+        if isinstance(left, Constant) and isinstance(right, Constant):
+            impossible |= left.name != right.name
+            continue
+        if isinstance(left, Constant):
+            left, right = right, left
+        assert isinstance(left, Variable)
+        root = find(left.name)
+        if isinstance(right, Constant):
+            impossible |= fixed.setdefault(root, right.name) != right.name
+            continue
+        other = find(right.name)
+        if other != root:
+            parent[other] = root
+            if other in fixed:
+                impossible |= fixed.setdefault(root, fixed[other]) != fixed[other]
+    classes: dict[str, Constant | Variable] = {}
+    for p in parameters:
+        root = find(p)
+        classes[p] = Constant(fixed[root]) if root in fixed else Variable(root)
+    return classes, impossible
+
+
+def _necessary_equalities(
+    formula: Formula,
+) -> Iterator[tuple[Constant | Variable, Constant | Variable]]:
+    """Igualdades positivas de la conjunción exterior de ``formula``."""
+    if isinstance(formula, Equals):
+        yield formula.left, formula.right
     elif isinstance(formula, And):
         for part in formula.args:
-            yield from _necessary_atoms(part)  # type: ignore[arg-type]
+            yield from _necessary_equalities(part)  # type: ignore[arg-type]
+
+
+#: Máximo de alternativas de átomos necesarios de un esquema (ver _necessary_alternatives).
+MAX_ALTERNATIVES = 16
+
+
+def _necessary_alternatives(formula: Formula) -> list[tuple[Atom, ...]]:
+    """Alternativas de átomos positivos necesarios: todo estado que satisface ``formula``
+    cumple todos los átomos de alguna.
+
+    Se miran la conjunción exterior, los átomos sueltos y las disyunciones de átomos (o de
+    conjunciones de átomos), como ``(or (connected ?a ?b) (connected ?b ?a))``: así el join
+    de los candidatos usa también los hechos de cada disyunto en lugar de probar todos los
+    objetos. Es una aproximación segura (una alternativa vacía no exige nada). Si las
+    disyunciones dan más de :data:`MAX_ALTERNATIVES` alternativas, las que sobran no se
+    usan.
+    """
+    if isinstance(formula, Atom):
+        return [(formula,)]
+    if isinstance(formula, And):
+        result: list[tuple[Atom, ...]] = [()]
+        for part in formula.args:
+            options = _necessary_alternatives(part)  # type: ignore[arg-type]
+            if len(result) * len(options) <= MAX_ALTERNATIVES:
+                result = [left + right for left in result for right in options]
+        return result
+    if isinstance(formula, Or):
+        options = [o for arg in formula.args for o in _necessary_alternatives(arg)]
+        return [()] if any(not o for o in options) else options
+    return [()]
 
 
 def _modified(effect: Effect) -> Iterator[str]:
