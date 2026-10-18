@@ -629,6 +629,9 @@ desarrollo, en tareas aleatorias con muchos empates y costes 0.
   2014) que se alterna con las demás: saca un tipo (h, g) al azar y un nodo al azar de
   ese tipo. Evita que la búsqueda voraz se atasque en mesetas y zonas con muchos
   callejones sin salida;
+- `landmarks`: añade la heurística de landmarks (h_LM) con sus propias colas, que se
+  alternan con las de `heuristic`, al estilo de LAMA (ver "Landmarks"); solo con GBFS sin
+  novedad;
 - `novelty`: anchura de la novedad (0, 1 o 2; ver "Búsqueda por novedad");
 - `batch_size`; con `adaptive_batch`, el mínimo de un lote adaptativo que se duplica
   (hasta `max_batch_size`) tras `plateau_patience` lotes sin mejorar la mejor h (ver
@@ -658,11 +661,14 @@ Configuraciones predefinidas (`pyplanner configs`):
 | `gbfs-ff-pref` | GBFS + h_FF + acciones útiles | |
 | `lazy-ff-pref` | GBFS perezosa + h_FF + acciones útiles | evalúa muchos menos estados |
 | `lazy-ff-pref-tb` | la anterior + exploración por tipos (semilla 1) | |
+| `gbfs-ff-lm-pref` | GBFS + h_FF y landmarks en colas alternadas + acciones útiles | ver "Landmarks" |
+| `lazy-ff-lm-pref` | la anterior, perezosa | |
+| `lazy-ff-lm-pref-tb` | la anterior + exploración por tipos (semilla 1) | la mejor individual en las tareas clásicas |
 | `gbfs-ff` | GBFS + h_FF | |
 | `gbfs-add` | GBFS + h_add | |
 | `wastar-add-3` | WA* (w = 3) + h_add | |
 | `gbfs-goalcount-rnd` | GBFS + objetivos pendientes, desempate aleatorio | muy barata; aporta diversidad |
-| `bfws-ff-pref` | BFWS: GBFS con prioridad (novedad, h_FF) + acciones útiles | la de 1 núcleo: la mejor en las pruebas de la 3b |
+| `bfws-ff-pref` | BFWS: GBFS con prioridad (novedad, h_FF) + acciones útiles | la de 1 núcleo: la más robusta (resuelve todos los tiers) |
 | `bfws-ff` | BFWS con h_FF | |
 | `bfws-goalcount` | BFWS con objetivos pendientes | sin heurística de relajación |
 | `iw1`, `iw2` | IW(1), IW(2) | incompletas; solo para problemas de anchura baja |
@@ -691,6 +697,38 @@ Lipovetzky y Geffner (2012, 2017); código en `search/novelty.py` y `search/engi
   mayor que k. Resuelve de inmediato los problemas de anchura ≤ k (los que se pueden
   resolver pasando solo por estados nuevos), pero es incompleta.
 - Solo con evaluación inmediata: la novedad de un estado se mide al generarlo.
+
+## Landmarks
+
+Trabajo opcional (punto 2); código en `heuristics/landmarks.py` y `search/engine.py`. Al
+estilo de LAMA (Richter y Westphal, 2010).
+
+- **Qué son.** Un landmark es un hecho que se cumple en algún momento de todo plan. Se
+  calculan los de la relajación sin borrados, que también lo son de la tarea, sobre los
+  hechos de `RelaxedTask`: los de la tarea, los complementarios de los que se niegan y las
+  condiciones numéricas. Así también hay landmarks negativos y numéricos.
+- **Cálculo**, una vez, desde el estado inicial: el punto fijo
+  `LM(p) = {p} ∪ ⋂ₐ ⋃_{q ∈ pre(a)} LM(q)`, con `a` las acciones relajadas que consiguen `p`
+  (Zhu y Givan; Keyder, Richter y Helmert, 2010). Los landmarks del objetivo son la unión
+  de los de sus hechos; con un objetivo disyuntivo, los comunes a sus cláusulas. En las
+  colecciones medidas tarda como mucho 0,13 s.
+- **Ordenaciones:** naturales (`l` va antes que `l'` si `l ∈ LM(l')`) y
+  codiciosas-necesarias (`l` es precondición de todas las acciones que pueden conseguir
+  `l'` por primera vez, así que tiene que cumplirse justo antes).
+- **h_LM depende del camino**, como en LAMA. Cada nodo lleva sus landmarks *aceptados*:
+  uno se acepta cuando se cumple y ya lo están sus predecesores. El valor es lo que falta
+  por aceptar más lo aceptado que hay que volver a conseguir: los del objetivo que no se
+  cumplen y los que tienen que cumplirse justo antes de otro aún sin aceptar. Si se llega
+  a un estado ya visto por otro camino, se queda con los aceptados por los dos.
+- **Colas alternadas.** Con `landmarks=True`, la búsqueda tiene dos colas más (la normal y
+  la de acciones útiles) ordenadas por h_LM, que se turnan con las de h_FF. Las acciones
+  útiles de un nodo son las de h_FF más las que consiguen alguno de los landmarks
+  siguientes (los que faltan con todos sus predecesores aceptados); estas se calculan al
+  expandir el nodo, no al evaluarlo.
+- Si el objetivo no es alcanzable ni en la relajación, h_LM es un callejón sin salida.
+- **Coste:** del 5 % al 15 % del tiempo de búsqueda (perfilado en barman, openstacks,
+  parking y visit-all).
+- Solo con GBFS sin novedad, inmediata o perezosa.
 
 ## Lotes adaptativos y evaluación híbrida
 
@@ -739,25 +777,30 @@ Resultados (driverlog y zenotravel temporales 12–17, un proceso, 60 s):
 - **En el portfolio aporta poco en estas pruebas** (la búsqueda perezosa ya resuelve
   zenotravel en pocos segundos), pero es la mejor sexta configuración: con las 7
   candidatas medidas en las 34 instancias, el mejor portfolio de 6 es el de 5 más el
-  híbrido (93,8 s frente a 100,9 s), y WA* pasa al de 7.
+  híbrido (93,8 s frente a 100,9 s), y WA* pasa al de 7. Con los landmarks se rehicieron
+  los portfolios, y el híbrido sigue en el de 6 y el de 7 (ver "Portfolio").
 
 ## Portfolio
 
 **Qué búsquedas se lanzan.** Depende del número de núcleos (`-j N`). Hay un portfolio
-predefinido para 1, 2, 4, 5, 6 y 7 núcleos (`PORTFOLIOS` en `search/config.py`), y cada uno
-contiene al anterior:
+predefinido para cada número de núcleos de 1 a 7 (`PORTFOLIOS` en `search/config.py`), y
+cada uno contiene al anterior:
 
 | Núcleos | Búsquedas | Qué se añade |
 |---------|-----------|--------------|
-| 1 | `bfws-ff-pref` | BFWS, la configuración individual más robusta y rápida; se ejecuta en el propio proceso |
-| 2 | + `lazy-ff-pref` | la más rápida en tareas grandes y fáciles |
-| 4 | + `lazy-ff-pref-tb`, `gbfs-goalcount-rnd` | la perezosa con exploración, y la más barata y aleatoria |
-| 5 | + `gbfs-ff-pref-tb` | GBFS con exploración por tipos, la más rápida en slitherlink |
-| 6 | + `gbfs-ff-pref-hybrid` | lote adaptativo y evaluación híbrida CPU/GPU: el único miembro con GPU; la mejor sexta configuración (el mejor miembro de cada instancia pasa de 100,9 s a 93,8 s) |
-| 7 | + `wastar-add-3` | WA*, que tiende a planes más cortos: más diversidad con CPU de sobra |
+| 1 | `bfws-ff-pref` | BFWS, la más robusta: resuelve todos los tiers y da los mejores planes con preferencias; se ejecuta en el propio proceso |
+| 2 | + `lazy-ff-lm-pref-tb` | la perezosa con landmarks y exploración por tipos, la mejor individual en las tareas clásicas |
+| 3 | + `gbfs-goalcount-rnd` | la más barata y aleatoria |
+| 4 | + `wastar-add-3` | WA*, que da los mejores planes con preferencias |
+| 5 | + `lazy-ff-pref` | la perezosa sin landmarks |
+| 6 | + `gbfs-ff-pref-hybrid` | lote adaptativo y evaluación híbrida CPU/GPU, el único miembro con GPU: casi empata con GBFS con exploración por tipos (una instancia menos, un 1 % más rápido) y se queda para las tareas grandes, donde la GPU rinde |
+| 7 | + `gbfs-ff-pref-tb` | GBFS con exploración por tipos |
 
-- Con otro número de núcleos se usa el portfolio más grande que quepa: con 3, el de 2;
-  con más de 7, el de 7. Nunca hay más búsquedas que núcleos.
+- Elegidos en el trabajo opcional de los landmarks con 475 instancias, clásicas y no
+  clásicas (ver "Rendimiento medido"). Cada uno resuelve todos los tiers. Del de 2 al de
+  5 son la mejor combinación posible de su tamaño; el de 6 y el de 7, por el miembro con
+  GPU, quedan a una instancia de la mejor.
+- Con más de 7 núcleos se usa el de 7. Nunca hay más búsquedas que núcleos.
 - Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
   no pagan el arranque de PyTorch y CUDA en las tareas pequeñas. Sin GPU, el miembro
   híbrido del de 6 y del de 7 evalúa todo con Numba.
@@ -1153,6 +1196,80 @@ cuentan 60 s):
   búsqueda llegó a 10 GB en menos de 3 minutos. De ahí la línea temporal bajo demanda y el
   límite de memoria (ver "Motor temporal" y "Uso desde la terminal").
 
+### Trabajo opcional: landmarks y portfolios
+
+Dos conjuntos, 60 s y 1,5 GB por búsqueda, con límite duro de memoria por proceso:
+
+- **Clásicas:** 340 instancias, las 20 primeras de 17 colecciones: las 14 de *satisficing*
+  de la IPC 2011 y recharging-robots, ricochet-robots y slitherlink de la IPC 2023.
+- **No clásicas:** 135 instancias, los tiers y las colecciones de `benchmarks/`, sin
+  repetir, más driverlog y zenotravel temporales hasta la 17.
+
+Las clásicas y las temporales grandes no están en git (ver
+[benchmarks/README.md](../benchmarks/README.md)). Instancias resueltas y tiempo total (las no
+resueltas cuentan 60 s):
+
+| Configuración | Clásicas | No clásicas | Total | Tiempo |
+|---------------|----------|-------------|-------|--------|
+| `lazy-ff-lm-pref-tb` | **203** | 114 | **317** | 12984 s |
+| `gbfs-ff-lm-pref` | 193 | 116 | 309 | 13149 s |
+| `bfws-ff-pref` | 187 | 117 | 304 | 14120 s |
+| `lazy-ff-lm-pref` | 189 | 112 | 301 | 13847 s |
+| `gbfs-ff-pref-tb` | 156 | 117 | 273 | 15484 s |
+| `gbfs-ff-pref-hybrid` | 149 | 116 | 265 | 15976 s |
+| `lazy-ff-pref-tb` | 137 | 116 | 253 | 16090 s |
+| `lazy-ff-pref` | 127 | 118 | 245 | 16749 s |
+| `wastar-add-3` | 126 | 82 | 208 | 18638 s |
+| `gbfs-goalcount-rnd` | 120 | 72 | 192 | 18074 s |
+
+- **Los landmarks ganan mucho en las clásicas.** La búsqueda perezosa resuelve 75
+  instancias más y pierde 13 (con exploración por tipos, 73 más y 7 menos), sobre todo en
+  openstacks (20), barman (17), visit-all (16–18) y parking (7–11). BFWS sigue siendo la
+  mejor en floor-tile, no-mystery, ricochet-robots, slitherlink y transport.
+- **En las no clásicas, casi todas resuelven casi todo.** Trucks p01 (tier 5) solo lo
+  resuelven en 60 s `bfws-ff-pref`, `gbfs-ff-lm-pref` y el miembro con GPU, así que cada
+  portfolio necesita uno de los tres.
+- **La GPU no destaca en las temporales grandes.** Driverlog: 122 s frente a 104 s de BFWS;
+  zenotravel: 93 s frente a 70 s de la búsqueda perezosa.
+
+**Portfolios.** Por cada número de núcleos, la combinación con más instancias resueltas y
+menos tiempo (el del miembro más rápido de cada instancia), con la condición de resolver
+todos los tiers. Storage es la suma de las métricas de las preferencias (menos es mejor),
+con el mejor plan de los miembros en cada problema:
+
+| Núcleos | Antes: resueltas · tiempo · storage | Ahora: resueltas · tiempo · storage |
+|---------|-------------------------------------|-------------------------------------|
+| 1 | 304 · 14120 s · 20117 (2 sin plan) | igual |
+| 2 | 314 · 13551 s · 28667 | 352 · 11357 s · 27094 |
+| 3 | (usaba el de 2) | 366 · 10331 s · 27094 |
+| 4 | 357 · 10911 s · 25984 | 371 · 10022 s · 20172 |
+| 5 | 360 · 10638 s · 25975 | 375 · 9758 s · 20053 |
+| 6 | 361 · 10388 s · 25975 | 376 · 9499 s · 20053 |
+| 7 | 369 · 9976 s · 20041 | 378 · 9356 s · 20045 |
+
+- La cadena que empieza por BFWS es la mejor combinación de cada tamaño, del 2 al 7
+  (377 con 6 núcleos y 379 con 7, sin el miembro con GPU). Con
+  1 núcleo, `gbfs-ff-lm-pref` resolvería 5 instancias más, pero con planes mucho peores en
+  storage (33586).
+- El miembro con GPU entra en el de 6 y el de 7 en lugar de `gbfs-ff-pref-tb` y
+  `lazy-ff-lm-pref`: una instancia menos en cada uno y un 1 % más rápidos.
+- Es una sola muestra: `lazy-ff-lm-pref-tb` desempata al azar (semilla 1).
+
+**Problemas encontrados por el camino:**
+
+- **Grounding sin memoria.** 9 instancias fallan en todas las configuraciones al
+  instanciar: 8 de recharging-robots y scanalyzer p18. Recharging-robots p05 tiene 1,39
+  millones de acciones (casi todas de `recharge`, por todos los pares de robots, lugares y
+  niveles de batería) y tarda 391 s y 5,7 GB solo en el grounding: unos 4 KB por acción.
+  Folding y labyrinth (IPC 2023) tardan 118 s y 33 s en el grounding. Arreglado después:
+  ver "Trabajo opcional: grounding de tareas grandes".
+- **VAL sin memoria.** El script de medida validaba en el proceso de la búsqueda, y VAL
+  heredaba su límite duro: en storage p20 (2,3 GB) moría sin veredicto y el plan contaba
+  como inválido. Ahora VAL se ejecuta al final, sin búsquedas en marcha, y si termina sin
+  veredicto el plan queda sin validar. Todos los planes de estas medidas son válidos.
+- **Memoria.** WSL se cayó durante la primera medida; el único proceso sin límite duro
+  era el miembro con GPU. Ahora el script le pone `RLIMIT_DATA`, y la memoria usada no
+  pasó de 8,4 GB de 16.
 
 ### Trabajo opcional: grounding de tareas grandes
 

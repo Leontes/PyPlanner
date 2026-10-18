@@ -57,3 +57,28 @@ Storage tiene otra (‡), la misma que en el tier 5: el dominio declaraba dos ve
 búsqueda es *anytime* (cada problema agota el límite de tiempo salvo que se demuestre el
 óptimo antes); con procesos y eventos, el plan se valida con un paso de tiempo más fino y,
 si falla, se busca otra vez con δ/2 (la tabla da el δ final cuando no es 1).
+
+## Colecciones locales (fuera de git)
+
+Para elegir los portfolios con los landmarks (trabajo opcional, punto 2) se midieron dos
+colecciones más, que no están en el repositorio (están en `.git/info/exclude`). Se rehacen
+así:
+
+- **`classical/`**: 17 colecciones de 20 instancias, con el mismo formato (`domain.pddl`
+  o `domain-pNN.pddl` por problema, como openstacks y parc-printer, y `pNN.pddl`):
+  - las 14 de `ipc-2011/domains/*-sequential-satisficing` de
+    [potassco/pddl-instances](https://github.com/potassco/pddl-instances) (`cf19edf`),
+    sin el sufijo en el nombre;
+  - recharging-robots, ricochet-robots y slitherlink de `sat/` de
+    [ipc2023-classical/ipc2023-dataset](https://github.com/ipc2023-classical/ipc2023-dataset)
+    (`1e29a0e`).
+
+  Erratas: (*) floor-tile usa `total-cost` sin declarar `:action-costs`; (*) tidybot usa
+  `not` sin declarar `:negative-preconditions`; (‡) las acciones `up`, `down`, `left` y
+  `right` de floor-tile se llamaban igual que sus predicados y pasan a `move-up`, etc.;
+  (‡) el objeto `cart` de tidybot se llamaba igual que su tipo y pasa a `cart0`; (‡) los
+  problemas de parking se llamaban igual que el dominio y pasan a `parking-pNN`; (‡) el
+  p10 de woodworking tenía una línea `- board` sin objetos, que se ha quitado.
+- **`temporal/`**: driverlog y zenotravel de la IPC 2002 (*time-simple-automatic*) de
+  potassco, instancias 1 a 17, con el dominio del tier 3 (que lleva su errata). p01 y p02
+  son las del tier.

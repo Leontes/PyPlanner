@@ -76,6 +76,7 @@ from dataclasses import replace
 
 from pyplanner.grounding import GroundTask, State
 from pyplanner.heuristics import Evaluation, Heuristic, create_heuristic
+from pyplanner.heuristics.landmarks import LandmarkGraph
 from pyplanner.search.config import SearchConfig
 from pyplanner.search.memory import resident_memory_mb
 from pyplanner.search.novelty import NoveltyTable, negated_facts
@@ -179,12 +180,17 @@ class _TypeBuckets:
 
 class _OpenLists:
     """Colas que se usan por turnos: la normal, la preferente (acciones útiles) y la de
-    exploración por tipos, según la configuración."""
+    exploración por tipos, según la configuración. Con landmarks, la normal y la preferente
+    se repiten para h_LM, con la prioridad que le da esa heurística."""
 
     def __init__(self, config: SearchConfig) -> None:
         self.queues: list[list[_Entry]] = [[]]
-        if config.preferred_operators:
+        self._preferred = config.preferred_operators
+        if self._preferred:
             self.queues.append([])
+        self._second = len(self.queues) if config.landmarks else None
+        if config.landmarks:
+            self.queues.extend([] for _ in range(len(self.queues)))
         self.types = _TypeBuckets(config.seed) if config.exploration == "type-based" else None
         self._slots = len(self.queues) + (1 if self.types is not None else 0)
         self._turn = 0
@@ -203,13 +209,20 @@ class _OpenLists:
         item: tuple[int, ...],
         preferred: bool,
         type_key: tuple[float, ...],
+        second_key: tuple[float, ...] | None = None,
     ) -> None:
-        entry: _Entry = (key, next(self._tie), item)
-        heapq.heappush(self.queues[0], entry)
-        if preferred and len(self.queues) > 1:
-            heapq.heappush(self.queues[1], entry)
+        tie = next(self._tie)
+        self._push_into(0, (key, tie, item), preferred)
+        if second_key is not None and self._second is not None:
+            self._push_into(self._second, (second_key, tie, item), preferred)
         if self.types is not None:
             self.types.push(type_key, item)
+
+    def _push_into(self, first: int, entry: _Entry, preferred: bool) -> None:
+        """Mete la entrada en la cola normal ``first`` y, si es preferente, en la siguiente."""
+        heapq.heappush(self.queues[first], entry)
+        if preferred and self._preferred:
+            heapq.heappush(self.queues[first + 1], entry)
 
     def pop(self) -> tuple[int, ...] | None:
         """Saca una entrada de la cola a la que le toca (o de la siguiente si está vacía)."""
@@ -265,6 +278,11 @@ class _BestFirstSearch:
         self.preferred: list[frozenset[int]] = []
         self.closed: list[bool] = []
         self.width: list[int] = []
+        # Landmarks (ver SearchConfig.landmarks): los aceptados por el camino de cada nodo
+        # (bits) y su valor h_LM.
+        self.landmarks = LandmarkGraph(task) if config.landmarks else None
+        self.accepted: list[int] = []
+        self.h_lm: list[float] = []
         self.novelty = (
             NoveltyTable(
                 config.novelty, len(task.facts), negated_facts(task), task.continuous_variables
@@ -323,13 +341,28 @@ class _BestFirstSearch:
         self.closed.append(False)
         if self.novelty is not None:
             self.width.append(0)
+        if self.landmarks is not None:
+            inherited = self.accepted[parent] if parent != _NO_PARENT else 0
+            self.accepted.append(self.landmarks.accept(inherited, state))
+            self.h_lm.append(0.0)
         return node
 
+    def merge_landmarks(self, known: int, parent: int, state: State) -> None:
+        """Un estado conocido al que se llega por otro camino: sus landmarks aceptados son
+        los que lo están por los dos caminos (como en LAMA)."""
+        if self.landmarks is not None:
+            self.accepted[known] &= self.landmarks.accept(self.accepted[parent], state)
+
     def helpful(self, node: int) -> frozenset[int]:
-        """Las acciones útiles del nodo que se expande (las afina la heurística)."""
+        """Las acciones útiles del nodo que se expande (las afina la heurística). Con
+        landmarks, también las que consiguen uno de los siguientes; se calculan aquí, solo
+        para los nodos que se expanden."""
         if not self.config.preferred_operators:
             return self.preferred[node]
-        return self.heuristic.helpful(self.states[node], self.preferred[node])
+        useful = self.heuristic.helpful(self.states[node], self.preferred[node])
+        if self.landmarks is not None:
+            useful = useful | self.landmarks.preferred(self.accepted[node])
+        return useful
 
     def evaluate(self, nodes: list[int]) -> list[Evaluation]:
         """Evalúa los nodos en un solo lote y guarda h y las acciones útiles."""
@@ -345,10 +378,13 @@ class _BestFirstSearch:
         if self.config.adaptive_batch:
             self.adapt(evaluations)
         h, preferred = self.h, self.preferred
+        graph = self.landmarks
         for node, evaluation in zip(nodes, evaluations, strict=True):
             h[node] = evaluation.value
             if evaluation.preferred:
                 preferred[node] = frozenset(evaluation.preferred)
+            if graph is not None:
+                self.h_lm[node] = graph.value(self.accepted[node], states[node])
         return evaluations
 
     def adapt(self, evaluations: list[Evaluation]) -> None:
@@ -553,6 +589,7 @@ class EagerSearch(_BestFirstSearch):
                         pending.append(child)
                         pending_preferred[child] = is_preferred
                         continue
+                    self.merge_landmarks(known, node, successor)
                     if self._temporal:
                         # Uno de los dos caminos (y su línea temporal) se pierde.
                         self.lost_paths = True
@@ -593,7 +630,8 @@ class EagerSearch(_BestFirstSearch):
         assert h is not None
         g = self.g[node]
         width = self.width[node] if self.novelty is not None else 0
-        self.open.push(self.priority(g, h, width), (node,), preferred, (h, g))
+        second = None if self.landmarks is None else self.priority(g, self.h_lm[node], width)
+        self.open.push(self.priority(g, h, width), (node,), preferred, (h, g), second)
 
     def pop_batch(self) -> list[int] | int | None:
         """Saca hasta ``batch_size`` nodos por expandir.
@@ -673,7 +711,9 @@ class LazySearch(_BestFirstSearch):
                 )
                 if successor is None:
                     continue
-                if successor in self.index:
+                known = self.index.get(successor)
+                if known is not None:
+                    self.merge_landmarks(known, parent, successor)
                     if self._temporal:
                         self.lost_paths = True  # el camino nuevo (y su línea temporal) se pierde
                     continue
@@ -708,4 +748,5 @@ class LazySearch(_BestFirstSearch):
             if g >= limit:
                 continue  # no puede mejorar la cota
             key = self.priority(g, h)
-            self.open.push(key, (node, action.index), action.index in useful, (h, g))
+            second = None if self.landmarks is None else self.priority(g, self.h_lm[node])
+            self.open.push(key, (node, action.index), action.index in useful, (h, g), second)
