@@ -647,14 +647,13 @@ class EagerSearch(_BestFirstSearch):
                 useful = self.helpful(node)
                 for action in self.successors(state):
                     self.stats.generated += 1
-                    successor = (
-                        action.apply(state)
-                        if self._direct_apply
-                        else self.task.apply(state, action)
-                    )
+                    if self._direct_apply:
+                        successor, cost = action.apply(state), action.cost
+                    else:
+                        successor, cost = self.task.transition(state, action)
                     if successor is None:
                         continue  # efecto numérico indefinido: la acción no se puede aplicar
-                    new_g = g + action.cost
+                    new_g = g + cost
                     if checked:
                         if penalty is not None:
                             new_g += penalty(state, successor)
@@ -782,11 +781,10 @@ class LazySearch(_BestFirstSearch):
                 parent, action_index = item
                 action = self.task.actions[action_index]
                 parent_state = self.states[parent]
-                successor = (
-                    action.apply(parent_state)
-                    if self._direct_apply
-                    else self.task.apply(parent_state, action)
-                )
+                if self._direct_apply:
+                    successor, cost = action.apply(parent_state), action.cost
+                else:
+                    successor, cost = self.task.transition(parent_state, action)
                 if successor is None:
                     continue
                 known = self.index.get(successor)
@@ -795,7 +793,7 @@ class LazySearch(_BestFirstSearch):
                     if self._temporal:
                         self.lost_paths = True  # el camino nuevo (y su línea temporal) se pierde
                     continue
-                g = self.g[parent] + action.cost
+                g = self.g[parent] + cost
                 if self.penalty is not None:
                     g += self.penalty(parent_state, successor)
                 if g >= self.limit:

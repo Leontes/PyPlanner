@@ -117,8 +117,10 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
   heurística nunca declara un callejón sin salida falso. Los efectos que empeoran una
   condición se ignoran, como los borrados. Desde la 6c, asignar una constante a la única
   variable de una condición la logra solo si ese valor la cumple (si no, solo sirve para
-  definir la variable cuando no tiene valor). h_FF cuenta cada operador por su coste por el
-  máximo número de repeticiones que necesita.
+  definir la variable cuando no tiene valor). Desde la v0.7, un incremento variable
+  (`increase x y`) solo cuenta si es positivo, y sus repeticiones se cuentan con el valor
+  del estado (ver "Ritmos que fijan las acciones"). h_FF cuenta cada operador por su coste
+  por el máximo número de repeticiones que necesita.
 
 ## Motor temporal (iteración 3b)
 
@@ -493,7 +495,9 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
 - **Pasos de la búsqueda:** las acciones instantáneas, el inicio y el fin de cada acción
   durativa, y una acción `_wait` que deja pasar δ unidades de tiempo (1 por defecto;
   `--delta` en la CLI, `delta` en `solve`). La espera se acorta si antes una acción
-  durativa llega a una cota de su duración, para que pueda terminar justo a tiempo.
+  durativa llega a una cota de su duración, para que pueda terminar justo a tiempo. Desde
+  la v0.7 hay además una espera hasta el siguiente cambio (`_wait-until`, ver "Ritmos que
+  fijan las acciones").
 - **Integración exacta** (`pyplanner.grounding.flows`): durante una espera, las variables
   siguen la dinámica de los procesos activos. Se integra con series de Taylor, que en
   dinámicas polinómicas (car: la velocidad crece con la aceleración y la distancia con la
@@ -516,13 +520,16 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
 - **Acciones durativas:** se compilan en un inicio (pone en marcha un reloj y fija las
   cotas de su duración), un proceso `a@run` (el reloj y los efectos continuos) y un fin
   (el reloj dentro de la duración). Las condiciones `over all` son invariantes.
-- **Coste:** δ por espera y 2ε por acción (ε por el tiempo que pasa y ε por ser un paso
-  más; sin el segundo, A* devolvía planes con decenas de acciones inútiles que hacían
-  pasar el tiempo de ε en ε). La métrica que se informa es la duración del plan.
+- **Coste:** δ por espera y unos 2ε por acción (ε por el tiempo que pasa y ε por ser un
+  paso más; sin el segundo, A* devolvía planes con decenas de acciones inútiles que hacían
+  pasar el tiempo de ε en ε). Desde la v0.7, 1/64 en lugar de 0,02, para que las sumas de
+  costes sean exactas, y la espera hasta el siguiente cambio cuesta lo que avanza. La
+  métrica que se informa es la duración del plan.
 - **Heurística:** en la relajación, la espera es una acción con un efecto condicional por
   proceso (sus ritmos × δ); *h^hbd* cuenta las repeticiones si el ritmo es constante, como
   el reloj de una acción durativa. Los eventos son reglas relajadas de coste 0 sobre
-  hechos. Lo que la relajación no ve (las invariantes) lo añade la 6c.
+  hechos. Lo que la relajación no ve (las invariantes) lo añade la 6c, y los ritmos que
+  fijan las acciones, la v0.7.
 - **Novedad:** las variables que cambian de forma continua no cuentan. Toman un valor
   nuevo en cada espera, así que todo estado parecía nuevo y la tabla crecía sin fin (en
   generator-events p06, 85 000 átomos y 2 GB en 20 s). Limitar sus valores distintos (16,
@@ -532,7 +539,10 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
   invariante que se rompe en mitad de una espera, por ejemplo), `solve` busca otra vez con
   δ/2, hasta 3 veces, dentro del límite de tiempo. Es más estricto que VAL, que solo
   comprueba las invariantes en los *happenings*: en generator p02, un plan que VAL daba
-  por válido dejaba la gasolina en −1,08 entre dos *happenings*.
+  por válido dejaba la gasolina en −1,08 entre dos *happenings*. Desde la v0.7, cada espera
+  se recorre a trozos de δ/10 para comprobar los instantes de en medio, pero termina en el
+  estado de la búsqueda: el redondeo de miles de trozos se acumulaba, y un plan que agota
+  el combustible justo al final de una espera larga quedaba en −10⁻⁹.
 - **Sin plan:** agotar la búsqueda no demuestra nada (con un δ menor podría haber plan):
   termina con `failed`.
 - **Límites** (error claro): literales iniciales temporizados, restricciones de
@@ -589,6 +599,41 @@ para repostar. La 6c añade lo que falta (`pyplanner.heuristics.projection`):
   lo del estado de partida, y solo los procesos con condiciones numéricas (los hechos no
   cambian mientras pasa el tiempo). La búsqueda de generator-toricelli p09 con
   `bfws-ff-pref` pasa de 13,1 a 6,2 s con el perfilador.
+
+## Ritmos que fijan las acciones (v0.7)
+
+A petición del proyecto principal, que no encontraba plan en uno de sus dominios: una
+economía con un proceso de producción cuyo ritmo fijan las acciones (poner y quitar
+trabajadores), donde llegar al objetivo exige encadenar acciones y esperas de miles de
+unidades de tiempo. Con la v0.6, h_FF trataba la espera como si bastara una para cualquier
+cantidad, y la única acción útil era esperar: la búsqueda no avanzaba. Son mecanismos
+generales, no de ese dominio:
+
+- **Incrementos variables en la relajación** (`pyplanner.heuristics.relaxation`): el efecto
+  de la espera, ritmo × δ, no es constante, y *h^hbd* lo trataba de forma optimista: una
+  espera bastaba para cualquier cantidad, aunque el ritmo fuera 0. Ahora la arista exige
+  que el cambio sea positivo (un nodo más de la relajación, logrado por las acciones que
+  suben el ritmo) y cuenta las esperas con el ritmo del estado o, si es menor, con el
+  menor que le da una sola acción: ⌈déficit / max(ritmo·δ, ρ)⌉. Así, poner en marcha un
+  ritmo no sube el valor y acelerarlo lo baja, y las acciones útiles pasan a ser las que
+  ponen en marcha la producción.
+- **Esperar hasta el siguiente cambio** (`_wait-until`, `DiscreteTask.wait_until`):
+  avanza hasta el primer instante en que se cumple una condición numérica de una acción o
+  un evento aplicables por sus hechos o del objetivo, o una acción durativa llega a una
+  cota de su duración. Los instantes salen de las raíces exactas del flujo
+  (`Flow.crossings`, de la 6c); una invariante que se rompe por el camino invalida el
+  paso. Juntar 150 unidades a ritmo constante es un paso en lugar de 150. Cuesta lo que
+  avanza (`GroundTask.transition`), así que A* sigue minimizando la duración, y puede
+  mejorarla: en el depósito de los tests, de 2,02 a 1,67, porque ya no espera pasos
+  enteros de δ. No está en la relajación: es útil cuando lo es `_wait`.
+- **Costes exactos.** Con repeticiones de cientos o miles, las sumas de costes de 0,02
+  arrastraban ruido de redondeo, y en CUDA (que suma en otro orden) los empates entre
+  soportadores se rompían de otra forma: h_FF daba otro valor que la referencia. El coste
+  de una acción instantánea es ahora 1/64 (una fracción binaria cercana a 2ε) y las sumas
+  son exactas: Python, Numba y PyTorch coinciden en todos los estados.
+- **Calidad.** La búsqueda voraz encuentra antes planes que esperan hasta la siguiente
+  condición, y no siempre son los más cortos: en car-nodrag, acelerar, esperar hasta
+  d ≥ 30 y frenar dura 15,50 (antes, frenando antes en la rejilla de δ, 11,03).
 
 ## Heurísticas
 
@@ -1212,6 +1257,34 @@ después de la 6c. Todos los planes de la 6c son válidos para VAL:
   `bfws-ff-pref`, el mejor de 3): 51 expanden lo mismo, y la otra (satellite p02 con
   `lazy-ff-pref`) llega al límite de tiempo en las dos versiones. El coste es el mismo
   (mediana +0,9 %; en slitherlink p02, 7,3-7,6 s en las dos con varias medidas).
+
+### v0.7: ritmos que fijan las acciones
+
+Las mismas colecciones que en la 6c, con la v0.6 (c084fd5) y con los cambios, 60 s y 2 GB
+por búsqueda, 4 procesos. Instancias resueltas y tiempo total; todos los planes son
+válidos para VAL:
+
+| Colección | `bfws-ff-pref` v0.6 | `bfws-ff-pref` | `lazy-ff-pref` v0.6 | `lazy-ff-pref` |
+|---|---|---|---|---|
+| car-nodrag (10) | 10, 33,1 s | 10, 11,5 s | 10, 26,2 s | 10, 5,7 s |
+| generator-events (8) | 8, 9,5 s | 8, 6,2 s | 8, 9,8 s | 8, 5,9 s |
+| generator-nonlinear (8) | 8, 8,7 s | 8, 6,1 s | 8, 8,4 s | 8, 6,4 s |
+| generator-toricelli (9) | 9, 27,0 s | 9, 8,5 s | 9, 16,6 s | 9, 7,7 s |
+| generator-linear (8, motor de la 3b) | 8, 7,4 s | 8, 7,1 s | 8, 53,3 s | 8, 55,1 s |
+
+- **Menos pasos**: la espera hasta el siguiente cambio junta las esperas de δ. En
+  generator-nonlinear p01, `lazy-ff-pref` pasa de 1004 expansiones a 6.
+- **Calidad**: car-nodrag da planes de 15,50 en lugar de 11,03 (ver "Ritmos que fijan las
+  acciones"); en generator, la duración es la misma (1000).
+- **Validación**: en generator-nonlinear p03 y p06, los planes que agotan el combustible
+  justo al final fallaban con δ/10 por el redondeo acumulado, y se buscaban otra vez con
+  δ = 0,5 (13 700 expansiones). Terminando cada espera en el estado de la búsqueda, valen
+  con δ = 1. En generator-toricelli p08, el primer plan sigue fallando con δ/10 (en las
+  dos versiones) y vale con δ = 0,5.
+- **Las mismas búsquedas en los tiers 1 a 5** (52 con `lazy-ff-pref` y `bfws-ff-pref`, el
+  mejor de 3): 51 expanden lo mismo, y la otra (satellite p02 con `lazy-ff-pref`) llega
+  al límite de tiempo en las dos versiones. El coste es el mismo (+0,1 % en total,
+  mediana −0,1 %).
 
 ### Iteración 3b: búsqueda por novedad y portfolios
 

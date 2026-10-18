@@ -33,6 +33,15 @@ para cada objetivo pendiente elige su mejor *soportador* y repite con sus precon
   solo sirve para definir la variable cuando no tiene valor (que otras acciones la aumenten
   después). Sin ella, poner en marcha el reloj de una acción durativa (``assign`` a 0)
   bastaba para la relajación para poder terminarla.
+* **Incrementos variables** (tras la v0.6): ``increase x e`` con ``e`` no constante (el
+  ritmo de un proceso por δ en la espera del motor discretizado, que fijan otras acciones)
+  solo mejora una condición si el cambio es positivo. Esa condición ("puerta") es un nodo
+  más de la relajación, y la arista va en una copia de la acción relajada que la tiene como
+  precondición: para la relajación, juntar un recurso exige antes poner en marcha su
+  ritmo. Las repeticiones se cuentan con el cambio del estado o, si es menor, con el menor
+  que le da una sola acción (ρ): ⌈déficit / max(cambio, ρ)⌉. Así la espera cuenta el
+  tiempo que falta, poner en marcha el ritmo no hace subir el valor y acelerarlo lo baja.
+  Sin ningún ρ, la arista sigue siendo optimista.
 * **Objetivo disyuntivo.** El valor es el mínimo entre las cláusulas.
 * **Restricciones de trayectoria** (iteración 5): las reglas de los monitores (``done`` de
   ``sometime``, quitar ``pending`` de ``sometime-after``) son acciones relajadas de coste 0
@@ -66,10 +75,17 @@ cálculo termina.
 
 import heapq
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from pyplanner.grounding import GroundAction, GroundTask, State, bits, mask_of
-from pyplanner.grounding.numeric import Const, NumericAssignment, NumericCondition, variables_of
+from pyplanner.grounding.numeric import (
+    Const,
+    NumericAssignment,
+    NumericCondition,
+    NumExpr,
+    make,
+    variables_of,
+)
 from pyplanner.heuristics.base import DEAD_END, Evaluation, Heuristic
 
 #: Tipos de arista numérica: repeticiones para ``>=``, para ``>``, para ``=``, optimista y
@@ -89,6 +105,8 @@ class RelaxedTask:
         pre, add, cost, operator: precondiciones, añadidos proposicionales, coste y
             operador de cada acción relajada.
         edges: aristas numéricas ``(acción relajada, hecho numérico, tipo, Δ)``.
+        edge_rate: por arista, el nodo numérico cuyo valor es el incremento por repetición
+            si es mayor que Δ (el de la puerta de un ritmo, ver :meth:`_connect`), o -1.
         edges_of: índices de las aristas numéricas de cada acción relajada.
         goal: hechos de cada cláusula del objetivo.
     """
@@ -164,21 +182,13 @@ class RelaxedTask:
             self._numeric_effects.append(())
         self.goal = [literals(c.pos_facts, c.neg_facts, c.numeric) for c in task.goal]
         self.numeric = list(numeric)
+        self.edges: list[tuple[int, int, int, float]] = []
+        self.edge_rate: list[int] = []
+        self._connect(node)
         self.num_facts = self.numeric_offset + len(self.numeric)
         self.num_actions = len(self.pre)
         self.operator_cost = [a.cost for a in task.actions] + [0.0] * extra
         self.goal_facts = frozenset(f for clause in self.goal for f in clause)
-
-        # Aristas numéricas.
-        self.edges: list[tuple[int, int, int, float]] = []
-        for r, effects in enumerate(self._numeric_effects):
-            if not effects:
-                continue
-            for j, numeric_condition in enumerate(self.numeric):
-                edge = _numeric_edge(numeric_condition, effects)
-                if edge is not None:
-                    kind, delta = edge
-                    self.edges.append((r, self.numeric_offset + j, kind, delta))
         self.edges_of: list[list[int]] = [[] for _ in range(self.num_actions)]
         for e, (r, _, _, _) in enumerate(self.edges):
             self.edges_of[r].append(e)
@@ -189,6 +199,67 @@ class RelaxedTask:
                 self.pre_of[f].append(a)
         self.no_pre = [a for a in range(self.num_actions) if not self.pre[a]]
         self._pre_len = [len(p) for p in self.pre]
+
+    def _connect(self, node: Callable[[NumericCondition], int]) -> None:
+        """Las aristas numéricas de cada acción relajada a cada condición numérica.
+
+        Un incremento que no es constante (el ritmo de un proceso por δ, que fijan otras
+        acciones) solo mejora la condición si es positivo: la arista va en una copia de la
+        acción relajada con esa condición más como precondición (:func:`_rate_gate`), que
+        es un nodo nuevo de la relajación con sus propias aristas. Las repeticiones se
+        cuentan con el incremento del estado (el valor de la puerta) o, si es menor, con el
+        menor que puede darle una acción (ρ): así, poner en marcha el ritmo no hace subir la
+        estimación, y acelerarlo la baja. Sin ese ρ, la arista es optimista (una
+        repetición).
+        """
+        offset = self.numeric_offset
+        relaxed = len(self.pre)
+        gated: dict[tuple[int, int], int] = {}  # (acción relajada, nodo de la puerta) → copia
+        late: list[tuple[int, int, int]] = []
+
+        def connect(r: int, j: int) -> None:
+            condition, effects = self.numeric[j], self._numeric_effects[r]
+            gate = _rate_gate(condition, effects)
+            if gate is None:
+                edge = _numeric_edge(condition, effects)
+                if edge is not None:
+                    self.edges.append((r, offset + j, *edge))
+                return
+            fact = node(gate)
+            if fact - offset == len(self.numeric):
+                self.numeric.append(gate)
+            copy = gated.get((r, fact))
+            if copy is None:
+                copy = gated[(r, fact)] = len(self.pre)
+                self.pre.append(tuple(sorted({*self.pre[r], fact})))
+                self.add.append(())
+                self.cost.append(self.cost[r])
+                self.operator.append(self.operator[r])
+                self._numeric_effects.append(())
+            late.append((copy, offset + j, fact))
+
+        known = len(self.numeric)
+        for r in range(relaxed):
+            if self._numeric_effects[r]:
+                for j in range(known):
+                    connect(r, j)
+        j = known
+        while j < len(self.numeric):  # las puertas, que pueden añadir otras
+            for r in range(relaxed):
+                if self._numeric_effects[r]:
+                    connect(r, j)
+            j += 1
+        self.edge_rate = [-1] * len(self.edges)
+        for r, fact, gate in late:
+            condition = self.numeric[fact - offset]
+            least = _least_increment(self.numeric[gate - offset], self._numeric_effects[:relaxed])
+            if least is None:
+                self.edges.append((r, fact, ONCE, 0.0))
+                self.edge_rate.append(-1)
+            else:
+                kind = REPEAT_GE if condition.comparator == ">=" else REPEAT_GT
+                self.edges.append((r, fact, kind, least))
+                self.edge_rate.append(gate)
 
     def _append(
         self,
@@ -227,10 +298,15 @@ class RelaxedTask:
         """Repeticiones de cada arista numérica en ``state`` (``inf`` si no sirve)."""
         values = state.values
         offset = self.numeric_offset
-        return [
-            repetitions(kind, delta, self.numeric[fact - offset].value(values))
-            for _, fact, kind, delta in self.edges
-        ]
+        numeric = self.numeric
+        result = []
+        for (_, fact, kind, delta), rate in zip(self.edges, self.edge_rate, strict=True):
+            if rate >= 0:
+                current = numeric[rate - offset].value(values)
+                if current is not None and current > delta:
+                    delta = current
+            result.append(repetitions(kind, delta, numeric[fact - offset].value(values)))
+        return result
 
     def fact_costs(self, state: State, combine_max: bool) -> list[float]:
         """Costes h_max (``combine_max``) o h_add de cada hecho relajado desde ``state``.
@@ -384,6 +460,60 @@ def repetitions(kind: int, delta: float, value: float | None) -> float:
     if (value < 0) == (delta > 0):
         return max(1.0, float(math.ceil(abs(value) / abs(delta))))
     return DEAD_END
+
+
+def _rate_gate(
+    condition: NumericCondition, effects: Sequence[NumericAssignment]
+) -> NumericCondition | None:
+    """La condición de que los incrementos de ``effects`` mejoren ``condition`` (cambio > 0),
+    si alguno no es constante (un ritmo que fijan otras acciones). ``None`` si todos son
+    constantes, si alguno no es un incremento (``assign``, ``scale-*``) o si la condición es
+    una igualdad o no es lineal: entonces vale :func:`_numeric_edge`."""
+    form = condition.linear
+    if form is None or condition.comparator == "=":
+        return None
+    weights = dict(form.terms)
+    change: list[NumExpr] = []
+    constant = True
+    for effect in effects:
+        weight = weights.get(effect.variable)
+        if weight is None:
+            continue
+        if effect.op not in ("increase", "decrease"):
+            return None
+        constant = constant and isinstance(effect.value, Const)
+        sign = weight if effect.op == "increase" else -weight
+        change.append(make("*", [Const(sign), effect.value]))
+    if constant:
+        return None
+    return NumericCondition(change[0] if len(change) == 1 else make("+", change), ">")
+
+
+def _least_increment(
+    gate: NumericCondition, effects: Sequence[Sequence[NumericAssignment]]
+) -> float | None:
+    """El menor aumento positivo de la expresión de ``gate`` (lineal) que da una sola
+    acción relajada con incrementos constantes (``None`` si ninguna la aumenta)."""
+    form = gate.linear
+    if form is None:
+        return None
+    weights = dict(form.terms)
+    least = None
+    for numeric in effects:
+        change = 0.0
+        for effect in numeric:
+            weight = weights.get(effect.variable)
+            if weight is None:
+                continue
+            if effect.op not in ("increase", "decrease") or not isinstance(effect.value, Const):
+                change = 0.0
+                break
+            change += weight * (
+                effect.value.value if effect.op == "increase" else -effect.value.value
+            )
+        if change > 0 and (least is None or change < least):
+            least = change
+    return least
 
 
 def _numeric_edge(

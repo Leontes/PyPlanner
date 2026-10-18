@@ -139,9 +139,10 @@ def test_plans_with_processes(tmp_path: Path) -> None:
     assert result.status is SearchStatus.SOLVED and result.plan is not None
     assert simulate(task, result.plan) is None
     plan = Plan.from_indices(task, result.plan)
-    # Lo más rápido es abrir los dos grifos (flujo 3) y esperar 2: 6,04 ≥ 5.
+    # Lo más rápido es abrir los dos grifos (primero b, de flujo 2: tras los dos ε hay 0,05) y
+    # esperar hasta que el nivel llega a 5 (_wait-until): 4,95 / 3 más.
     assert sorted(str(step) for step in plan.steps) == ["(finish)", "(turn-on a)", "(turn-on b)"]
-    assert plan.makespan == pytest.approx(2.02)
+    assert plan.makespan == pytest.approx(0.02 + 4.95 / 3, abs=1e-6)
     assert task.check(result.plan, 0.1) is None
 
 

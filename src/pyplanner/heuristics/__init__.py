@@ -64,9 +64,10 @@ def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuri
 
     En las tareas temporales con literales iniciales temporizados, la heurística va envuelta
     en :class:`~pyplanner.heuristics.deadlines.DeadlineHeuristic`, que descarta los estados
-    que no pueden cumplir los plazos. En las de procesos y eventos con invariantes, en
+    que no pueden cumplir los plazos. En las de procesos y eventos, en
     :class:`~pyplanner.heuristics.projection.ProjectionHeuristic`, que suma lo que una espera
-    sin hacer nada no cubriría (salvo a ``blind``, que tiene que seguir siendo admisible).
+    sin hacer nada no cubriría de las invariantes y añade a las acciones útiles la espera
+    hasta el siguiente cambio (salvo a ``blind``, que tiene que seguir siendo admisible).
 
     ``tff`` es el plan relajado temporal en las tareas con TIL (ya comprueba los plazos: no
     va envuelta) y h_FF, con sus envoltorios, en las demás.
@@ -92,10 +93,9 @@ def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuri
         compiled = numba_available() and device != "python"
         return DeadlineHeuristic(task, heuristic, compiled=compiled)
     if isinstance(task, DiscreteTask) and name != "blind":
-        from pyplanner.heuristics.projection import ProjectionHeuristic, needs_projection
+        from pyplanner.heuristics.projection import ProjectionHeuristic
 
-        if needs_projection(task):
-            return ProjectionHeuristic(task, heuristic)
+        return ProjectionHeuristic(task, heuristic)
     return heuristic
 
 

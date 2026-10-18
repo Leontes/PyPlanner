@@ -416,6 +416,12 @@ class GroundTask:
         temporales con variables que cambian de forma continua)."""
         return self
 
+    def transition(self, state: State, action: GroundAction) -> tuple[State | None, float]:
+        """El sucesor (:meth:`apply`) y el coste del paso: el de la acción, salvo donde
+        depende del estado (la espera hasta el siguiente cambio del motor discretizado
+        cuesta lo que avanza)."""
+        return self.apply(state, action), action.cost
+
     def apply(self, state: State, action: GroundAction) -> State | None:
         """Aplica una acción; ``None`` si no se puede. Ver :meth:`GroundAction.apply`.
 

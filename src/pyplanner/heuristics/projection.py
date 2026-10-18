@@ -22,7 +22,9 @@ en su plan relajado): el valor es el mayor de los faltantes.
 **Acciones útiles.** Las de la base no arreglan un faltante (para la relajación basta con
 esperar), y la búsqueda perezosa, que pone a los sucesores el valor del padre, bajaría
 esperando hasta que ya es tarde para repostar. Por eso, en los estados que se expanden con
-un faltante, las útiles son las que lo reducen (si alguna lo hace).
+un faltante, las útiles son las que lo reducen (si alguna lo hace). Y si lo es la espera de
+δ, también la espera hasta el siguiente cambio (``_wait-until``), que la relajación no
+tiene.
 """
 
 from collections.abc import Sequence
@@ -43,6 +45,7 @@ class ProjectionHeuristic(Heuristic):
         self.device = base.device
         self.provides_preferred = base.provides_preferred
         self.discrete = task
+        self.projects = needs_projection(task)
         # Inicios de las acciones durativas que pueden quedarse cortas.
         self.starts = frozenset(
             action.index
@@ -69,6 +72,8 @@ class ProjectionHeuristic(Heuristic):
         """El mayor faltante: el del estado y el de empezar cada acción útil de
         :attr:`starts`."""
         task = self.discrete
+        if not self.projects:
+            return 0.0
         shortfall = task.shortfall(state)
         for index in preferred:
             if index in self.starts:
@@ -78,18 +83,26 @@ class ProjectionHeuristic(Heuristic):
         return shortfall
 
     def helpful(self, state: State, preferred: frozenset[int]) -> frozenset[int]:
-        """Con un faltante, las acciones que lo reducen; si no, las de la base."""
+        """Con un faltante, las acciones que lo reducen; si no, las de la base. Con la espera
+        de δ, también la espera hasta el siguiente cambio."""
         task = self.discrete
-        shortfall = task.shortfall(state)
-        if not shortfall:
-            return preferred
+        shortfall = task.shortfall(state) if self.projects else 0.0
+        if shortfall:
+            preferred = self._reducing(state, shortfall) or preferred
+        if task.wait.index in preferred:
+            preferred = preferred | {task.jump.index}
+        return preferred
+
+    def _reducing(self, state: State, shortfall: float) -> frozenset[int]:
+        """Las acciones candidatas aplicables que reducen el faltante."""
+        task = self.discrete
         reducing = []
         for action in self.candidates:
             if action.applicable(state):
                 successor = task.apply(state, action)
                 if successor is not None and task.shortfall(successor) < shortfall - task.epsilon:
                     reducing.append(action.index)
-        return frozenset(reducing) or preferred
+        return frozenset(reducing)
 
 
 def _candidates(task: DiscreteTask) -> tuple[GroundAction, ...]:

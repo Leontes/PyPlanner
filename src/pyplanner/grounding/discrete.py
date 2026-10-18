@@ -6,11 +6,20 @@ continuos (ritmos que dependen de variables que cambian de forma continua, por e
 :func:`pyplanner.grounding.grounder.ground` las pasa aquí.
 
 * **Pasos de la búsqueda.** Las acciones instantáneas del dominio, el inicio y el fin de
-  cada acción durativa, y una acción ``_wait`` que deja pasar el tiempo.
+  cada acción durativa, y dos esperas: ``_wait`` y ``_wait-until``.
 * **Esperar** (``_wait``) avanza δ unidades (``delta``, 1 por defecto), o menos si antes
   llega el final de una acción durativa (para que pueda terminar justo a su duración).
   Durante la espera, los procesos activos al empezarla cambian las funciones (ver
   :mod:`pyplanner.grounding.flows`, integración exacta si la dinámica es polinómica).
+* **Esperar hasta el siguiente cambio** (``_wait-until``) avanza hasta el primer instante en
+  que se cumple una condición numérica de una acción o un evento aplicables por sus hechos
+  o del objetivo, una acción durativa en curso llega a una cota de su duración o cambian
+  los procesos activos (:meth:`DiscreteTask.wait_until`). Las condiciones
+  se buscan con las raíces exactas del flujo (:meth:`Flow.crossings
+  <pyplanner.grounding.flows.Flow.crossings>`), y una invariante que se rompe por el
+  camino invalida el paso. Así, juntar recursos a un ritmo lento es un paso y no miles de
+  esperas de δ: el plan crece con las decisiones, no con el tiempo. Sin flujo exacto, o si
+  no se va a cumplir nada, no se puede aplicar.
 * **Tras cada cambio**, los **eventos** se disparan en cascada (en orden, hasta que ninguno
   se cumple), se recalculan los predicados derivados y se comprueban las **invariantes**
   (las condiciones ``over all`` de las acciones durativas en curso): si alguna no se
@@ -45,14 +54,20 @@ reutilizan la alcanzabilidad, la normalización y el análisis de qué funciones
 **Heurística** (:attr:`DiscreteTask.relaxation`): en la relajación, la espera se convierte
 en una acción con un efecto condicional por proceso, que aumenta cada variable en su
 ritmo × δ (la *h^hbd* de la 3a cuenta las repeticiones si el ritmo es constante, como el
-reloj de una acción durativa). Los efectos de los eventos sobre hechos son reglas de coste
-0, como los axiomas.
+reloj de una acción durativa). Si el ritmo es una variable que fijan las acciones, el
+efecto solo cuenta cuando es positivo (ver :mod:`pyplanner.heuristics.relaxation`): la
+relajación tiene que ponerlo en marcha. Los efectos de los eventos sobre hechos son reglas
+de coste 0, como los axiomas. ``_wait-until`` no está en la relajación: es útil cuando lo
+es ``_wait``.
 
-**Coste:** el tiempo (δ por espera) y 2ε por acción instantánea: ε por el tiempo que pasa y
-ε por ser un paso más del plan. Sin ese segundo ε, abrir y cerrar un grifo una y otra vez
-costaría lo mismo por unidad de tiempo que esperar, y A* devolvía planes con decenas de
-acciones inútiles. La métrica que se informa es la duración del plan si es
-``(minimize (total-time))``.
+**Coste:** el tiempo (δ por espera; lo que avanza, por una espera hasta el siguiente
+cambio, ver :meth:`DiscreteTask.transition`) y unos 2ε por acción instantánea: ε por el
+tiempo que pasa y ε por ser un paso más del plan. Sin ese segundo ε, abrir y cerrar un
+grifo una y otra vez costaría lo mismo por unidad de tiempo que esperar, y A* devolvía
+planes con decenas de acciones inútiles. Es 1/64 y no 0,02 para que las sumas de costes
+sean exactas en coma flotante: con las repeticiones de los ritmos, el ruido de redondeo
+rompía los empates de la relajación de forma distinta en cada implementación. La métrica
+que se informa es la duración del plan si es ``(minimize (total-time))``.
 
 **Validación** (:meth:`DiscreteTask.check`): el plan se vuelve a simular con un δ más fino.
 Si falla (un evento que debía dispararse a mitad de una espera, por ejemplo), el
@@ -75,7 +90,15 @@ from pyplanner.grounding.flows import DECIMALS, Flow
 from pyplanner.grounding.grounder import Binding, GroundingContext, ground_with_context
 from pyplanner.grounding.monitors import MonitorRule
 from pyplanner.grounding.normalize import Fact
-from pyplanner.grounding.numeric import Const, NumericAssignment, NumExpr, make, negate
+from pyplanner.grounding.numeric import (
+    Const,
+    NumericAssignment,
+    NumericCondition,
+    NumExpr,
+    make,
+    negate,
+    variables_of,
+)
 from pyplanner.grounding.task import (
     Condition,
     ConditionalEffect,
@@ -128,8 +151,9 @@ from pyplanner.loader.ast import (
 DELTA = 1.0
 #: Separación entre una acción instantánea y el paso siguiente (la tolerancia de VAL).
 EPSILON = 0.01
-#: Coste de una acción instantánea (ver la documentación del módulo).
-ACTION_COST = 2 * EPSILON
+#: Coste de una acción instantánea (ver la documentación del módulo): unos 2ε, como fracción
+#: binaria (1/64) para que las sumas de costes sean exactas en coma flotante.
+ACTION_COST = 1 / 64
 #: Disparos de eventos seguidos que se admiten tras un cambio (más: eventos en bucle).
 MAX_CASCADE = 1000
 #: Precisión con la que se busca el instante de un evento (y por debajo de la cual un
@@ -137,13 +161,23 @@ MAX_CASCADE = 1000
 _TIME_TOLERANCE = 1e-9
 #: Precisión de la proyección de la heurística (ver :meth:`DiscreteTask.shortfall`).
 _PROJECTION_TOLERANCE = 1e-3
-#: Nombre de la acción de espera (``_`` no puede empezar un nombre PDDL).
+#: Nombres de las esperas (``_`` no puede empezar un nombre PDDL).
 WAIT = "_wait"
+WAIT_UNTIL = "_wait-until"
+#: Hasta dónde busca ``_wait-until`` el siguiente cambio.
+JUMP_HORIZON = 1e6
+#: Márgenes con los que se prueba, tras la raíz, que una condición ya se cumple (con ``>``
+#: y el redondeo a 9 decimales, justo en la raíz todavía no).
+_CROSSING_MARGINS = (0.0, 1e-9, 1e-7, 1e-5)
 
 #: Tipos de paso: acción instantánea, inicio, fin y espera.
 INSTANT, START_SNAP, END_SNAP, WAIT_SNAP = 0, 1, 2, 3
 
 _RUN, _EVENT, _PROCESS = "run", "event", "process"
+
+#: Hechos positivos, hechos negativos e índices de las condiciones numéricas de una acción o
+#: de una cláusula del objetivo (ver :meth:`DiscreteTask._first_crossing`).
+_Group = tuple[int, int, tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -254,23 +288,42 @@ class DiscreteTask(GroundTask):
 
     @property
     def wait(self) -> GroundAction:
-        """La acción de espera (la última)."""
+        """La espera de δ (la última acción)."""
         return self.actions[-1]
+
+    @property
+    def jump(self) -> GroundAction:
+        """La espera hasta el siguiente cambio (la penúltima acción)."""
+        return self.actions[-2]
 
     # --- Semántica de los pasos ---------------------------------------------------------
 
     def apply(self, state: State, action: GroundAction) -> State | None:
         """Aplica un paso: una espera, o una acción seguida de su ε (ver la documentación
         del módulo). ``None`` si no es válido."""
+        return self.step(state, action)[0]
+
+    def transition(self, state: State, action: GroundAction) -> tuple[State | None, float]:
+        """El sucesor y el coste del paso: la espera hasta el siguiente cambio cuesta lo que
+        avanza (A* sigue minimizando la duración); los demás pasos, su coste fijo."""
+        if action.index == self.jump.index:
+            return self.wait_until(state)
+        return self.apply(state, action), action.cost
+
+    def step(self, state: State, action: GroundAction) -> tuple[State | None, float]:
+        """Aplica un paso (ver :meth:`apply`) y devuelve también el tiempo que pasa."""
         if self.kinds[action.index] == WAIT_SNAP:
-            return self.elapse(state, self.wait_length(state))
+            if action.index == self.jump.index:
+                return self.wait_until(state)
+            length = self.wait_length(state)
+            return self.elapse(state, length), length
         successor = action.apply(state)
         if successor is None:
-            return None
+            return None, 0.0
         successor = self.settle(State(successor.facts, _round(successor.values, state)))
         if successor is None:
-            return None
-        return self.elapse(successor, self.epsilon)
+            return None, 0.0
+        return self.elapse(successor, self.epsilon), self.epsilon
 
     def wait_length(self, state: State) -> float:
         """Lo que avanza una espera: δ, o menos si antes una acción durativa en curso llega
@@ -287,6 +340,96 @@ class DiscreteTask(GroundTask):
                 if limit is not None and clock < limit < clock + length:
                     length = limit - clock
         return round(length, DECIMALS)
+
+    def wait_until(self, state: State) -> tuple[State | None, float]:
+        """Espera hasta el siguiente cambio (ver la documentación del módulo): el estado y
+        lo que ha avanzado, o ``None`` si no se va a cumplir nada o se rompe una
+        invariante por el camino."""
+        length = self.jump_length(state)
+        if length is None:
+            return None, 0.0
+        watched = [
+            r for r in self.durative if r.invariant is not None and state.facts >> r.running & 1
+        ]
+        reached, step = self._until_change(state, length, watched, scan=True)
+        return self.settle(reached), step
+
+    def jump_length(self, state: State) -> float | None:
+        """Lo que avanzaría ``_wait-until`` con el flujo actual (``None`` si nada): hasta la
+        próxima cota de la duración de una acción en curso o la primera condición numérica
+        que se cumple. Los eventos y los cambios de procesos los detiene antes
+        :meth:`wait_until`."""
+        values = state.values
+        candidates = []
+        for running in self.durative:
+            if not state.facts >> running.running & 1:
+                continue
+            clock = values[running.clock]
+            if clock is None:
+                continue
+            for limit in (*(values[b] for b in running.bounds), *running.limits):
+                if limit is not None and limit > clock + _TIME_TOLERANCE:
+                    candidates.append(limit - clock)
+        horizon = min(candidates, default=JUMP_HORIZON)
+        active = self._active(state)
+        if active:
+            crossing = self._first_crossing(state, self._flow(active), horizon)
+            if crossing is not None:
+                candidates.append(crossing)
+        return round(min(candidates), DECIMALS) if candidates else None
+
+    def _first_crossing(self, state: State, flow: Flow, horizon: float) -> float | None:
+        """El primer instante de (0, ``horizon``) en que se cumple una condición numérica
+        que ahora no se cumple, de una acción o un evento aplicables por sus hechos o del
+        objetivo (``None`` si ninguna, o si el flujo no es exacto)."""
+        conditions, variables, groups = self._jump_watch
+        facts, values = state.facts, state.values
+        changing = flow.rates.keys()
+        relevant = {
+            i
+            for pos, neg, indices in groups
+            if facts & pos == pos and not facts & neg
+            for i in indices
+        }
+        times: list[tuple[float, int]] = []
+        for i in relevant:
+            condition = conditions[i]
+            if variables[i].isdisjoint(changing) or condition.holds(values):
+                continue
+            roots = flow.crossings(condition.expression, values, horizon)
+            if roots is None:
+                return None
+            times.extend((t, i) for t in roots)
+        for t, i in sorted(times):
+            for margin in _CROSSING_MARGINS:
+                instant = float(math.ceil((t + margin) * 10**DECIMALS) / 10**DECIMALS)
+                point = flow.advance(values, instant)
+                if point is None:
+                    return None
+                if conditions[i].holds(point):
+                    return instant
+        return None
+
+    @cached_property
+    def _jump_watch(self) -> tuple[list[NumericCondition], list[frozenset[int]], list[_Group]]:
+        """Las condiciones numéricas distintas de las acciones, del objetivo y de los
+        eventos, sus variables, y por cada una de ellas (o cláusula del objetivo), sus
+        hechos (positivos y negativos) y los índices de sus condiciones numéricas."""
+        index: dict[NumericCondition, int] = {}
+        groups: dict[_Group, None] = {}
+        clauses = [
+            (a.pre, a.neg, a.numeric_pre)
+            for a in self.actions
+            if self.kinds[a.index] != WAIT_SNAP and a.numeric_pre
+        ]
+        clauses += [(c.pos, c.neg, c.numeric) for c in self.goal if c.numeric]
+        clauses += [(e.pre, e.neg, e.numeric_pre) for e in self.events if e.numeric_pre]
+        for pos, neg, numeric in clauses:
+            indices = tuple(sorted({index.setdefault(n, len(index)) for n in numeric}))
+            groups[(pos, neg, indices)] = None
+        conditions = list(index)
+        variables = [frozenset(variables_of(c.expression)) for c in conditions]
+        return conditions, variables, list(groups)
 
     def elapse(self, state: State, duration: float) -> State | None:
         """Deja pasar ``duration`` unidades de tiempo: los procesos activos cambian las
@@ -602,8 +745,10 @@ class DiscreteTask(GroundTask):
         for index in plan:
             action = self.actions[index]
             kind = self.kinds[index]
+            successor, elapsed = self.step(state, action)
+            assert successor is not None, "el plan no es aplicable"
             if kind == WAIT_SNAP:
-                time = round(time + self.wait_length(state), DECIMALS)
+                time = round(time + elapsed, DECIMALS)
             else:
                 makespan = time
                 durative = self.durative_of[index]
@@ -617,28 +762,35 @@ class DiscreteTask(GroundTask):
                 else:
                     steps.append(TemporalStep(time, action.name, action.args, None))
                 time = round(time + self.epsilon, DECIMALS)
-            successor = self.apply(state, action)
-            assert successor is not None, "el plan no es aplicable"
             state = successor
         steps.sort(key=lambda s: s.time)
         return steps, makespan
 
     def check(self, plan: Sequence[int], delta: float) -> str | None:
         """Simula el plan con esperas de como mucho ``delta`` (más fino que el de la
-        búsqueda). Devuelve ``None`` si sigue siendo válido o la descripción del fallo."""
+        búsqueda). Devuelve ``None`` si sigue siendo válido o la descripción del fallo.
+
+        Cada espera se recorre a trozos de ``delta`` para comprobar los instantes de en
+        medio, y termina en el estado de la búsqueda (un solo avance, exacto si el flujo lo
+        es): el redondeo de miles de trozos se acumula, y un plan que agota el combustible
+        justo al final de una espera larga quedaba en −10⁻⁹."""
         fine = replace(self, delta=delta)
         state: State | None = self.init
         for step, index in enumerate(plan, start=1):
             assert state is not None
             action = self.actions[index]
             if self.kinds[index] == WAIT_SNAP:
-                remaining = self.wait_length(state)
-                while remaining > 1e-9 and state is not None:
-                    piece = min(fine.wait_length(state), remaining)
-                    state = fine.elapse(state, piece)
+                successor, remaining = self.step(state, action)
+                middle: State | None = state
+                while middle is not None and successor is not None:
+                    piece = fine.wait_length(middle)
+                    if piece >= remaining - 1e-9:
+                        break  # el final es el de la búsqueda
+                    middle = fine.elapse(middle, piece)
                     remaining = round(remaining - piece, DECIMALS)
-                if state is None:
+                if middle is None or successor is None:
                     return f"paso {step}: con δ = {delta:g}, la espera rompe una invariante"
+                state = successor
                 continue
             if not action.applicable(state):
                 return f"paso {step}: con δ = {delta:g}, {action} no es aplicable"
@@ -987,9 +1139,10 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
             real.append(replace(action, index=len(real), cost=ACTION_COST))
             kinds.append(START_SNAP if kind == START else END_SNAP)
             durative_of.append(instance_of[(base, action.args)])
-    real.append(GroundAction(len(real), WAIT, (), (), (), (), cost=delta))
-    kinds.append(WAIT_SNAP)
-    durative_of.append(-1)
+    for name in (WAIT_UNTIL, WAIT):  # la espera de δ, la última
+        real.append(GroundAction(len(real), name, (), (), (), (), cost=delta))
+        kinds.append(WAIT_SNAP)
+        durative_of.append(-1)
 
     goal = tuple(
         Condition(

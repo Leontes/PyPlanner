@@ -116,6 +116,13 @@ class TensorRelaxation:
         self.numeric_kind = longs(e[2] for e in relaxed.edges)
         self.numeric_delta = floats(e[3] for e in relaxed.edges)
         self.numeric_node = longs(e[1] - relaxed.numeric_offset for e in relaxed.edges)
+        # Aristas cuyo incremento es el de un ritmo del estado si es mayor que Δ.
+        rates = relaxed.edge_rate
+        self.rated = any(r >= 0 for r in rates)
+        self.numeric_rate = longs(max(r - relaxed.numeric_offset, 0) for r in rates)
+        self.numeric_has_rate = torch.tensor(
+            [r >= 0 for r in rates], dtype=torch.bool, device=device
+        )
         self.cost = floats(relaxed.cost)
         self.operator = longs(relaxed.operator)
         self.operator_cost = floats(relaxed.operator_cost)
@@ -190,12 +197,16 @@ class TensorRelaxation:
             holds = torch.where(kind == 0, node >= 0, torch.where(kind == 1, node > 0, node == 0))
             parts.append(holds)
             if self.numeric_kind.numel():
-                multipliers = self._repetitions(node[:, self.numeric_node])
+                multipliers = self._repetitions(node[:, self.numeric_node], node)
         return torch.cat(parts, dim=1), multipliers
 
-    def _repetitions(self, value: torch.Tensor) -> torch.Tensor:
-        """Como :func:`pyplanner.heuristics.relaxation.repetitions`, para todas las aristas."""
+    def _repetitions(self, value: torch.Tensor, node: torch.Tensor) -> torch.Tensor:
+        """Como :func:`pyplanner.heuristics.relaxation.repetitions`, para todas las aristas
+        (con el ritmo del estado en las que lo tienen, ver ``RelaxedTask.edge_rate``)."""
         kind, delta = self.numeric_kind, self.numeric_delta
+        if self.rated:
+            current = node[:, self.numeric_rate]
+            delta = torch.where(self.numeric_has_rate & (current > delta), current, delta)
         inf = torch.tensor(float("inf"), dtype=DTYPE, device=self.device)
         one = torch.ones((), dtype=DTYPE, device=self.device)
         ge = torch.where(value < 0, torch.clamp(torch.ceil(-value / delta), min=1.0), one)

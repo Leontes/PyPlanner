@@ -72,6 +72,10 @@ class CompiledRelaxation:
         self.edge_fact = np.array([e[1] for e in edges], dtype=np.int64)
         self.edge_kind = np.array([e[2] for e in edges], dtype=np.int64)
         self.edge_delta = np.array([e[3] for e in edges], dtype=np.float64)
+        offset = relaxed.numeric_offset
+        self.edge_rate = np.array(
+            [r - offset if r >= 0 else -1 for r in relaxed.edge_rate], dtype=np.int64
+        )
         # Condiciones numéricas: forma lineal en CSR, o evaluación en Python si no es lineal.
         term_ptr = [0]
         term_var: list[int] = []
@@ -139,6 +143,7 @@ class CompiledRelaxation:
             self.edge_fact,
             self.edge_kind,
             self.edge_delta,
+            self.edge_rate,
             self.term_ptr,
             self.term_var,
             self.term_weight,
@@ -309,6 +314,7 @@ def _dijkstra(
     edge_fact,
     edge_kind,
     edge_delta,
+    edge_rate,
     term_ptr,
     term_var,
     term_weight,
@@ -356,9 +362,10 @@ def _dijkstra(
             size = _heap_update(heap, position, fact_cost, level, size, numeric_offset + j)
     mult = np.empty(edge_fact.shape[0])
     for e in range(edge_fact.shape[0]):
-        mult[e] = _repetitions(
-            edge_kind[e], edge_delta[e], node_value[edge_fact[e] - numeric_offset]
-        )
+        delta = edge_delta[e]
+        if edge_rate[e] >= 0 and node_value[edge_rate[e]] > delta:  # el ritmo del estado
+            delta = node_value[edge_rate[e]]
+        mult[e] = _repetitions(edge_kind[e], delta, node_value[edge_fact[e] - numeric_offset])
     unsatisfied = pre_len.copy()
     accumulated = np.zeros(pre_len.shape[0])
     action_level = np.zeros(pre_len.shape[0], dtype=np.int64)
@@ -483,6 +490,7 @@ def _relaxed_plans(
     edge_fact,
     edge_kind,
     edge_delta,
+    edge_rate,
     term_ptr,
     term_var,
     term_weight,
@@ -516,7 +524,7 @@ def _relaxed_plans(
             facts[row], values[row], external[row], False, True, num_base, num_facts,
             numeric_offset, negated, pre_len, pre_of_ptr, pre_of_idx, effect_ptr, effect_fact,
             effect_edge, cost, no_pre, goal_ptr, goal_idx, edge_fact, edge_kind, edge_delta,
-            term_ptr, term_var, term_weight, constant, linear, comparator,
+            edge_rate, term_ptr, term_var, term_weight, constant, linear, comparator,
         )  # fmt: skip
         clause, clause_value = _best_clause(fact_cost, False, goal_ptr, goal_idx)
         if clause == -1 or clause_value == INF:
