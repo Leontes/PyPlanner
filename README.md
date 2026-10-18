@@ -17,10 +17,12 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 | v0.4 | 4 | PDDL 2.2: predicados derivados y literales iniciales temporizados | ✅ |
 | v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | ✅ |
 | v0.6 | 6 | PDDL+: procesos y eventos | ✅ |
+| v0.7 | — | Trabajo opcional: landmarks, plan relajado temporal, límite de memoria duro, grounding de tareas grandes y ritmos que fijan las acciones | ✅ |
 
-Las seis iteraciones de la planificación original están completas. Queda como trabajo
-opcional: técnicas de búsqueda adicionales, preferencias en tareas temporales, un límite
-de memoria duro y un estudio de la integración de HTN.
+Las seis iteraciones de la planificación original están completas, y la v0.7 añade la
+primera parte del trabajo opcional. Queda: preferencias en tareas temporales y otros
+huecos de cobertura, más diversidad en el portfolio, programación lineal entera para las
+disyunciones y un estudio de la integración de HTN.
 
 **Modo estricto:** toda construcción tiene que tener su requisito declarado en
 `:requirements`. Una entrada que usa algo todavía no soportado se rechaza con un error

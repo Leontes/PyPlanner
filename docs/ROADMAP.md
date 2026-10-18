@@ -12,11 +12,16 @@ proyecto avanza en 6 iteraciones y cada una amplía el lenguaje que se acepta:
 | 4 | PDDL 2.2 (predicados derivados y TIL) | v0.4 | ✅ |
 | 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | ✅ |
 | 6 | PDDL+ (procesos y eventos) | v0.6 | ✅ |
+| — | Trabajo opcional, primera parte | v0.7 | ✅ |
 
 **Planificación original cerrada** (2026-10-07): las 6 iteraciones están completas y los
 tiers 1 a 6 se resuelven y validan con VAL con todos los portfolios. Lo que sigue es el
 trabajo opcional: técnicas del repertorio y un estudio de la integración de HTN (ver
 "Trabajo opcional").
+
+**v0.7** (2026-10-18): la primera parte del trabajo opcional, con las ramas fusionadas
+juntas: límite de memoria duro, landmarks con colas alternadas, plan relajado temporal
+(h_TFF), grounding de tareas grandes y ritmos que fijan las acciones.
 
 Referencia principal del lenguaje: [planning.wiki](https://planning.wiki/ref/pddl/requirements).
 PDDL 3 se incluye para no dejar ninguna versión a medias, no por una necesidad concreta.
@@ -182,8 +187,8 @@ El portfolio se monta encima de todo eso.
 | Generación de sucesores compilada con Numba | mismo orden que la referencia; del 46% al 5% del tiempo de búsqueda | iteración 2 |
 | Enforced hill-climbing (FF) | búsqueda local rápida | opcional (5.º) |
 | Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional (5.º) |
-| Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional (2.º, con landmarks) ✅ en rama |
-| Landmarks (h_LM) | heurística informada más potente | opcional (2.º) ✅ en rama |
+| Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional (2.º, con landmarks), v0.7 ✅ |
+| Landmarks (h_LM) | heurística informada más potente | opcional (2.º), v0.7 ✅ |
 | Búsqueda por novedad (IW, BFWS) | salir de mesetas; diversidad en el portfolio | final de la iteración 3b ✅ |
 | HDA\*, frontera distribuida | escalar una sola búsqueda | descartado (Python) |
 | Evaluación de la heurística por lotes (PyTorch, CPU o GPU) | muchos estados evaluados a la vez | iteración 1 |
@@ -532,9 +537,9 @@ algo concreto. La eficiencia va primero: lo que promete mejoras de rendimiento e
 midiendo. Cada tarea va en su rama, y las ramas se fusionan juntas cuando todo lo opcional
 funcione.
 
-**Hecho en rama, pendiente de fusionar:**
+**Hecho en la v0.7** (2026-10-18; cada tarea en su rama, fusionadas juntas):
 
-- **Ritmos que fijan las acciones** (rama `pddlplus/settlers`, 2026-10-14), a petición del
+- **Ritmos que fijan las acciones** (2026-10-14), a petición del
   proyecto principal, que no encontraba plan en su dominio de Settlers (una economía con
   un proceso de producción cuyo ritmo fijan las acciones). Son mecanismos generales, no
   específicos de ese dominio:
@@ -553,8 +558,8 @@ funcione.
   Quedan por decidir dos mejoras que pide Settlers: podar los objetos intercambiables
   (simetrías) y una heurística que cuente el consumo de recursos.
 
-- **Límite de memoria duro** (el punto 1 de la lista de abajo; rama
-  `opcional/limite-memoria`, 2026-10-14), con la opción A:
+- **Límite de memoria duro** (el punto 1 de la lista de abajo; 2026-10-14), con la
+  opción A:
   - cada miembro del portfolio fija `RLIMIT_DATA` en su proceso, algo por encima de su
     parte del límite blando, después de cargar PyTorch y CUDA si los usa;
   - agotar la memoria al preparar la búsqueda o al buscar termina con `LIMIT_REACHED`;
@@ -562,8 +567,8 @@ funcione.
     termina con el código 4;
   - como librería no se limita al proceso que llama.
 
-- **Landmarks con colas alternadas** (el punto 2 de la lista de abajo; rama
-  `opcional/landmarks`, 2026-10-17), al estilo de LAMA (ver
+- **Landmarks con colas alternadas** (el punto 2 de la lista de abajo; 2026-10-17), al
+  estilo de LAMA (ver
   [motor-busqueda.md](motor-busqueda.md#landmarks)):
   - landmarks de la relajación, calculados una vez con un punto fijo, también numéricos;
     ordenaciones naturales y codiciosas-necesarias; h_LM según el camino, con los
@@ -580,8 +585,7 @@ funcione.
   376 resueltas, y todos resuelven los tiers. El script de medida pone también un límite
   duro de memoria a los miembros con PyTorch y valida con VAL cuando ya no hay búsquedas.
 
-- **Grounding de tareas grandes** (rama `opcional/grounding`, 2026-10-17), encontrado al
-  medir los landmarks: 9 de las 340 instancias clásicas no llegaban a buscar. Ver
+- **Grounding de tareas grandes** (2026-10-17), encontrado al medir los landmarks: 9 de las 340 instancias clásicas no llegaban a buscar. Ver
   [motor-busqueda.md](motor-busqueda.md#trabajo-opcional-grounding-de-tareas-grandes):
   - punto fijo semi-ingenuo (cada esquema solo busca candidatos con algún hecho nuevo);
   - el join usa las disyunciones de átomos y las igualdades de la precondición;
@@ -601,7 +605,7 @@ funcione.
   arreglado; en las inmediatas pesa el tiempo de evaluar, no los estados.)
 
 - **Plan relajado temporal, h_TFF** (el punto 3 de la lista de abajo, la parte B de la
-  heurística temporal; rama `opcional/heuristica-temporal`, 2026-10-18). Ver
+  heurística temporal; 2026-10-18). Ver
   [motor-busqueda.md](motor-busqueda.md#plan-relajado-temporal-h_tff-trabajo-opcional):
   - plan relajado sobre los instantes más tempranos de la parte A (duraciones, TIL y
     ventanas), con el soportador de menor (instante, nivel); en Python, Numba y PyTorch con
@@ -614,16 +618,14 @@ funcione.
   - la cola de la búsqueda perezosa guarda una entrada por nodo y prioridad en lugar de
     una por sucesor, con el mismo orden: era casi toda la memoria en satellite.
 
-  **Al fusionar** con `opcional/landmarks`, que rehízo los portfolios: aplicar la misma
-  regla a los suyos (sus miembros con h_FF a `tff` salvo `lazy-ff-pref`; en satellite y
-  trucks, el de 1 núcleo pasa de 6 a 8 y los de 6 y 7, de 11 a 12) y juntar los cambios de
-  `_OpenLists` (colas de landmarks y entradas agrupadas). Pendiente: satellite p08 en
-  adelante sigue sin resolverse (unos 1200 sucesores por expansión).
+  Con los portfolios de los landmarks (los de la v0.7), en satellite y trucks el de 1
+  núcleo pasa de 6 a 8 y los de 6 y 7, de 11 a 12. Pendiente: satellite p08 en adelante
+  sigue sin resolverse (unos 1200 sucesores por expansión).
 
 **Pendiente, en este orden:**
 
 1. ✅ **Límite de memoria duro en las búsquedas** (de la iteración 5c; hecho con la opción
-   A en la rama `opcional/limite-memoria`, ver
+   A en la v0.7, ver
    [motor-busqueda.md](motor-busqueda.md#uso-desde-la-terminal)): el único que ya había
    causado problemas reales. Hoy el límite del planificador (`max_memory`, `-m`) se mira
    durante la búsqueda cada 32 iteraciones y no cubre el grounding; una medida de storage
@@ -643,12 +645,12 @@ funcione.
    - **Opción B** (completa): `solve()` hace el grounding y la búsqueda en un proceso hijo
      con el límite duro. Cambia la API: `PlanningResult.task` no se puede devolver barato
      desde el hijo.
-2. **Landmarks (h_LM) con colas alternadas**, al estilo de LAMA: la mayor mejora esperable
-   en las tareas clásicas y numéricas (suele ganar cobertura y calidad de los planes frente
-   a h_FF sola). Las colas alternadas sirven también para combinar otras heurísticas.
-   Empezar midiendo dónde se queda corta h_FF.
-3. **Grafo de planificación temporal completo** (opción B de la heurística temporal,
-   decidida en la iteración 4). La iteración 4 añade la parte A: instantes más tempranos y
+2. ✅ **Landmarks (h_LM) con colas alternadas** (hecho en la v0.7, ver arriba), al estilo
+   de LAMA: la mayor mejora esperable en las tareas clásicas y numéricas (suele ganar
+   cobertura y calidad de los planes frente a h_FF sola). Las colas alternadas sirven
+   también para combinar otras heurísticas. Empezar midiendo dónde se queda corta h_FF.
+3. ✅ **Grafo de planificación temporal completo** (opción B de la heurística temporal,
+   decidida en la iteración 4; hecho en la v0.7 como h_TFF, ver arriba). La iteración 4 añade la parte A: instantes más tempranos y
    ventanas de los TIL en la relajación, para descartar estados sin salida. La parte B es
    extraer además un plan relajado que respete los tiempos (como POPF y OPTIC) y usarlo como
    heurística de las tareas temporales en lugar de h_FF, en Python, Numba y PyTorch con
