@@ -162,6 +162,30 @@ PRESETS: dict[str, SearchConfig] = {
             exploration="type-based",
             seed=1,
         ),
+        # Con el plan relajado temporal (h_TFF) en las tareas con TIL; en las demás, h_FF.
+        SearchConfig("gbfs-tff-pref", "gbfs", "tff", preferred_operators=True),
+        SearchConfig("lazy-tff-pref", "gbfs", "tff", preferred_operators=True, lazy=True),
+        SearchConfig(
+            "lazy-tff-pref-tb",
+            "gbfs",
+            "tff",
+            preferred_operators=True,
+            lazy=True,
+            exploration="type-based",
+            seed=1,
+        ),
+        SearchConfig("bfws-tff-pref", "gbfs", "tff", preferred_operators=True, novelty=2),
+        SearchConfig(
+            "gbfs-tff-pref-tb", "gbfs", "tff", preferred_operators=True, exploration="type-based"
+        ),
+        SearchConfig(
+            "gbfs-tff-pref-hybrid",
+            "gbfs",
+            "tff",
+            preferred_operators=True,
+            adaptive_batch=True,
+            device="hybrid",
+        ),
         SearchConfig("gbfs-add", "gbfs", "hadd"),
         SearchConfig("wastar-add-3", "wastar", "hadd", weight=3.0),
         SearchConfig("gbfs-goalcount-rnd", "gbfs", "goalcount", tie_breaking="random", seed=1),
@@ -211,34 +235,39 @@ PRESETS: dict[str, SearchConfig] = {
 #: * 7 núcleos: + WA* con h_add, que no mejora los tiempos pero tiende a planes más
 #:   cortos: diversidad a cambio de un núcleo más.
 #:
+#: Los miembros con h_FF usan ``tff`` (el plan relajado temporal en las tareas con TIL; h_FF
+#: en las demás, con la misma búsqueda), salvo la búsqueda perezosa, que con h_FF resuelve
+#: satellite p10 y p14 y con h_TFF no: así cada portfolio resuelve más en las tareas con
+#: TIL (el de 6 núcleos, 12 de 22 frente a 9) sin cambiar nada en las demás.
+#:
 #: Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
 #: no pagan el arranque de PyTorch y CUDA (unos segundos) en las tareas pequeñas.
 PORTFOLIOS: dict[int, tuple[str, ...]] = {
-    1: ("bfws-ff-pref",),
-    2: ("bfws-ff-pref", "lazy-ff-pref"),
-    4: ("bfws-ff-pref", "lazy-ff-pref", "lazy-ff-pref-tb", "gbfs-goalcount-rnd"),
+    1: ("bfws-tff-pref",),
+    2: ("bfws-tff-pref", "lazy-ff-pref"),
+    4: ("bfws-tff-pref", "lazy-ff-pref", "lazy-tff-pref-tb", "gbfs-goalcount-rnd"),
     5: (
-        "bfws-ff-pref",
+        "bfws-tff-pref",
         "lazy-ff-pref",
-        "lazy-ff-pref-tb",
+        "lazy-tff-pref-tb",
         "gbfs-goalcount-rnd",
-        "gbfs-ff-pref-tb",
+        "gbfs-tff-pref-tb",
     ),
     6: (
-        "bfws-ff-pref",
+        "bfws-tff-pref",
         "lazy-ff-pref",
-        "lazy-ff-pref-tb",
+        "lazy-tff-pref-tb",
         "gbfs-goalcount-rnd",
-        "gbfs-ff-pref-tb",
-        "gbfs-ff-pref-hybrid",
+        "gbfs-tff-pref-tb",
+        "gbfs-tff-pref-hybrid",
     ),
     7: (
-        "bfws-ff-pref",
+        "bfws-tff-pref",
         "lazy-ff-pref",
-        "lazy-ff-pref-tb",
+        "lazy-tff-pref-tb",
         "gbfs-goalcount-rnd",
-        "gbfs-ff-pref-tb",
-        "gbfs-ff-pref-hybrid",
+        "gbfs-tff-pref-tb",
+        "gbfs-tff-pref-hybrid",
         "wastar-add-3",
     ),
 }
