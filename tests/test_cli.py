@@ -74,8 +74,8 @@ def test_solve_prints_ipc_plan(task: tuple[Path, Path], capsys: pytest.CaptureFi
     captured = capsys.readouterr()
     assert captured.out.endswith("; cost = 2 (unit cost)\n")
     assert "(move home kitchen)" in captured.out
-    assert "Núcleos: 1 → 1 búsqueda(s): bfws-ff-pref" in captured.err
-    assert "Resultado: solved (bfws-ff-pref)" in captured.err
+    assert "Núcleos: 1 → 1 búsqueda(s): bfws-tff-pref" in captured.err
+    assert "Resultado: solved (bfws-tff-pref)" in captured.err
 
 
 @pytest.mark.parametrize(
@@ -152,7 +152,7 @@ def test_solve_limit(task: tuple[Path, Path]) -> None:
 def test_configs_lists_presets(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["configs"]) == 0
     out = capsys.readouterr().out
-    assert "bfws-ff-pref" in out and "[núcleos 1,2,3,4,5,6,7]" in out
+    assert "bfws-tff-pref" in out and "[núcleos 1,2,3,4,5,6,7]" in out
     assert "exploración type-based" in out
     assert "astar-hmax" in out and "óptima" in out
-    assert "1: bfws-ff-pref" in out
+    assert "1: bfws-tff-pref" in out

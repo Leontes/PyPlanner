@@ -71,6 +71,7 @@ ignore_missing_imports = true
 module = [
     "pyplanner.heuristics.compiled",
     "pyplanner.heuristics.compiled_deadlines",
+    "pyplanner.heuristics.compiled_temporal_ff",
     "pyplanner.search.compiled_successors",
 ]
 disallow_untyped_defs = false

@@ -51,8 +51,9 @@ claro.
   no termina), eventos en su instante exacto y validación del plan con un paso diez veces
   más fino (si falla, se busca otra vez con δ/2). Las tareas temporales con efectos
   continuos no lineales también van a este motor.
-- **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles; con procesos,
-  además, la proyección de las invariantes de las acciones en curso.
+- **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles; con literales
+  iniciales temporizados, h_TFF (un plan relajado que respeta los tiempos y las ventanas);
+  con procesos, además, la proyección de las invariantes de las acciones en curso.
 - **Búsquedas:** GBFS, A* y WA*, con evaluación inmediata o perezosa, acciones útiles,
   exploración por tipos, búsqueda por novedad (IW y BFWS), landmarks en colas alternadas
   (al estilo de LAMA), evaluación por lotes y búsqueda *anytime* (con preferencias).

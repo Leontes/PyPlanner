@@ -40,9 +40,9 @@ def values(task: GroundTask, name: str, device: str = "python") -> float:
 @pytest.mark.parametrize(
     ("task", "expected"),
     [
-        (chain(), {"blind": 1, "goalcount": 1, "hmax": 3, "hadd": 3, "ff": 3}),
-        (fork(), {"blind": 1, "goalcount": 2, "hmax": 1, "hadd": 2, "ff": 1}),
-        (token(), {"blind": 1, "goalcount": 2, "hmax": 1, "hadd": 2, "ff": 2}),
+        (chain(), {"blind": 1, "goalcount": 1, "hmax": 3, "hadd": 3, "ff": 3, "tff": 3}),
+        (fork(), {"blind": 1, "goalcount": 2, "hmax": 1, "hadd": 2, "ff": 1, "tff": 1}),
+        (token(), {"blind": 1, "goalcount": 2, "hmax": 1, "hadd": 2, "ff": 2, "tff": 2}),
     ],
     ids=["chain", "fork", "token"],
 )

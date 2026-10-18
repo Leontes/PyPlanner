@@ -596,7 +596,29 @@ funcione.
   Encontrado al medir, pendiente: la memoria de las tareas temporales con muchas acciones
   durativas. Satellite con TIL (p17, 17 000 acciones) llega a casi 1 GB porque tiene
   58 000 hechos `running@a` (uno por acción durativa instanciada): los bitsets de cada
-  acción, y los de los estados con acciones en curso, son enteros de varios KB.
+  acción, y los de los estados con acciones en curso, son enteros de varios KB. (Medido
+  en el punto 3: lo que agotaba la memoria de las búsquedas perezosas era su cola, ya
+  arreglado; en las inmediatas pesa el tiempo de evaluar, no los estados.)
+
+- **Plan relajado temporal, h_TFF** (el punto 3 de la lista de abajo, la parte B de la
+  heurística temporal; rama `opcional/heuristica-temporal`, 2026-10-18). Ver
+  [motor-busqueda.md](motor-busqueda.md#plan-relajado-temporal-h_tff-trabajo-opcional):
+  - plan relajado sobre los instantes más tempranos de la parte A (duraciones, TIL y
+    ventanas), con el soportador de menor (instante, nivel); en Python, Numba y PyTorch con
+    los mismos valores (en PyTorch, dos puntos fijos: instantes y niveles);
+  - heurística aparte, `tff`: h_TFF en las tareas con TIL y h_FF en las demás, porque sin
+    plazos elegir por instante es peor (zenotravel temporal: de 17 a 13 resueltas);
+  - en satellite, cada miembro con h_FF resuelve más con h_TFF (BFWS 6 → 8, el híbrido
+    6 → 10…), salvo la perezosa (7 → 7). Los miembros de los portfolios pasan a `tff`
+    salvo `lazy-ff-pref`: en las tareas con TIL, el de 6 núcleos pasa de 9 a 12 de 22;
+  - la cola de la búsqueda perezosa guarda una entrada por nodo y prioridad en lugar de
+    una por sucesor, con el mismo orden: era casi toda la memoria en satellite.
+
+  **Al fusionar** con `opcional/landmarks`, que rehízo los portfolios: aplicar la misma
+  regla a los suyos (sus miembros con h_FF a `tff` salvo `lazy-ff-pref`; en satellite y
+  trucks, el de 1 núcleo pasa de 6 a 8 y los de 6 y 7, de 11 a 12) y juntar los cambios de
+  `_OpenLists` (colas de landmarks y entradas agrupadas). Pendiente: satellite p08 en
+  adelante sigue sin resolverse (unos 1200 sucesores por expansión).
 
 **Pendiente, en este orden:**
 

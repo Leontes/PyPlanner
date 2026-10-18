@@ -183,6 +183,30 @@ PRESETS: dict[str, SearchConfig] = {
             exploration="type-based",
             seed=1,
         ),
+        # Con el plan relajado temporal (h_TFF) en las tareas con TIL; en las demás, h_FF.
+        SearchConfig("gbfs-tff-pref", "gbfs", "tff", preferred_operators=True),
+        SearchConfig("lazy-tff-pref", "gbfs", "tff", preferred_operators=True, lazy=True),
+        SearchConfig(
+            "lazy-tff-pref-tb",
+            "gbfs",
+            "tff",
+            preferred_operators=True,
+            lazy=True,
+            exploration="type-based",
+            seed=1,
+        ),
+        SearchConfig("bfws-tff-pref", "gbfs", "tff", preferred_operators=True, novelty=2),
+        SearchConfig(
+            "gbfs-tff-pref-tb", "gbfs", "tff", preferred_operators=True, exploration="type-based"
+        ),
+        SearchConfig(
+            "gbfs-tff-pref-hybrid",
+            "gbfs",
+            "tff",
+            preferred_operators=True,
+            adaptive_batch=True,
+            device="hybrid",
+        ),
         SearchConfig("gbfs-add", "gbfs", "hadd"),
         SearchConfig("wastar-add-3", "wastar", "hadd", weight=3.0),
         SearchConfig("gbfs-goalcount-rnd", "gbfs", "goalcount", tie_breaking="random", seed=1),
@@ -221,8 +245,8 @@ PRESETS: dict[str, SearchConfig] = {
 #: 17 colecciones clásicas de las IPC 2011 y 2023, los tiers y las colecciones de
 #: ``benchmarks/`` (ver motor-busqueda.md). Cada portfolio resuelve todos los tiers:
 #:
-#: * 1 núcleo: BFWS con h_FF y acciones útiles, la configuración más robusta (resuelve
-#:   todos los tiers) y con los mejores planes con preferencias;
+#: * 1 núcleo: BFWS con acciones útiles, la configuración más robusta (resuelve todos los
+#:   tiers) y con los mejores planes con preferencias;
 #: * 2 núcleos: + la perezosa con landmarks y exploración por tipos, la mejor individual
 #:   en las clásicas;
 #: * 3 núcleos: + la más barata y aleatoria (objetivos pendientes);
@@ -234,36 +258,41 @@ PRESETS: dict[str, SearchConfig] = {
 #:   grandes, donde la GPU rinde. Sin GPU, evalúa todo con Numba;
 #: * 7 núcleos: + GBFS con exploración por tipos.
 #:
+#: Los miembros con h_FF usan ``tff`` (el plan relajado temporal en las tareas con TIL; h_FF
+#: en las demás, con la misma búsqueda; trabajo opcional, punto 3), salvo la búsqueda
+#: perezosa, que con h_FF resuelve satellite p10 y p14 y con h_TFF no. La perezosa con
+#: landmarks no tiene versión con ``tff``.
+#:
 #: Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
 #: no pagan el arranque de PyTorch y CUDA (unos segundos) en las tareas pequeñas.
 PORTFOLIOS: dict[int, tuple[str, ...]] = {
-    1: ("bfws-ff-pref",),
-    2: ("bfws-ff-pref", "lazy-ff-lm-pref-tb"),
-    3: ("bfws-ff-pref", "lazy-ff-lm-pref-tb", "gbfs-goalcount-rnd"),
-    4: ("bfws-ff-pref", "lazy-ff-lm-pref-tb", "gbfs-goalcount-rnd", "wastar-add-3"),
+    1: ("bfws-tff-pref",),
+    2: ("bfws-tff-pref", "lazy-ff-lm-pref-tb"),
+    3: ("bfws-tff-pref", "lazy-ff-lm-pref-tb", "gbfs-goalcount-rnd"),
+    4: ("bfws-tff-pref", "lazy-ff-lm-pref-tb", "gbfs-goalcount-rnd", "wastar-add-3"),
     5: (
-        "bfws-ff-pref",
+        "bfws-tff-pref",
         "lazy-ff-lm-pref-tb",
         "gbfs-goalcount-rnd",
         "wastar-add-3",
         "lazy-ff-pref",
     ),
     6: (
-        "bfws-ff-pref",
+        "bfws-tff-pref",
         "lazy-ff-lm-pref-tb",
         "gbfs-goalcount-rnd",
         "wastar-add-3",
         "lazy-ff-pref",
-        "gbfs-ff-pref-hybrid",
+        "gbfs-tff-pref-hybrid",
     ),
     7: (
-        "bfws-ff-pref",
+        "bfws-tff-pref",
         "lazy-ff-lm-pref-tb",
         "gbfs-goalcount-rnd",
         "wastar-add-3",
         "lazy-ff-pref",
-        "gbfs-ff-pref-hybrid",
-        "gbfs-ff-pref-tb",
+        "gbfs-tff-pref-hybrid",
+        "gbfs-tff-pref-tb",
     ),
 }
 

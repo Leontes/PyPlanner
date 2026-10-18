@@ -12,9 +12,13 @@ Dispositivos:
 
 Las heurísticas triviales (``blind``, ``goalcount``) usan siempre la implementación en
 Python con ``"auto"`` y ``"numba"``, porque no hay nada que acelerar.
+
+``tff`` es el plan relajado temporal (:mod:`pyplanner.heuristics.temporal_ff`) en las
+tareas con literales iniciales temporizados, y h_FF en las demás.
 """
 
 from functools import cache
+from typing import TYPE_CHECKING
 
 from pyplanner.errors import PDDLError
 from pyplanner.grounding import GroundTask
@@ -22,20 +26,23 @@ from pyplanner.heuristics.base import DEAD_END, Evaluation, Heuristic
 from pyplanner.heuristics.relaxation import FFHeuristic, HAddHeuristic, HMaxHeuristic
 from pyplanner.heuristics.simple import BlindHeuristic, GoalCountHeuristic
 
+if TYPE_CHECKING:
+    from pyplanner.grounding.temporal import TemporalTask
+
 #: Heurísticas disponibles, por nombre.
-HEURISTICS = ("blind", "goalcount", "hmax", "hadd", "ff")
+HEURISTICS = ("blind", "goalcount", "hmax", "hadd", "ff", "tff")
 
 #: Heurísticas con implementación en PyTorch.
-TENSOR_HEURISTICS = ("hmax", "hadd", "ff")
+TENSOR_HEURISTICS = ("hmax", "hadd", "ff", "tff")
 
 #: Heurísticas con implementación compilada con Numba.
-COMPILED_HEURISTICS = ("hmax", "hadd", "ff")
+COMPILED_HEURISTICS = ("hmax", "hadd", "ff", "tff")
 
 #: Dispositivos de evaluación.
 DEVICES = ("auto", "python", "numba", "cpu", "cuda", "hybrid")
 
 #: Heurísticas que calculan acciones útiles.
-PREFERRED_HEURISTICS = ("ff",)
+PREFERRED_HEURISTICS = ("ff", "tff")
 
 
 class HeuristicError(PDDLError):
@@ -61,13 +68,23 @@ def create_heuristic(name: str, task: GroundTask, device: str = "auto") -> Heuri
     :class:`~pyplanner.heuristics.projection.ProjectionHeuristic`, que suma lo que una espera
     sin hacer nada no cubriría (salvo a ``blind``, que tiene que seguir siendo admisible).
 
+    ``tff`` es el plan relajado temporal en las tareas con TIL (ya comprueba los plazos: no
+    va envuelta) y h_FF, con sus envoltorios, en las demás.
+
     Raises:
         HeuristicError: si la heurística no existe, no tiene implementación para ese
             dispositivo o PyTorch no está instalado.
     """
-    heuristic = _create(name, task, device)
     from pyplanner.grounding.discrete import DiscreteTask
     from pyplanner.grounding.temporal import TemporalTask
+
+    if name == "tff":
+        # Sin plazos, elegir los soportadores por instante da peores planes relajados que
+        # por coste (ver temporal_ff): solo se usa con TIL.
+        if isinstance(task, TemporalTask) and task.til_times:
+            return _temporal_ff(task, device)
+        name = "ff"
+    heuristic = _create(name, task, device)
 
     if isinstance(task, TemporalTask) and task.til_times:
         from pyplanner.heuristics.deadlines import DeadlineHeuristic
@@ -137,6 +154,38 @@ def _create(name: str, task: GroundTask, device: str) -> Heuristic:
         "ff": tensor.TensorFFHeuristic,
     }
     return classes[name](task, device)
+
+
+def _temporal_ff(task: "TemporalTask", device: str) -> Heuristic:
+    """h_TFF en el dispositivo pedido (el híbrido, con Numba y PyTorch en GPU)."""
+    from pyplanner.heuristics.temporal_ff import TemporalFFHeuristic
+
+    if device not in DEVICES:
+        raise HeuristicError(
+            f"dispositivo desconocido '{device}' (disponibles: {', '.join(DEVICES)})"
+        )
+    if device == "auto":
+        device = "numba" if numba_available() else "python"
+    if device in ("numba", "hybrid") and not numba_available():
+        raise HeuristicError(
+            f"el dispositivo '{device}' necesita Numba; instálalo con pip install -e \".[fast]\""
+        )
+    if device in ("python", "numba"):
+        return TemporalFFHeuristic(task, device)
+    try:
+        import torch
+    except ImportError as exc:
+        raise HeuristicError(
+            f"el dispositivo '{device}' necesita PyTorch; "
+            'instálalo con pip install -e ".[gpu]" (ver README)'
+        ) from exc
+    if device != "hybrid":
+        return TemporalFFHeuristic(task, device)
+    from pyplanner.heuristics.hybrid import HybridHeuristic
+
+    fast = TemporalFFHeuristic(task, "numba")
+    wide = TemporalFFHeuristic(task, "cuda") if torch.cuda.is_available() else None
+    return HybridHeuristic(task, fast, wide)
 
 
 def _hybrid(name: str, task: GroundTask) -> Heuristic:

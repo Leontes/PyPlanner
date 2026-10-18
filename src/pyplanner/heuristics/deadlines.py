@@ -209,6 +209,9 @@ class DeadlineRelaxation:
             [n for n in range(num_facts) if window_of[n] >= 0], dtype=np.int64
         )
         self.running_fact = np.array([d.running for d in task.durative], dtype=np.int64)
+        # Hecho y signo de cada nodo con ventanas (para saber si es cierto en un estado).
+        self.window_fact = np.array([fact for fact, _ in self.windowed], dtype=np.int64)
+        self.window_positive = np.array([positive for _, positive in self.windowed], dtype=np.bool_)
 
     # --- Entradas de cada estado ------------------------------------------------------
 
@@ -219,10 +222,20 @@ class DeadlineRelaxation:
         × nodos, ``inf`` si no es cierto), intervalos de las ventanas (punteros lote ×
         (ventanas + 1) sobre ``inicio`` y ``fin``) y aristas numéricas útiles (lote ×
         aristas)."""
+        return self.plan_inputs(states)[:5]
+
+    def plan_inputs(
+        self, states: Sequence[State]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Las entradas de :meth:`inputs` y, para el plan relajado temporal
+        (:mod:`pyplanner.heuristics.temporal_ff`), las repeticiones de cada arista numérica
+        (lote × aristas, ``inf`` si no sirve) y si cada nodo con ventanas es cierto en el
+        estado (lote × nodos con ventanas)."""
         relaxed = self.relaxed
         batch = len(states)
         times = np.full((batch, relaxed.num_facts), INF)
         usable = np.ones((batch, len(relaxed.edges)), dtype=np.bool_)
+        multipliers = np.ones((batch, len(relaxed.edges)))
         num_windows = len(self.windowed)
         pointers = np.zeros((batch, num_windows + 1), dtype=np.int64)
         starts: list[float] = []
@@ -253,19 +266,23 @@ class DeadlineRelaxation:
                             (variable_since.get(v, 0.0) for v in keys), default=0.0
                         )
                 if relaxed.edges:
-                    usable[row] = np.array(relaxed.multipliers(state)) != DEAD_END
+                    multipliers[row] = relaxed.multipliers(state)
+                    usable[row] = multipliers[row] != DEAD_END
             row_times[self.windowed_nodes] = INF
             for w, (start_list, end_list) in enumerate(self._windows(state, facts)):
                 pointers[row, w] = len(starts)
                 starts.extend(start_list)
                 ends.extend(end_list)
             pointers[row, num_windows] = len(starts)
+        window_true = bits_of[:, self.window_fact] == self.window_positive
         return (
             times,
             pointers,
             np.array(starts, dtype=np.float64),
             np.array(ends, dtype=np.float64),
             usable,
+            multipliers,
+            window_true,
         )
 
     def _since(self, timeline: Timeline) -> tuple[np.ndarray, dict[int, float]]:

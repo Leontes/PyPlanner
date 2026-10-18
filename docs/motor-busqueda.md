@@ -313,8 +313,44 @@ cada paso. El código está en `grounding/temporal.py`.
     búsqueda expande los mismos nodos. La perezosa ya evalúa al sacar de la cola.
   - **Sin TIL pendientes** no se comprueba nada: ya no hay plazos y la relajación de la
     heurística base detecta los mismos callejones.
-  - **Pendiente** (trabajo opcional, ver el roadmap). Extraer además un plan relajado que
-    respete los tiempos y usarlo como heurística.
+  - **Plan relajado que respeta los tiempos:** es h_TFF (ver la sección siguiente), una
+    heurística aparte que incluye esta comprobación.
+
+## Plan relajado temporal: h_TFF (trabajo opcional)
+
+h_FF no ve el tiempo: en satellite, su plan relajado usa antenas cuya ventana de
+visibilidad ya ha pasado, y sus acciones útiles llevan a callejones sin salida. h_TFF
+(`tff`; `heuristics/temporal_ff.py`) extrae un plan relajado que respeta los tiempos, como
+el grafo de planificación temporal de POPF y OPTIC (Coles, Coles, Fox y Long, 2010):
+
+- **Instantes más tempranos:** los de la comprobación de plazos (el Dijkstra de arriba, con
+  duraciones mínimas, TIL pendientes y ventanas).
+- **Soportador de cada hecho:** la acción relajada de menor índice entre las que le dan su
+  (instante, nivel) mínimo, con el nivel de h_FF (0 si es cierto en el estado, 1 + el
+  máximo de las precondiciones). No depende del orden del cálculo, y el plan relajado no
+  tiene ciclos.
+- **Cláusula del objetivo:** la que antes se cumple (con sus ventanas); si ninguna puede
+  cumplirse, el estado es un callejón sin salida. Son los mismos callejones que la
+  comprobación de plazos, así que h_TFF no va envuelta en ella.
+- **Valor y acciones útiles**, como en h_FF: el coste de los operadores del plan relajado
+  (por sus repeticiones numéricas) y los operadores del plan con todas sus precondiciones
+  ciertas, también las de los hechos con ventanas.
+- **Tres implementaciones con el mismo resultado:** la referencia en Python (Dijkstra por
+  (instante, nivel)), Numba y PyTorch. En PyTorch, los instantes y los niveles son dos
+  puntos fijos sobre el lote. Los niveles se calculan solo sobre las aristas *ajustadas*
+  (las que dan al hecho su instante exacto): el truco de h_FF en PyTorch (la última
+  iteración en que bajó el coste) no vale con máximos, porque una precondición con
+  holgura puede alcanzarse por un camino más corto que no es el más temprano. Ajustar a
+  las ventanas usa los intervalos de cada estado en un tensor relleno.
+- **Solo con TIL.** Sin plazos, lo único que cambia frente a h_FF es elegir los soportadores
+  por instante en lugar de por coste, y eso da peores planes relajados (como h_max frente
+  a h_add): zenotravel temporal pasaba de 17 a 13 instancias resueltas y driverlog de 16 a
+  14–15. Así que en las tareas sin TIL (temporales o no) `tff` crea h_FF, con sus
+  envoltorios, y sus configuraciones sirven para cualquier tarea. Quitar a h_FF solo las
+  acciones que no caben en el tiempo, manteniendo los soportadores por coste, no sirve:
+  casi nunca son las que elige (en satellite, las mismas expansiones que h_FF).
+- Cuesta más o menos lo mismo que h_FF compilada (satellite p02: 0,04 s por 1500 estados
+  cada una, más la preparación de las entradas).
 
 ## Restricciones de trayectoria (iteración 5b)
 
@@ -563,6 +599,7 @@ para repostar. La 6c añade lo que falta (`pyplanner.heuristics.projection`):
 | `hmax` | sí | no | sí | sí |
 | `hadd` | no | no | sí | sí |
 | `ff` | no | sí | sí | sí (costes y plan relajado en tensores) |
+| `tff` | no | sí | sí | sí (instantes, niveles y plan relajado en tensores); en tareas sin TIL es `ff` |
 
 **Dispositivos** (`SearchConfig.device`, `--device`):
 
@@ -623,7 +660,10 @@ desarrollo, en tareas aleatorias con muchos empates y costes 0.
   novedad");
 - `heuristic`;
 - `preferred_operators`: dos colas alternas, la normal y la de acciones útiles;
-- `lazy`: evaluación perezosa; no se puede usar con A*;
+- `lazy`: evaluación perezosa; no se puede usar con A*. Las acciones de un nodo con la
+  misma prioridad van en una sola entrada de la cola, que reserva sus desempates seguidos:
+  salen en el mismo orden que una entrada por sucesor, sin su memoria (con desempate
+  aleatorio, una por sucesor);
 - `tie_breaking`: `fifo`, `lifo` o `random`, con `seed`;
 - `exploration`: `"type-based"` añade una cola de **exploración por tipos** (Xie et al.,
   2014) que se alterna con las demás: saca un tipo (h, g) al azar y un nodo al azar de
@@ -664,11 +704,12 @@ Configuraciones predefinidas (`pyplanner configs`):
 | `gbfs-ff-lm-pref` | GBFS + h_FF y landmarks en colas alternadas + acciones útiles | ver "Landmarks" |
 | `lazy-ff-lm-pref` | la anterior, perezosa | |
 | `lazy-ff-lm-pref-tb` | la anterior + exploración por tipos (semilla 1) | la mejor individual en las tareas clásicas |
+| `gbfs-tff-pref`, `lazy-tff-pref`, `lazy-tff-pref-tb`, `bfws-tff-pref`, `gbfs-tff-pref-tb`, `gbfs-tff-pref-hybrid` | las de h_FF con h_TFF | en tareas sin TIL, iguales que las de h_FF |
 | `gbfs-ff` | GBFS + h_FF | |
 | `gbfs-add` | GBFS + h_add | |
 | `wastar-add-3` | WA* (w = 3) + h_add | |
 | `gbfs-goalcount-rnd` | GBFS + objetivos pendientes, desempate aleatorio | muy barata; aporta diversidad |
-| `bfws-ff-pref` | BFWS: GBFS con prioridad (novedad, h_FF) + acciones útiles | la de 1 núcleo: la más robusta (resuelve todos los tiers) |
+| `bfws-ff-pref` | BFWS: GBFS con prioridad (novedad, h_FF) + acciones útiles | la más robusta (resuelve todos los tiers); en los portfolios, con `tff` (`bfws-tff-pref`, la de 1 núcleo) |
 | `bfws-ff` | BFWS con h_FF | |
 | `bfws-goalcount` | BFWS con objetivos pendientes | sin heurística de relajación |
 | `iw1`, `iw2` | IW(1), IW(2) | incompletas; solo para problemas de anchura baja |
@@ -788,18 +829,23 @@ cada uno contiene al anterior:
 
 | Núcleos | Búsquedas | Qué se añade |
 |---------|-----------|--------------|
-| 1 | `bfws-ff-pref` | BFWS, la más robusta: resuelve todos los tiers y da los mejores planes con preferencias; se ejecuta en el propio proceso |
+| 1 | `bfws-tff-pref` | BFWS, la más robusta: resuelve todos los tiers y da los mejores planes con preferencias; se ejecuta en el propio proceso |
 | 2 | + `lazy-ff-lm-pref-tb` | la perezosa con landmarks y exploración por tipos, la mejor individual en las tareas clásicas |
 | 3 | + `gbfs-goalcount-rnd` | la más barata y aleatoria |
 | 4 | + `wastar-add-3` | WA*, que da los mejores planes con preferencias |
 | 5 | + `lazy-ff-pref` | la perezosa sin landmarks |
-| 6 | + `gbfs-ff-pref-hybrid` | lote adaptativo y evaluación híbrida CPU/GPU, el único miembro con GPU: casi empata con GBFS con exploración por tipos (una instancia menos, un 1 % más rápido) y se queda para las tareas grandes, donde la GPU rinde |
-| 7 | + `gbfs-ff-pref-tb` | GBFS con exploración por tipos |
+| 6 | + `gbfs-tff-pref-hybrid` | lote adaptativo y evaluación híbrida CPU/GPU, el único miembro con GPU: casi empata con GBFS con exploración por tipos (una instancia menos, un 1 % más rápido) y se queda para las tareas grandes, donde la GPU rinde |
+| 7 | + `gbfs-tff-pref-tb` | GBFS con exploración por tipos |
 
 - Elegidos en el trabajo opcional de los landmarks con 475 instancias, clásicas y no
   clásicas (ver "Rendimiento medido"). Cada uno resuelve todos los tiers. Del de 2 al de
   5 son la mejor combinación posible de su tamaño; el de 6 y el de 7, por el miembro con
   GPU, quedan a una instancia de la mejor.
+- **Los miembros con h_FF usan `tff`** (h_TFF en las tareas con TIL y h_FF, con la misma
+  búsqueda, en las demás), salvo `lazy-ff-pref`: con h_FF resuelve satellite p10 y p14, y
+  con h_TFF no. La perezosa con landmarks no tiene versión con `tff`. En las tareas con
+  TIL (satellite y trucks, 22 instancias), el portfolio de 1 núcleo pasa de 6 resueltas a
+  8 y los de 6 y 7 de 11 a 12; en las demás no cambia nada (ver "Rendimiento medido").
 - Con más de 7 núcleos se usa el de 7. Nunca hay más búsquedas que núcleos.
 - Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
   no pagan el arranque de PyTorch y CUDA en las tareas pequeñas. Sin GPU, el miembro
@@ -1314,3 +1360,50 @@ folding y labyrinth (IPC 2023). Tiempo y pico de memoria del grounding:
 - **Satellite con TIL** gasta casi 1 GB en p17 con 17 000 acciones. No es el grounding:
   la tarea temporal tiene 58 000 hechos (casi todos `running@a`, uno por acción durativa
   instanciada), y los bitsets de cada acción son enteros de varios KB.
+
+### Trabajo opcional: plan relajado temporal (h_TFF)
+
+Medido en satellite con TIL (IPC 2004, p01–p20), driverlog y zenotravel temporales (IPC
+2002, hasta la 17), greenhouse y trucks; 60 s y 1,5 GB por búsqueda, planes validados con
+VAL. Las colecciones de la IPC 2002 no están en git (ver
+[benchmarks/README.md](../benchmarks/README.md)).
+
+**Primero, la memoria.** En satellite, las búsquedas perezosas se quedaban sin memoria antes
+de los 55 s en 13 a 15 de las 20 instancias. No eran los estados: cada expansión genera unos
+280 sucesores en p07 (1200 en p17), y la cola guardaba una entrada (padre, acción) por
+sucesor, de unos 250 B en Python: el 95 % de la memoria. Ahora las acciones de un nodo con
+la misma prioridad van en una sola entrada (ver "Configuración de búsqueda"), con el mismo
+orden: 56 búsquedas idénticas a las de antes (tiers, temporales, TIL, preferencias, PDDL+ y
+clásicas; FIFO, LIFO y exploración por tipos). En p07, 3000 expansiones de `lazy-ff-pref`
+pasan de 362 MB a 199 MB, y ya no se queda sin memoria ninguna. Pero resuelven las mismas
+(6 y 5): el límite era la guía.
+
+**h_TFF frente a h_FF** (con la comprobación de plazos), instancias resueltas:
+
+| Colección | `bfws` | `gbfs` | `lazy` | `lazy-tb` |
+|-----------|--------|--------|--------|-----------|
+| satellite (20) | 4 → **6** | 5 → **7** | 6 → 6 | 5 → **7** |
+| driverlog (17) | 16 → 15 | 16 → 14 | 15 → 14 | 15 → 14 |
+| zenotravel (17) | 17 → 13 | 17 → 13 | 17 → 13 | 16 → 13 |
+
+- **Con TIL guía mucho mejor:** satellite p02 con la perezosa pasa de no resolverse (74 000
+  expansiones) a 101 expansiones; p07, de no resolverse a 596 (perezosa) y 325
+  (inmediata). No siempre: en p04, la inmediata necesita 11 700 expansiones frente a 1300.
+- **Sin TIL es peor:** solo cambian los soportadores (por instante en lugar de por coste), y
+  eso da peores planes relajados. Por eso `tff` es h_FF en las tareas sin TIL.
+- **Variante descartada:** h_FF con sus soportadores por coste, pero sin las acciones que no
+  caben en el tiempo. Sin TIL es h_FF por construcción, pero en satellite hace las mismas
+  expansiones que h_FF (p02: 631 frente a 620; p03, p05 y p06: las mismas): las acciones
+  que no caben casi nunca son las que elige h_FF. La ganancia viene de elegir por instante.
+- Por encima de p08 no se resuelve ninguna: con unos 1200 sucesores por expansión, la
+  inmediata llega a 50–300 expansiones en 60 s y la perezosa a 10 000–50 000 sin plan.
+
+**Portfolios.** En las tareas con TIL (satellite y trucks, 22 instancias), cada miembro con
+h_FF resuelve con h_TFF: BFWS 6 → 8, GBFS 7 → 9, GBFS con exploración por tipos 5 → 8, el
+híbrido 6 → 10, la perezosa con exploración por tipos 6 → 8 (pierde p10) y la perezosa 7 → 7
+(gana p02 y p07, pierde p10 y p14). Así que los miembros pasan a `tff` salvo
+`lazy-ff-pref`. Con los portfolios de los landmarks, el de 1 núcleo pasa de 6 a 8 y los de
+6 y 7, de 11 a 12; los de 2 a 5 no cambian (la perezosa con landmarks no tiene versión con
+`tff`). Con los anteriores, los de 1, 4 y 5–7 núcleos pasaban de 6, 9 y 9 a 8, 11 y 12, y
+con la perezosa también en `tff` el de 2 habría bajado de 9 a 8. En las demás tareas la
+búsqueda es la misma.
