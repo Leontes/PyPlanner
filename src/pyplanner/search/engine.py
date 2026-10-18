@@ -68,9 +68,9 @@ agota la cola, no hay plan mejor que la cota que ella pueda encontrar; con A* o 
 """
 
 import heapq
-import itertools
 import random
 import time
+from array import array
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 
@@ -91,6 +91,9 @@ _NO_PREFERRED: frozenset[int] = frozenset()
 
 #: Entrada de una cola: (prioridad, desempate, datos del nodo).
 _Entry = tuple[tuple[float, ...], float, tuple[int, ...]]
+#: Entrada de varias acciones de un nodo con la misma prioridad (búsqueda perezosa):
+#: (prioridad, desempate de la siguiente, nodo, acciones, posición de la siguiente).
+_Group = tuple[tuple[float, ...], float, int, tuple[int, ...], int]
 
 #: Margen de la cota: un plan tiene que mejorarla al menos en esto (los costes son sumas de
 #: números reales, con su error de redondeo).
@@ -131,28 +134,33 @@ class _TypeBuckets:
     misma probabilidad para todos y, dentro de él, una entrada al azar. Así la búsqueda
     visita de vez en cuando zonas que la heurística considera peores, lo que ayuda a salir
     de mesetas y regiones con muchos callejones sin salida. Todas las operaciones son O(1).
+
+    Las entradas son ``(nodo,)`` o ``(nodo, acción)`` y se guardan como un entero de 64 bits
+    en un ``array`` (8 bytes en lugar de una tupla): la búsqueda perezosa mete una por
+    sucesor.
     """
 
     def __init__(self, seed: int) -> None:
         self._rng = random.Random(seed)
-        self._buckets: dict[tuple[float, ...], list[tuple[int, ...]]] = {}
+        self._buckets: dict[tuple[float, ...], array[int]] = {}
         self._types: list[tuple[float, ...]] = []
         self._position: dict[tuple[float, ...], int] = {}
 
     def push(self, type_key: tuple[float, ...], item: tuple[int, ...]) -> None:
         bucket = self._buckets.get(type_key)
         if bucket is None:
-            bucket = self._buckets[type_key] = []
+            bucket = self._buckets[type_key] = array("q")
             self._position[type_key] = len(self._types)
             self._types.append(type_key)
-        bucket.append(item)
+        # nodo en los 32 bits altos; acción + 1 en los bajos (0: sin acción)
+        bucket.append(item[0] << 32 | (item[1] + 1 if len(item) > 1 else 0))
 
     def pop(self) -> tuple[int, ...]:
         type_key = self._types[self._rng.randrange(len(self._types))]
         bucket = self._buckets[type_key]
         i = self._rng.randrange(len(bucket))
         bucket[i], bucket[-1] = bucket[-1], bucket[i]
-        item = bucket.pop()
+        code = bucket.pop()
         if not bucket:  # se quita el tipo intercambiándolo con el último
             del self._buckets[type_key]
             index = self._position.pop(type_key)
@@ -160,7 +168,8 @@ class _TypeBuckets:
             if last != type_key:
                 self._types[index] = last
                 self._position[last] = index
-        return item
+        action = code & 0xFFFFFFFF
+        return (code >> 32, action - 1) if action else (code >> 32,)
 
     def __bool__(self) -> bool:
         return bool(self._types)
@@ -168,23 +177,45 @@ class _TypeBuckets:
 
 class _OpenLists:
     """Colas que se usan por turnos: la normal, la preferente (acciones útiles) y la de
-    exploración por tipos, según la configuración."""
+    exploración por tipos, según la configuración.
+
+    El desempate FIFO o LIFO es un contador (0, 1, 2… o 0, −1, −2…). Con él, la búsqueda
+    perezosa mete las acciones de un nodo con la misma prioridad en **una sola entrada**
+    por cola (:meth:`push_successors`): reserva tantos desempates seguidos como acciones y,
+    al sacar una, la entrada vuelve con el siguiente. Salen exactamente en el mismo orden
+    que si fueran entradas sueltas (el desempate solo decide entre entradas de igual
+    prioridad, y las de otros nodos tienen desempates fuera del bloque), pero sin una
+    entrada por sucesor: en satellite con TIL, con cientos de sucesores por expansión, las
+    entradas sueltas eran casi toda la memoria de la búsqueda.
+    """
 
     def __init__(self, config: SearchConfig) -> None:
-        self.queues: list[list[_Entry]] = [[]]
+        self.queues: list[list[_Entry | _Group]] = [[]]
         if config.preferred_operators:
             self.queues.append([])
         self.types = _TypeBuckets(config.seed) if config.exploration == "type-based" else None
         self._slots = len(self.queues) + (1 if self.types is not None else 0)
         self._turn = 0
         self._last = 0
+        self._random: Iterator[float] | None = None
+        self._lifo = config.tie_breaking == "lifo"
+        self._count = 0
         if config.tie_breaking == "random":
             rng = random.Random(config.seed)
-            self._tie: Iterator[float] = iter(rng.random, None)
-        elif config.tie_breaking == "lifo":
-            self._tie = (-float(i) for i in itertools.count())
-        else:
-            self._tie = (float(i) for i in itertools.count())
+            self._random = iter(rng.random, None)
+
+    @property
+    def groups(self) -> bool:
+        """``True`` si se pueden meter varias acciones en una entrada (desempate FIFO o
+        LIFO; con el aleatorio, cada entrada tiene el suyo)."""
+        return self._random is None
+
+    def _tie(self) -> float:
+        if self._random is not None:
+            return next(self._random)
+        tie = -float(self._count) if self._lifo else float(self._count)
+        self._count += 1
+        return tie
 
     def push(
         self,
@@ -193,10 +224,42 @@ class _OpenLists:
         preferred: bool,
         type_key: tuple[float, ...],
     ) -> None:
-        entry: _Entry = (key, next(self._tie), item)
+        entry: _Entry = (key, self._tie(), item)
         heapq.heappush(self.queues[0], entry)
         if preferred and len(self.queues) > 1:
             heapq.heappush(self.queues[1], entry)
+        if self.types is not None:
+            self.types.push(type_key, item)
+
+    def push_successors(
+        self, key: tuple[float, ...], node: int, actions: list[int], preferred: list[int]
+    ) -> None:
+        """Las entradas (``node``, acción) de ``actions``, todas con prioridad ``key``, como
+        si se metieran una a una en ese orden (``preferred``: las que van también a la cola
+        preferente). Solo con :attr:`groups`; la cola por tipos se llena aparte
+        (:meth:`push_type`)."""
+        first = self._count
+        self._count += len(actions)
+        self._push_group(self.queues[0], key, first, node, actions)
+        if preferred and len(self.queues) > 1:
+            self._push_group(self.queues[1], key, first, node, preferred)
+
+    def _push_group(
+        self,
+        queue: list[_Entry | _Group],
+        key: tuple[float, ...],
+        first: int,
+        node: int,
+        actions: list[int],
+    ) -> None:
+        if self._lifo:  # sale primero la última, con el desempate más bajo del bloque
+            group: _Group = (key, -float(first + len(actions) - 1), node, tuple(actions[::-1]), 0)
+        else:
+            group = (key, float(first), node, tuple(actions), 0)
+        heapq.heappush(queue, group)
+
+    def push_type(self, type_key: tuple[float, ...], item: tuple[int, ...]) -> None:
+        """Mete ``item`` en la cola de exploración por tipos, si la hay."""
         if self.types is not None:
             self.types.push(type_key, item)
 
@@ -209,7 +272,13 @@ class _OpenLists:
                 if queue:
                     self._turn = (slot + 1) % self._slots
                     self._last = slot
-                    return heapq.heappop(queue)[2]
+                    entry = heapq.heappop(queue)
+                    if len(entry) == 3:
+                        return entry[2]
+                    key, tie, node, actions, position = entry
+                    if position + 1 < len(actions):
+                        heapq.heappush(queue, (key, tie + 1, node, actions, position + 1))
+                    return (node, actions[position])
             elif self.types:
                 self._turn = (slot + 1) % self._slots
                 self._last = slot
@@ -691,10 +760,30 @@ class LazySearch(_BestFirstSearch):
         assert h is not None
         useful = self.helpful(node)
         limit = self.limit
+        open_lists = self.open
+        if not open_lists.groups:
+            for action in self.successors(self.states[node]):
+                self.stats.generated += 1
+                g = self.g[node] + action.cost
+                if g >= limit:
+                    continue  # no puede mejorar la cota
+                key = self.priority(g, h)
+                open_lists.push(key, (node, action.index), action.index in useful, (h, g))
+            return
+        # Una entrada por prioridad (ver _OpenLists.push_successors).
+        groups: dict[tuple[float, ...], tuple[list[int], list[int]]] = {}
         for action in self.successors(self.states[node]):
             self.stats.generated += 1
             g = self.g[node] + action.cost
             if g >= limit:
                 continue  # no puede mejorar la cota
             key = self.priority(g, h)
-            self.open.push(key, (node, action.index), action.index in useful, (h, g))
+            group = groups.get(key)
+            if group is None:
+                group = groups[key] = ([], [])
+            group[0].append(action.index)
+            if action.index in useful:
+                group[1].append(action.index)
+            open_lists.push_type((h, g), (node, action.index))
+        for key, (actions, preferred) in groups.items():
+            open_lists.push_successors(key, node, actions, preferred)

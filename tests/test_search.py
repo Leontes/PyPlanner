@@ -2,6 +2,7 @@
 
 import threading
 from collections.abc import Mapping, Sequence
+from typing import Literal
 
 import pytest
 
@@ -268,3 +269,39 @@ def test_solve_applies_a_memory_limit() -> None:
         SearchStatus.LIMIT_REACHED
     )
     assert solve(domain, problem, [PRESETS["gbfs-ff"]]).status is SearchStatus.SOLVED
+
+
+@pytest.mark.parametrize("tie_breaking", ["fifo", "lifo"])
+def test_grouped_successors_leave_the_queue_in_the_same_order(
+    tie_breaking: Literal["fifo", "lifo"],
+) -> None:
+    """La búsqueda perezosa mete las acciones de un nodo con la misma prioridad en una sola
+    entrada por cola; tienen que salir igual que si se metieran una a una."""
+    import random
+
+    from pyplanner.search.engine import _OpenLists
+
+    config = SearchConfig("x", "gbfs", "ff", preferred_operators=True, tie_breaking=tie_breaking)
+    grouped, single = _OpenLists(config), _OpenLists(config)
+    assert grouped.groups
+    rng = random.Random(7)
+    popped: tuple[list[tuple[int, ...] | None], list[tuple[int, ...] | None]] = ([], [])
+    for node in range(60):
+        successors = [(rng.randrange(4), a, rng.random() < 0.3) for a in range(rng.randrange(9))]
+        groups: dict[tuple[float, ...], tuple[list[int], list[int]]] = {}
+        for h, action, preferred in successors:
+            single.push((float(h),), (node, action), preferred, (float(h), 0.0))
+            group = groups.setdefault((float(h),), ([], []))
+            group[0].append(action)
+            if preferred:
+                group[1].append(action)
+        for key, (actions, useful) in groups.items():
+            grouped.push_successors(key, node, actions, useful)
+        for _ in range(rng.randrange(6)):
+            popped[0].append(grouped.pop())
+            popped[1].append(single.pop())
+    while single:
+        popped[0].append(grouped.pop())
+        popped[1].append(single.pop())
+    assert not grouped
+    assert popped[0] == popped[1]
