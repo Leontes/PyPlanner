@@ -128,7 +128,15 @@ def search(
     try:
         if heuristic is None:
             heuristic = create_heuristic(config.heuristic, task, config.device)
-        engine_class = LazySearch if config.lazy else EagerSearch
+        engine_class: type[_BestFirstSearch] = LazySearch if config.lazy else EagerSearch
+        if config.algorithm == "ehc":
+            from pyplanner.search.local import EnforcedHillClimbing
+
+            engine_class = EnforcedHillClimbing
+        elif config.algorithm == "mrw":
+            from pyplanner.search.local import RandomWalks
+
+            engine_class = RandomWalks
         return engine_class(task, config, heuristic, stop, bound, on_plan).run()
     except MemoryError:
         pass  # el resultado se crea fuera: la traza retiene la memoria de la búsqueda

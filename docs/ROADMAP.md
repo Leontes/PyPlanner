@@ -185,8 +185,8 @@ El portfolio se monta encima de todo eso.
 | Exploración por tipos (Xie et al., 2014) | salir de mesetas y zonas con callejones sin salida | iteración 2 |
 | Heurísticas compiladas con Numba | h_max, h_add y h_FF 12–19 veces más rápidas | iteración 2 |
 | Generación de sucesores compilada con Numba | mismo orden que la referencia; del 46% al 5% del tiempo de búsqueda | iteración 2 |
-| Enforced hill-climbing (FF) | búsqueda local rápida | opcional (5.º) |
-| Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional (5.º) |
+| Enforced hill-climbing (FF) | búsqueda local rápida | opcional (5.º) ✅, fuera de los portfolios |
+| Paseos aleatorios (Arvand) | diversidad en el portfolio | opcional (5.º) ✅, fuera de los portfolios |
 | Colas alternadas / multiheurística | combinar heurísticas en una sola búsqueda | opcional (2.º, con landmarks), v0.7 ✅ |
 | Landmarks (h_LM) | heurística informada más potente | opcional (2.º), v0.7 ✅ |
 | Búsqueda por novedad (IW, BFWS) | salir de mesetas; diversidad en el portfolio | final de la iteración 3b ✅ |
@@ -690,9 +690,17 @@ funcione.
 
    Quedan con un error claro: las preferencias sobre condiciones `over all` y
    `always-within` con procesos y eventos.
-5. **Más diversidad en el portfolio**: *enforced hill-climbing* (FF) y paseos aleatorios
+5. ✅ **Más diversidad en el portfolio**: *enforced hill-climbing* (FF) y paseos aleatorios
    (Arvand). El portfolio ya es diverso (BFWS, exploración por tipos, goalcount aleatorio):
-   solo si aparece un dominio que lo pida.
+   solo si aparece un dominio que lo pida. Hecho en la rama `opcional/diversidad`
+   (2026-10-19, sobre `opcional/cobertura`, pendiente de fusionar; ver
+   [motor-busqueda.md](motor-busqueda.md#búsquedas-locales-trabajo-opcional-punto-5)):
+   - `ehc-tff-pref` (EHC con acciones útiles; si se atasca, GBFS, como FF) y `mrw-tff` y
+     `mrw-tff-pref` (paseos aleatorios, puros o con MHA), en `pyplanner.search.local`;
+   - medido en las 97 instancias que no resolvía ningún miembro del portfolio de 7
+     núcleos: los paseos no resuelven ninguna, y EHC 4 que con el código actual ya resuelve
+     algún miembro. No aparece ningún dominio que lo pida: se quedan como configuraciones
+     predefinidas y los portfolios no cambian (decisión del usuario).
 6. **Más allá de la programación lineal**. Ha perdido valor con la 6b: las invariantes
    disyuntivas con efectos continuos ya pasan al motor discretizado. El motor temporal
    resuelve los efectos continuos lineales con un programa lineal por estado. Dos líneas:

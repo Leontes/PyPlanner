@@ -43,6 +43,14 @@ class SearchStatistics:
     gpu_batches: int = 0
     time: float = 0.0
 
+    def add(self, part: "SearchStatistics") -> None:
+        """Suma los contadores de otra búsqueda (el tiempo no: lo mide quien las encadena)."""
+        for name in ("expanded", "generated", "evaluated", "reopened", "dead_ends", "pruned"):
+            setattr(self, name, getattr(self, name) + getattr(part, name))
+        self.evaluation_batches += part.evaluation_batches
+        self.largest_batch = max(self.largest_batch, part.largest_batch)
+        self.gpu_batches += part.gpu_batches
+
 
 @dataclass
 class SearchResult:
