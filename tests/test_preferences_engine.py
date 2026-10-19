@@ -14,7 +14,10 @@ from pyplanner.grounding import GroundTask, State
 from pyplanner.grounding.monitors import Monitor, MonitorEvaluator
 from pyplanner.grounding.preferences import COLLECT, END, FORGO, split_preferences
 from pyplanner.grounding.task import Condition
+from pyplanner.grounding.temporal import TemporalTask
+from pyplanner.loader import load_domain, load_problem
 from pyplanner.loader.ast import And, Atom, Forall, Parameter, Preference, Variable
+from pyplanner.pddl import parse_domain, parse_problem
 from pyplanner.plan import Plan, simulate
 from pyplanner.planner import solve
 from pyplanner.portfolio import run_portfolio
@@ -354,7 +357,7 @@ def test_without_metric_preferences_do_not_count() -> None:
 @pytest.mark.parametrize(
     ("metric", "message"),
     [
-        ("(* (is-violated p) (is-violated p))", "lineal que se minimiza"),
+        ("(* (is-violated p) (is-violated p))", "expresión lineal"),
         ("(- (is-violated p))", "peso negativo"),
     ],
 )
@@ -363,28 +366,136 @@ def test_metrics_that_cannot_be_costs(metric: str, message: str) -> None:
         build(SWITCHES, switches("(and (on a) (preference p (on b)))", metric))
 
 
-def test_maximized_metrics_with_preferences_are_rejected() -> None:
+def test_maximized_metrics_are_minimized_negated(tmp_path: Path) -> None:
+    """Maximizar es minimizar la negación: (- 10 (* 2 (is-violated p))) es un peso 2."""
+    problem = switches(
+        "(and (on a) (preference p (on b)))", "(- 10 (* 2 (is-violated p)))"
+    ).replace("minimize", "maximize")
+    task = build(SWITCHES, problem)
+    assert task.metric_sign == -1 and task.preferences is not None
+    assert dict(task.preferences.weights) == {"p": 2.0}
+    plan = best_plan(task)
+    assert plan.metric == 10 and not plan.violated
+    check_metric(SWITCHES, problem, plan, tmp_path)
+
+
+def test_maximizing_violations_gives_negative_weights() -> None:
     problem = switches("(and (on a) (preference p (on b)))", "(is-violated p)").replace(
         "minimize", "maximize"
     )
-    with pytest.raises(UnsupportedFeatureError, match="lineal que se minimiza"):
+    with pytest.raises(UnsupportedFeatureError, match="peso negativo"):
         build(SWITCHES, problem)
 
 
-def test_temporal_tasks_with_preferences_are_rejected() -> None:
-    domain = """
+# --- Preferencias en tareas temporales -------------------------------------------------
+
+# Calentar el horno (10) y hornear (5); limpiar (3) es aparte. Calentarlo con el horno ya
+# limpio incumple la preferencia de su condición 'at start'.
+OVEN = """
 (define (domain oven)
-  (:requirements :durative-actions :preferences)
-  (:predicates (hot))
+  (:requirements :durative-actions :negative-preconditions :numeric-fluents :preferences
+                 :constraints)
+  (:predicates (hot) (baked) (cleaned))
   (:durative-action heat :parameters () :duration (= ?duration 10)
-    :condition (and) :effect (at end (hot))))
+    :condition (preference early (at start (not (cleaned))))
+    :effect (at end (hot)))
+  (:durative-action bake :parameters () :duration (= ?duration 5)
+    :condition (at start (hot)) :effect (at end (baked)))
+  (:durative-action clean :parameters () :duration (= ?duration 3)
+    :condition (and) :effect (at end (cleaned))))
 """
-    problem = """
-(define (problem o1) (:domain oven) (:init)
-  (:goal (preference warm (hot))) (:metric minimize (is-violated warm)))
+
+
+def oven(goal: str, metric: str, constraints: str = "", init: str = "") -> str:
+    section = f"(:constraints {constraints})" if constraints else ""
+    return f"""
+(define (problem oven-1) (:domain oven) (:init {init}) (:goal {goal}) {section}
+  (:metric {metric}))
 """
-    with pytest.raises(UnsupportedFeatureError, match="tareas temporales"):
-        build(domain, problem)
+
+
+def temporal_plan(problem: str, preset: str = "gbfs-ff-pref") -> tuple[GroundTask, Plan]:
+    domain = load_domain(parse_domain(OVEN))
+    result = solve(domain, load_problem(parse_problem(problem), domain), [PRESETS[preset]], 10)
+    assert result.plan is not None, result.search.status
+    return result.task, result.plan
+
+
+def test_temporal_goal_preferences(tmp_path: Path) -> None:
+    problem = oven("(and (baked) (preference tidy (cleaned)))", "minimize (* 3 (is-violated tidy))")
+    task, plan = temporal_plan(problem)
+    assert task.preferences is not None and plan.is_temporal
+    assert plan.metric == 0 and not plan.violated
+    assert {s.name for s in plan.steps} == {"heat", "bake", "clean"}
+    check_metric(OVEN, problem, plan, tmp_path)
+
+
+def test_preferences_of_durative_conditions_count_at_their_snap(tmp_path: Path) -> None:
+    """Con el horno limpio desde el principio, calentarlo incumple 'early' (peso 4)."""
+    problem = oven("(baked)", "minimize (* 4 (is-violated early))", init="(cleaned)")
+    task, plan = temporal_plan(problem)
+    starts = [a for a in task.actions if a.name == "heat@start"]
+    assert sorted(a.cost for a in starts) != [starts[0].cost] * len(starts)  # dos variantes
+    assert plan.metric == 4
+    check_metric(OVEN, problem, plan, tmp_path)
+
+
+def test_soft_constraints_with_deadlines(tmp_path: Path) -> None:
+    """Calentar y hornear lleva 15: 'within 12' no se puede cumplir."""
+    problem = oven(
+        "(baked)",
+        "minimize (+ (* 5 (is-violated quick)) (* 2 (is-violated slow)))",
+        "(and (preference quick (within 12 (baked))) (preference slow (within 20 (baked))))",
+    )
+    _, plan = temporal_plan(problem)
+    assert plan.metric == 5 and plan.violated == ("quick",)
+    check_metric(OVEN, problem, plan, tmp_path)
+
+
+def test_maximized_temporal_metrics(tmp_path: Path) -> None:
+    problem = oven(
+        "(and (baked) (preference tidy (cleaned)))", "maximize (- 6 (* 6 (is-violated tidy)))"
+    )
+    _, plan = temporal_plan(problem)
+    assert plan.metric == 6
+    check_metric(OVEN, problem, plan, tmp_path)
+
+
+def test_total_time_is_reported_but_not_optimized(tmp_path: Path) -> None:
+    problem = oven(
+        "(and (baked) (preference tidy (cleaned)))",
+        "minimize (+ (* 3 (is-violated tidy)) (total-time))",
+    )
+    task, plan = temporal_plan(problem)
+    assert any("total-time" in note for note in task.notes)
+    assert plan.makespan is not None and plan.metric == pytest.approx(plan.makespan)
+    check_metric(OVEN, problem, plan, tmp_path)
+    domain = load_domain(parse_domain(OVEN))
+    result = solve(
+        domain, load_problem(parse_problem(problem), domain), [PRESETS["astar-blind"]], 10
+    )
+    assert result.search.lower_bound is None  # sin demostrar que sea óptimo
+
+
+def test_the_final_phase_waits_for_running_actions() -> None:
+    """'_end' exige además que no quede ninguna acción durativa en curso."""
+    problem = oven("(hot)", "minimize (* 3 (is-violated tidy))", init="")
+    problem = problem.replace("(:goal (hot))", "(:goal (and (hot) (preference tidy (cleaned))))")
+    task, plan = temporal_plan(problem)
+    preferences = task.preferences
+    assert preferences is not None and isinstance(task, TemporalTask)
+    for index in preferences.end_actions:
+        assert set(task.actions[index].neg_facts) >= {d.running for d in task.durative}
+    assert all(s.duration is not None for s in plan.steps)  # todas terminan
+
+
+def test_over_all_preferences_are_not_supported() -> None:
+    domain = OVEN.replace(
+        "(preference early (at start (not (cleaned))))",
+        "(preference early (over all (not (cleaned))))",
+    )
+    with pytest.raises(UnsupportedFeatureError, match="over all"):
+        build(domain, oven("(baked)", "minimize (is-violated early)"))
 
 
 # --- Monitores blandos ---------------------------------------------------------------

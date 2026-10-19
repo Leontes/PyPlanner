@@ -752,10 +752,10 @@ class _Context:
 
     def timed_literal(self, node: JSON, path: str, scope: _Scope) -> TimedLiteral:
         assert self.domain is not None
-        if ":durative-actions" not in self.domain.requirements:
+        if not {":durative-actions", ":time"} & set(self.domain.requirements):
             self.fail(
                 "los literales iniciales temporizados solo tienen sentido en un dominio "
-                "temporal (:durative-actions)",
+                "temporal (:durative-actions o :time)",
                 node,
                 path,
             )

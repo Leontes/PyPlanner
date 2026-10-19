@@ -130,8 +130,9 @@ cada paso. El código está en `grounding/temporal.py`.
 
 - **Compilación.** Cada acción durativa `a` da dos acciones clásicas y un hecho
   `running@a`:
-  - `a@start`: condiciones `at start` y `¬running@a` (una instancia no se solapa consigo
-    misma); efectos `at start` y `running@a`;
+  - `a@start`: condiciones `at start`, los literales `over all` que sus efectos de inicio
+    no pueden tocar (la **guarda de inicio**, ver abajo) y `¬running@a` (una instancia
+    no se solapa consigo misma); efectos `at start` y `running@a`;
   - `a@end`: condiciones `at end` y `over all`, y `running@a`; efectos `at end` y
     `¬running@a`.
 
@@ -139,6 +140,25 @@ cada paso. El código está en `grounding/temporal.py`.
   reutiliza tal cual: grounder, normalización ADL y numérica, sucesores compilados y
   *h^hbd* (Python, Numba y PyTorch) sobre la tarea de inicios y fines. Las acciones
   instantáneas del dominio conviven con las durativas.
+- **Guarda de inicio** (trabajo opcional, punto 4). Un literal `over all` que los efectos
+  de inicio no pueden tocar (otro predicado, o argumentos que por sus tipos no pueden ser
+  los mismos objetos; ni derivado) vale justo después de empezar lo mismo que antes: si no
+  se cumple, el inicio rompe al instante su propia invariante y se descarta. Exigirlo ya en
+  `a@start` no cambia la semántica, pero el grounding deja de instanciar inicios que nunca
+  pueden terminar. Antes, en satellite `take_image` tenía todas sus condiciones en
+  `over all`, así que su inicio se instanciaba para cada satélite, dirección, instrumento
+  y modo: p17 tenía 57 916 hechos (casi todos `running@a`) y llegaba a 957 MB. Ahora tiene
+  11 262 y 138 MB, con las mismas acciones. En las preferencias temporales de la IPC 2006,
+  storage p06 y pathways p08 agotaban 3 GB al instanciar. En el motor discretizado, la
+  guarda excluye además lo que cambian los eventos, que se disparan en el mismo instante.
+
+  La guarda va en la precondición de `a@start`, así que la ven la búsqueda (deja de
+  generar inicios que la invariante descartaría) y la heurística (pide las condiciones
+  `over all` ya al empezar, como POPF y TFD). Cambia la trayectoria de casi todas las
+  búsquedas. Se probó a quitarla de la relajación: con el mismo orden de sucesores, BFWS
+  hacía exactamente las búsquedas de antes, pero con las preferencias temporales el
+  portfolio resolvía 3 instancias menos (con planes algo mejores). Ver las medidas en
+  [Rendimiento medido](#trabajo-opcional-huecos-de-cobertura).
 - **Estado temporal.** Un `State` (hechos y valores) con una línea temporal adjunta. Se
   compara solo por la parte lógica (memoización al estilo de POPF), así que la detección
   de repetidos funciona como en la planificación clásica. Es incompleta: un estado
@@ -184,7 +204,8 @@ cada paso. El código está en `grounding/temporal.py`.
   defecto 0,01), así que con ε = 0,001 (el valor de POPF) solo valida con
   `Validate -t 0.001`. Con 0,01 el plan vale con la configuración por defecto, a cambio de
   0,01 unidades por dependencia.
-- **Métrica.** Solo `(:metric minimize (total-time))`: su valor es la duración total. La
+- **Métrica.** Solo `(:metric minimize (total-time))`, salvo con preferencias (ver
+  "Preferencias y búsqueda anytime"): su valor es la duración total. La
   búsqueda cuenta pasos (coste unitario); no optimiza la duración.
 - **Salida.** `t: (acción args) [d]` en IPC, con `; makespan = …`; en JSON, `time` y
   `duration` en cada paso y `makespan` en el plan.
@@ -479,9 +500,32 @@ alcanzar el límite de memoria.
   un segundo, con cualquier portfolio. Las métricas coinciden con las de VAL. Resultados
   en `benchmarks/preferences/storage` en
   [Rendimiento medido](#iteración-5c-preferencias-y-búsqueda-anytime).
-- **Límites.** Las preferencias en tareas temporales todavía no se admiten (error claro).
-  VAL calcula mal las preferencias del objetivo si el problema tiene una sección
-  `(:constraints (and))` vacía.
+- **Métricas que se maximizan** (trabajo opcional, punto 4): maximizar es minimizar la
+  negación. Los costes son los de la negación y la métrica del plan se informa con su
+  signo: `(maximize (+ (* 9.9 (- 1 (is-violated d1))) …))` es minimizar el peso 9,9 de
+  `d1`. Si así algún peso o coste queda negativo, el error (o el coste unitario) es el de
+  siempre.
+- **En tareas temporales** (trabajo opcional, punto 4): la tarea de inicios y fines se
+  compila igual (fase final, monitores blandos con las marcas de instante de la 5b,
+  variantes de las acciones), con estos cambios:
+  - las preferencias de una condición `at start` o `at end` de una acción durativa son
+    preferencias de la precondición de su acción de inicio o de fin; las de `over all`
+    no se admiten (error claro);
+  - las acciones de la fase final no son pasos de la red temporal (no alargan el plan), y
+    `_end` exige además que no quede ninguna acción durativa en curso;
+  - el orden de los pasos que cambian algo que vigila un monitor (5b) se calcula con un
+    índice de hechos y variables vigilados hacia sus monitores, calculado una vez. Antes
+    se recorrían todos los monitores para cada acción: en storage p10 (4139 monitores y
+    9546 acciones) eran 25 s de los 26 del grounding, y ahora es 1,3 s en total, con las
+    mismas órdenes;
+  - `total-time` en una métrica con preferencias es la duración del plan, que no es un
+    coste de acción: la búsqueda no la optimiza (nota) y la métrica del plan la suma con
+    su peso. Sin preferencias, la métrica de una tarea temporal sigue siendo solo
+    `(minimize (total-time))`.
+- **Límites.** VAL calcula mal las preferencias del objetivo si el problema tiene una
+  sección `(:constraints (and))` vacía; un `sometime-before` con una comparación numérica
+  estricta (`(> x 0)`) le parece incumplido siempre; y en pathways (IPC 2006) da p0a por
+  incumplida pero no suma su peso a la métrica.
 
 ## Procesos y eventos (iteración 6b)
 
@@ -545,9 +589,33 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
   el combustible justo al final de una espera larga quedaba en −10⁻⁹.
 - **Sin plan:** agotar la búsqueda no demuestra nada (con un δ menor podría haber plan):
   termina con `failed`.
-- **Límites** (error claro): literales iniciales temporizados, restricciones de
-  trayectoria y preferencias con procesos y eventos; efectos condicionales que dependen de
-  condiciones `over all` y efectos continuos condicionales en las acciones durativas.
+- **Literales iniciales temporizados** (trabajo opcional, punto 4): son eventos de un
+  reloj global, `til@clock`, que avanza a ritmo 1, así que se disparan en su instante
+  exacto. Una espera que termina justo en el instante de un TIL deja pasar además ε: VAL
+  no admite que una acción lea un hecho en el mismo instante en que un TIL lo cambia.
+- **Restricciones de trayectoria** (trabajo opcional, punto 4): los monitores de la 5b.
+  Los instantes de `within`, `hold-after` y `hold-during` son eventos del mismo reloj (TIL
+  sin literales). Como VAL, se comprueban en los *happenings*: tras cada acción, y tras una
+  espera solo si un evento o un TIL han cambiado los hechos. El final de una espera en la
+  que no pasa nada no es un *happening*: comprobarlas también ahí daba por buenos planes
+  que VAL rechaza (un `within` que se cumple en mitad de una espera). La espera hasta el
+  siguiente cambio también pasa por los monitores.
+- **Efectos condicionales en las acciones durativas** (trabajo opcional, punto 4). Con
+  condiciones `over all`, un vigilante como el de la 3b: se activa al empezar si se
+  cumplen sus condiciones y se apaga en cuanto la condición `over all` deja de cumplirse.
+  Durante una espera, los hechos solo cambian con los eventos, en su instante exacto, y ahí
+  se comprueba: un evento que rompe la condición apaga el vigilante aunque otro la
+  recupere antes del final de la espera. Un efecto continuo condicional se decide al
+  empezar (como en la 3b, solo puede depender de condiciones `at start`): un hecho
+  `rate@a@k` recuerda si la condición se cumplía, y un proceso aparte, `a#k@run`, aplica el
+  ritmo mientras la acción sigue en curso.
+- **Preferencias** (trabajo opcional, punto 4): como en la 5c, compiladas en costes. La
+  fase final (`_end`, `_collect`, `_forgo`) va detrás de las esperas y queda fuera del
+  tiempo: no deja pasar ε ni dispara eventos. `_end` exige además que no haya acciones
+  durativas en curso. La métrica ya no es la duración: cada espera cuesta lo que un paso.
+  Las restricciones-preferencia son los monitores blandos de la 5c, también en los
+  *happenings*.
+- **Límites** (error claro): `always-within` con procesos y eventos.
 
 ## Heurística con procesos y eventos (iteración 6c)
 
@@ -1480,3 +1548,65 @@ híbrido 6 → 10, la perezosa con exploración por tipos 6 → 8 (pierde p10) y
 `tff`). Con los anteriores, los de 1, 4 y 5–7 núcleos pasaban de 6, 9 y 9 a 8, 11 y 12, y
 con la perezosa también en `tff` el de 2 habría bajado de 9 a 8. En las demás tareas la
 búsqueda es la misma.
+
+### Trabajo opcional: huecos de cobertura
+
+Medido el 2026-10-19 con `medidas/medir-guarda.sh` (local): 60 s y 1,5 GB por búsqueda, 4
+procesos, con `bfws-tff-pref`, `lazy-ff-lm-pref-tb` y `lazy-ff-pref` (los tres primeros
+miembros de los portfolios).
+
+**Grounding con la guarda de inicio.** Las mismas acciones, sin los inicios que nunca
+pueden terminar:
+
+| Instancia | Antes | Con la guarda |
+|-----------|-------|---------------|
+| satellite p17 (TIL) | 5,8 s · 957 MB · 57 916 hechos | 1,7 s · 138 MB · 11 262 hechos |
+| satellite p20 (TIL) | 5,3 s · 800 MB · 54 032 hechos | 2,0 s · 156 MB · 11 804 hechos |
+| storage p06 (preferencias) | 14,9 s · 3,1 GB · 92 216 hechos | 1,5 s · 2228 hechos |
+| storage p10 (preferencias) | con la guarda sin tipos: 25,6 s · 26 845 hechos | 1,3 s · 9565 hechos (con el índice de los monitores) |
+| pathways p08 (preferencias) | no cabía en 3 GB | 0,6 s · 371 hechos |
+
+**Tareas temporales, main (v0.7) frente a la rama** (resueltas por cada miembro):
+
+| Colección | main | Rama | Alguna |
+|-----------|------|------|--------|
+| satellite con TIL (20) | 6 / 6 / 6 | 6 / 6 / 5 | 9 → 9 |
+| driverlog (17) | 16 / 15 / 15 | 16 / 15 / 14 | 16 → 16 |
+| zenotravel (17) | 17 / 16 / 17 | 17 / 16 / 16 | 17 → 17 |
+
+La guarda cambia la heurística, así que cambia la trayectoria: las perezosas ganan 4
+búsquedas y pierden 7 (en satellite, p02 pasa de no resolverse a 108 expansiones, y p04 de
+4098 a no resolverse). En satellite, las búsquedas que resuelven las dos tardan 25 s en
+lugar de 125 s, casi todo por el grounding; en driverlog y zenotravel, 88 y 191 s en
+lugar de 76 y 181 (otras trayectorias). Ninguna instancia deja de resolverse con el
+portfolio.
+
+**Preferencias en tareas temporales** (IPC 2006, *complex*; ver `benchmarks/README.md`):
+
+| Colección | Resueltas (bfws / lazy-lm / lazy) | Alguna | Métrica distinta de VAL |
+|-----------|-----------------------------------|--------|-------------------------|
+| storage (20) | 15 / 16 / 16 | 16 | 0 de 47 |
+| trucks (20) | 20 / 19 / 20 | 20 | 0 de 59 |
+| tpp (20) | 8 / 7 / 7 | 8 | 22 de 22 |
+| pathways (20) | 20 / 20 / 20 | 20 | 60 de 60 |
+| pipesworld (18) | 16 / 9 / 7 | 16 | 0 de 32 |
+
+Todos los planes son válidos. Las métricas distintas de las de VAL son errores de VAL:
+evalúa el `>` estricto de las restricciones de trayectoria como `>=`, así que da por
+cumplida `(sometime (> x 0))` aunque x siga en 0, y por incumplida
+`(sometime-before (> a 0) (> b 0))` desde el principio. Todas las de tpp y pathways
+usan esas comparaciones. Además, en pathways p01 VAL da p0A por incumplida pero no suma su
+peso. En pathways, todos los planes son vacíos: el objetivo duro se cumple al principio, y
+cumplir las preferencias del objetivo cuesta más (cada molécula elegida suma 1 a la
+métrica) de lo que pesan.
+
+Variantes descartadas:
+
+- **La guarda solo en la búsqueda** (la heurística sin ella, y el orden de los sucesores
+  de antes): BFWS hace las mismas búsquedas que main, pero el portfolio resuelve 77
+  preferencias temporales en lugar de 80 (pierde tpp p07 y p09 y pipesworld p16), con
+  mejor métrica en 17 de las 61 que resuelven las dos y peor en 6. Se eligió la cobertura.
+- Al medirla apareció un fallo: la copia a coste unitario del primer plan de la búsqueda
+  *anytime* no cambiaba los costes de la relajación cuando es otra tarea (las variables
+  lineales de la 3b), y la heurística guiaba con las milésimas por paso de las
+  preferencias. Arreglado (`GroundTask.with_unit_costs`).

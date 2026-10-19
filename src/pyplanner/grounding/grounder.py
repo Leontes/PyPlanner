@@ -72,6 +72,7 @@ from pyplanner.grounding.numeric import (
     Var,
     linear,
     make,
+    negate,
     remap,
     variables_of,
 )
@@ -157,20 +158,12 @@ def ground(domain: Domain, problem: Problem, delta: float | None = None) -> Grou
     if domain.processes or domain.events:
         from pyplanner.grounding.discrete import DELTA, ground_discrete
 
-        if _has_preferences(domain, problem):
-            raise UnsupportedFeatureError(
-                "el motor de búsqueda todavía no admite preferencias con procesos y eventos"
-            )
         return ground_discrete(domain, problem, DELTA if delta is None else delta)
     if domain.durative_actions or problem.timed_literals:
-        if _has_preferences(domain, problem):
-            raise UnsupportedFeatureError(
-                "el motor de búsqueda todavía no admite preferencias en tareas temporales"
-            )
         from pyplanner.grounding.temporal import ground_temporal
 
         try:
-            return ground_temporal(domain, problem, _marker_times(domain, problem))
+            return ground_temporal(domain, problem, marker_times(domain, problem))
         except UnsupportedFeatureError as temporal_error:
             if not any(_has_continuous(a.effect) for a in domain.durative_actions):
                 raise
@@ -201,7 +194,7 @@ def _has_continuous(effect: object) -> bool:
     return False
 
 
-def _marker_times(domain: Domain, problem: Problem) -> frozenset[float]:
+def marker_times(domain: Domain, problem: Problem) -> frozenset[float]:
     """Instantes de las restricciones con tiempo (``within``, ``hold-after`` y
     ``hold-during``), que en una tarea temporal son TIL sin literales."""
     times: set[float] = set()
@@ -220,7 +213,8 @@ def _marker_times(domain: Domain, problem: Problem) -> frozenset[float]:
     return frozenset(times)
 
 
-def _has_preferences(domain: Domain, problem: Problem) -> bool:
+def has_preferences(domain: Domain, problem: Problem) -> bool:
+    """``True`` si el dominio o el problema tienen alguna preferencia."""
     nodes = [
         problem.goal,
         problem.constraints,
@@ -300,7 +294,7 @@ def ground_with_context(
         static_functions,
         {k: v for k, v in initial_values.items() if k[0] in static_functions},
     )
-    metric = _MetricModel(problem, normalizer, initial_values)
+    metric = _MetricModel(problem, normalizer, initial_values, temporal=time_markers is not None)
     goal_formula, goal_sites = split_preferences(problem.goal)
     schemas = [_Schema(action) for action in domain.actions]
     # Cada regla de un predicado derivado, como un esquema que "añade" su cabeza. Los
@@ -316,7 +310,7 @@ def ground_with_context(
         )
         for i, rule in enumerate(domain.derived)
     ]
-    weights = metric.preference_weights(_has_preferences(domain, problem))
+    weights = metric.preference_weights(has_preferences(domain, problem))
 
     reachable: dict[str, set[tuple[str, ...]]] = {}
     reached: set[Fact] = set()
@@ -486,6 +480,8 @@ def ground_with_context(
         variables=tuple(FluentTerm(f, tuple(Constant(a) for a in args)) for f, args in variables),
         metric_is_cost=metric_is_cost,
         metric_offset=metric.offset if metric_is_cost else None,
+        metric_sign=metric.sign,
+        metric_time_weight=metric.time_weight if metric.temporal else 0.0,
         notes=tuple(notes),
         axioms=axioms,
     )
@@ -1530,30 +1526,48 @@ class _MetricModel:
 
     Los términos ``(is-violated p)`` dan el peso de cada preferencia (ver
     :meth:`preference_weights`).
+
+    Maximizar una métrica es minimizar su negación: los costes y ``offset`` son los de la
+    negación, y ``sign`` (−1) devuelve el valor de la métrica original.
+
+    En una tarea temporal (``temporal``), ``total-time`` es la duración del plan, que no es
+    la suma de lo que aporta cada acción: no entra en los costes (no se optimiza), y la
+    métrica del plan la suma con ``time_weight``.
     """
 
     def __init__(
-        self, problem: Problem, normalizer: Normalizer, values: Mapping[Fact, float]
+        self,
+        problem: Problem,
+        normalizer: Normalizer,
+        values: Mapping[Fact, float],
+        temporal: bool = False,
     ) -> None:
         self.active = False
         self.offset: float | None = None
         self.notes: list[str] = []
         self.weights: dict[Fact, float] = {}
         self.time_weight = 0.0
+        self.sign = 1.0
+        self.temporal = temporal
         self._preferences: dict[str, float] = {}
         self._metric = metric = problem.metric
         if metric is None:
             return
-        if metric.direction != "minimize":
-            self.notes.append("la métrica se maximiza: se busca con coste unitario")
-            return
         expression = self._expression(metric.expression, normalizer)
+        if expression is not None and metric.direction == "maximize":
+            expression = negate(expression)
+            self.sign = -1.0
         form = linear(expression) if expression is not None else None
         if form is None:
             self.notes.append("la métrica no es lineal: se busca con coste unitario")
             return
         self.weights = dict(form.terms)
         self.time_weight = self.weights.pop(_TOTAL_TIME, 0.0)
+        if temporal and self.time_weight:
+            self.notes.append(
+                "la duración del plan (total-time) no se optimiza: la búsqueda minimiza el "
+                "resto de la métrica, y la del plan la incluye"
+            )
         self._preferences = {
             key[1][0]: self.weights.pop(key) for key in list(self.weights) if key[0] == _VIOLATED
         }
@@ -1581,7 +1595,7 @@ class _MetricModel:
             return {}
         if not self.active:
             raise UnsupportedFeatureError(
-                "con preferencias, la métrica tiene que ser una expresión lineal que se minimiza"
+                "con preferencias, la métrica tiene que ser una expresión lineal"
             )
         for name, weight in self._preferences.items():
             if weight < 0:
@@ -1607,7 +1621,7 @@ class _MetricModel:
         """Contribución de una acción a la métrica, o ``None`` si no es constante."""
         if not self.active:
             return 1.0
-        total = self.time_weight
+        total = 0.0 if self.temporal else self.time_weight
         for effect in effects:
             for assignment in effect.numeric:
                 weight = self.weights.get(assignment.variable)

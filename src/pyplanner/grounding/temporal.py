@@ -3,8 +3,9 @@
 **Compilación en acciones de inicio y fin.** Cada acción durativa ``a`` se convierte, a
 nivel de AST, en dos acciones clásicas (*snap actions*) y un hecho ``running@a``:
 
-* ``a@start``: precondición = condiciones ``at start`` y ``¬running@a`` (una instancia no se
-  solapa consigo misma); efectos = efectos ``at start`` y ``running@a``;
+* ``a@start``: precondición = condiciones ``at start``, los literales ``over all`` que los
+  efectos de inicio no tocan (ver :func:`_start_guard`) y ``¬running@a`` (una instancia no
+  se solapa consigo misma); efectos = efectos ``at start`` y ``running@a``;
 * ``a@end``: precondición = condiciones ``at end`` y ``over all``, y ``running@a``; efectos =
   efectos ``at end`` y ``¬running@a``.
 
@@ -83,14 +84,19 @@ y condiciones de efectos condicionales sobre variables lineales, expresiones no 
 """
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from typing import TYPE_CHECKING
 
 from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding import temporal_lp
-from pyplanner.grounding.grounder import Binding, GroundingContext, ground_with_context
+from pyplanner.grounding.grounder import (
+    Binding,
+    GroundingContext,
+    ground_with_context,
+    has_preferences,
+)
 from pyplanner.grounding.numeric import (
     Const,
     NumericAssignment,
@@ -102,14 +108,24 @@ from pyplanner.grounding.numeric import (
     linear,
     variables_of,
 )
-from pyplanner.grounding.task import Condition, GroundAction, GroundTask, State, bits, mask_of
+from pyplanner.grounding.task import (
+    Condition,
+    GroundAction,
+    GroundTask,
+    State,
+    bits,
+    mask_of,
+    unit_costs,
+)
 
 if TYPE_CHECKING:
     from pyplanner.grounding.monitors import Monitor
+    from pyplanner.grounding.preferences import PreferenceModel
 from pyplanner.grounding.temporal_lp import LinearModel, LinearState
 from pyplanner.loader.ast import (
     ALL,
     END,
+    OBJECT,
     START,
     Action,
     And,
@@ -129,6 +145,7 @@ from pyplanner.loader.ast import (
     DurativeForallEffect,
     DurativeWhen,
     Effect,
+    Equals,
     Exists,
     Expression,
     FluentTerm,
@@ -147,6 +164,7 @@ from pyplanner.loader.ast import (
     TimedCondition,
     TimedEffect,
     TotalTime,
+    Variable,
     When,
 )
 
@@ -208,7 +226,9 @@ class _Compiled:
     watches: tuple[_Watch, ...] = ()
 
 
-def _compile(action: DurativeAction, changing: frozenset[str]) -> tuple[_Compiled, list[Predicate]]:
+def _compile(
+    action: DurativeAction, changing: frozenset[str], domain: Domain
+) -> tuple[_Compiled, list[Predicate]]:
     """Compila una acción durativa. ``changing``: funciones que alguna acción modifica."""
     name = action.name
     parameters = action.parameters
@@ -237,10 +257,11 @@ def _compile(action: DurativeAction, changing: frozenset[str]) -> tuple[_Compile
         return And(tuple(replaced))  # type: ignore[arg-type]
 
     invariant = conjunction(conditions[ALL]) if conditions[ALL] else None
+    guard = _start_guard(action, conditions[ALL], effects[START], domain, domain.derived_predicates)
     start = Action(
         f"{name}@start",
         parameters,
-        And((conjunction(conditions[START]), Not(running_atom))),
+        And((conjunction(conditions[START]), *guard, Not(running_atom))),
         And((conjunction(effects[START]), running_atom)),
     )
     end_pre: list[Formula] = [conjunction(conditions[END]), running_atom]
@@ -267,6 +288,98 @@ def _compile(action: DurativeAction, changing: frozenset[str]) -> tuple[_Compile
         duration, tuple(watches),
     )  # fmt: skip
     return compiled, [running, *flags]
+
+
+def _start_guard(
+    action: DurativeAction,
+    over_all: Sequence[Formula],
+    start_effects: Sequence[Effect],
+    domain: Domain,
+    excluded: Iterable[str] = (),
+) -> list[Formula]:
+    """Los literales de las condiciones ``over all`` que se exigen ya al empezar: los que
+    los efectos de inicio de la acción no pueden tocar (de otro predicado, o con argumentos
+    que no pueden ser los mismos objetos por sus tipos) y cuyo predicado no está en
+    ``excluded`` (los derivados, que dependen de otros hechos, y en el motor discretizado
+    los que cambian los eventos). Justo después de empezar valen lo mismo que antes, así que
+    un inicio que los incumple rompería al instante su propia invariante y se descartaría:
+    exigirlos al empezar no cambia la semántica, pero el grounding ya no instancia esos
+    inicios. En pathways, la reacción (estática) va en ``over all`` y las condiciones ``at
+    start`` son numéricas: se instanciaban los inicios de todas las ternas de moléculas, y
+    p08 agotaba 3 GB.
+
+    La guarda va en la acción de inicio, así que la ven la búsqueda (que deja de generar
+    inicios que la invariante descartaría) y la heurística (que pide las condiciones 'over
+    all' ya al empezar, como POPF y TFD). Quitarla de la relajación daba las mismas
+    búsquedas que sin guarda, pero con las preferencias temporales de la IPC 2006 el
+    portfolio resolvía 77 de 98 en lugar de 80 (con planes algo mejores)."""
+    scope = {p.name: p.types for p in action.parameters}
+    excluded = frozenset(excluded)
+    written = [w for e in start_effects for w in _effect_atoms(e, scope)]
+
+    def touched(atom: Atom) -> bool:
+        return atom.predicate in excluded or any(
+            _may_match(atom, scope, other, other_scope, domain) for other, other_scope in written
+        )
+
+    guard: list[Formula] = []
+    pending = list(over_all)
+    while pending:
+        formula = pending.pop(0)
+        if isinstance(formula, And):
+            pending[:0] = formula.args  # type: ignore[assignment]
+            continue
+        atom = formula.arg if isinstance(formula, Not) else formula
+        if isinstance(atom, Equals) or isinstance(atom, Atom) and not touched(atom):
+            guard.append(formula)
+    return guard
+
+
+Scope = Mapping[str, tuple[str, ...]]
+
+
+def _effect_atoms(effect: Effect, scope: Scope) -> Iterator[tuple[Atom, Scope]]:
+    """Los átomos que añade o borra un efecto (también los condicionales), con los tipos de
+    las variables que ven (las de la acción y las de los ``forall`` que los rodean)."""
+    if isinstance(effect, Atom):
+        yield effect, scope
+    elif isinstance(effect, Not):
+        yield from _effect_atoms(effect.arg, scope)  # type: ignore[arg-type]
+    elif isinstance(effect, And):
+        for arg in effect.args:
+            yield from _effect_atoms(arg, scope)  # type: ignore[arg-type]
+    elif isinstance(effect, When):
+        yield from _effect_atoms(effect.arg, scope)
+    elif isinstance(effect, ForallEffect):
+        inner = {**scope, **{p.name: p.types for p in effect.parameters}}
+        yield from _effect_atoms(effect.arg, inner)
+
+
+def _effect_predicates(effect: Effect) -> Iterator[str]:
+    """Los predicados que añade o borra un efecto (también los condicionales)."""
+    return (atom.predicate for atom, _ in _effect_atoms(effect, {}))
+
+
+def _may_match(first: Atom, first_scope: Scope, second: Atom, second_scope: Scope,
+               domain: Domain) -> bool:  # fmt: skip
+    """``False`` si los dos átomos no pueden ser el mismo hecho: otro predicado, otra
+    constante o variables de tipos sin objetos en común."""
+    if first.predicate != second.predicate:
+        return False
+    for a, b in zip(first.args, second.args, strict=False):
+        if isinstance(a, Constant) and isinstance(b, Constant):
+            if a.name != b.name:
+                return False
+        elif isinstance(a, Variable) and isinstance(b, Variable):
+            types_a = first_scope.get(a.name, (OBJECT,))
+            types_b = second_scope.get(b.name, (OBJECT,))
+            if not any(
+                x in domain.supertypes(y) or y in domain.supertypes(x)
+                for x in types_a
+                for y in types_b
+            ):
+                return False
+    return True
 
 
 def _duration_value(
@@ -310,7 +423,14 @@ def _split_condition(condition: DurativeCondition) -> dict[str, list[Formula]]:
             for time, formulas in _split_condition(arg).items():  # type: ignore[arg-type]
                 parts[time].extend(formulas)
     elif isinstance(condition, Preference):
-        raise UnsupportedFeatureError("el motor temporal todavía no admite preferencias")
+        # Una preferencia sobre una condición de un momento es una preferencia de la
+        # precondición de su acción de inicio o de fin.
+        inner = condition.arg
+        if not isinstance(inner, TimedCondition) or inner.time == ALL:
+            raise UnsupportedFeatureError(
+                "el motor temporal todavía no admite preferencias sobre condiciones 'over all'"
+            )
+        parts[inner.time].append(Preference(condition.name, inner.arg))
     else:  # DurativeForall: el cuantificador se reparte entre los momentos
         for time, formulas in _split_condition(condition.arg).items():
             if formulas:
@@ -737,6 +857,16 @@ class TemporalTask(GroundTask):
     til_times: tuple[float, ...] = ()
     til_done_mask: int = 0
 
+    def with_unit_costs(self) -> "TemporalTask":
+        """Como en :class:`GroundTask`, también con las acciones de la relajación: si no, la
+        heurística del primer plan de la búsqueda *anytime* seguiría con los costes de la
+        métrica (las milésimas por paso de las preferencias) y guiaría casi a ciegas."""
+        return replace(
+            self,
+            actions=unit_costs(self.actions),
+            relaxation_actions=unit_costs(self.relaxation_actions),
+        )
+
     @cached_property
     def relaxation(self) -> GroundTask:
         """La tarea sobre la que se calcula la heurística."""
@@ -806,10 +936,17 @@ class TemporalTask(GroundTask):
 
     def apply(self, state: State, action: GroundAction) -> "TemporalState | None":
         """Aplica un paso: el efecto clásico, las invariantes de las acciones en curso y la
-        red temporal. ``None`` si alguna falla."""
+        red temporal. ``None`` si alguna falla.
+
+        Las acciones de la fase final de las preferencias no son pasos del plan: no cambian
+        la línea temporal."""
         successor = action.apply(state)
         if successor is None:
             return None
+        preferences = self.preferences
+        if preferences is not None and action.index >= preferences.first_auxiliary:
+            timeline = state.timeline if isinstance(state, TemporalState) else Timeline()
+            return TemporalState(successor.facts, successor.values, timeline=timeline)
         if self.axioms:
             successor = self.axiom_evaluator.evaluate(successor)
         if self.monitors:
@@ -1081,7 +1218,10 @@ class TemporalTask(GroundTask):
 
     def schedule(self, plan: Sequence[int]) -> tuple[list[TemporalStep], float]:
         """Planificación de un plan (índices de acciones): los pasos ordenados por tiempo y
-        la duración total. El plan tiene que ser válido."""
+        la duración total. El plan tiene que ser válido. La fase final de las preferencias,
+        al final del plan, no son pasos: no cuenta."""
+        if self.preferences is not None:
+            plan = self.preferences.plan_actions(plan)
         state: State = self.init
         for index in plan:
             successor = self.apply(state, self.actions[index])
@@ -1165,7 +1305,7 @@ def ground_temporal(
     compiled: list[_Compiled] = []
     predicates: list[Predicate] = []
     for durative_action in domain.durative_actions:
-        item, extra = _compile(durative_action, changing)
+        item, extra = _compile(durative_action, changing, domain)
         compiled.append(item)
         predicates.extend(extra)
     duration_functions = tuple(c.duration for c in compiled if c.duration is not None)
@@ -1194,12 +1334,19 @@ def ground_temporal(
         {c.effect.fluent.function for item in compiled for c in item.continuous}
         | {f.name for f in duration_functions}
     )
-    # La métrica temporal (total-time) no es aditiva: se busca con coste unitario.
+    # La métrica temporal (total-time) no es aditiva: se busca con coste unitario. Con
+    # preferencias, sus pesos son costes, y el grounder deja fuera total-time (ver
+    # _MetricModel): la búsqueda minimiza el resto de la métrica.
     # Los instantes de las restricciones con tiempo son TIL sin literales: su hecho
     # til-done@k marca que el instante ya ha pasado (ver pyplanner.grounding.monitors).
     markers = {time: f"til-done@{til_times.index(time)}" for time in marker_times}
+    preferences = has_preferences(domain, problem)
     task, context = ground_with_context(
-        snap_domain, replace(problem, metric=None), extra_reads, extra_targeted, markers
+        snap_domain,
+        problem if preferences else replace(problem, metric=None),
+        extra_reads,
+        extra_targeted,
+        markers,
     )
 
     by_name = {item.action.name: item for item in compiled}
@@ -1255,10 +1402,15 @@ def ground_temporal(
         )
 
     kept: list[tuple[GroundAction, int, int]] = []  # (acción, tipo, acción durativa)
+    renumbered: dict[int, int] = {}  # índice en task.actions → índice en kept
     for action in task.actions:
         base, _, kind = action.name.partition("@")
+        renumbered[action.index] = len(kept)
         if action.name.startswith(_TIL):
-            kept.append((replace(action, index=len(kept), cost=0.0), TIL_SNAP, -1))
+            # Un TIL no cuesta nada (no es una decisión del plan); con preferencias, el coste
+            # de un paso, que la métrica descuenta a todos (ver PreferenceModel.metric).
+            cost = task.preferences.step_cost if task.preferences is not None else 0.0
+            kept.append((replace(action, index=len(kept), cost=cost), TIL_SNAP, -1))
         elif not kind:
             kept.append((replace(action, index=len(kept)), INSTANT, -1))
         elif (base, action.args) in instance_of:
@@ -1270,7 +1422,11 @@ def ground_temporal(
     linear_model, actions, relaxation, instances = _linear_parts(
         kept, instances, duration_vars, task.init.values
     )
+    model = task.preferences
+    if model is not None:
+        model, actions = _final_phase(model, renumbered, actions, (d.running for d in instances))
     snaps_info = []
+    watch = _MonitorWatch.build(task.monitors, support) if task.monitors else None
     for original, (_, kind_code, durative_index) in zip((a for a, _, _ in kept), kept, strict=True):
         instance = instances[durative_index] if durative_index >= 0 else None
         rate_vars = tuple(r.variable for r in instance.continuous) if instance else ()
@@ -1279,8 +1435,8 @@ def ground_temporal(
             info = replace(info, time=til_times[int(original.name.removeprefix(_TIL))])
         if support:
             info = replace(info, reads=tuple(sorted(_expand_derived(set(info.reads), support))))
-        if task.monitors:
-            info = _monitor_orders(info, original, task.monitors, support)
+        if watch is not None:
+            info = watch.orders(info, original)
         snaps_info.append(info)
     if linear_model is not None:
         for axiom in task.axioms:
@@ -1308,7 +1464,7 @@ def ground_temporal(
         and metric.direction == "minimize"
         and isinstance(metric.expression, TotalTime)
     )
-    if metric is not None and not is_makespan:
+    if metric is not None and not is_makespan and model is None:
         notes.append(
             "en planificación temporal solo se usa la métrica (minimize (total-time)); "
             "esta se ignora"
@@ -1325,7 +1481,12 @@ def ground_temporal(
         notes=tuple(notes),
         durative=tuple(instances),
         snaps=tuple(snaps_info),
-        metric_is_makespan=is_makespan,
+        metric_is_makespan=is_makespan and model is None,
+        metric_is_cost=task.metric_is_cost,
+        metric_offset=task.metric_offset,
+        metric_sign=task.metric_sign,
+        metric_time_weight=task.metric_time_weight,
+        preferences=model,
         linear=linear_model,
         relaxation_actions=tuple(relaxation),
         axioms=task.axioms,
@@ -1340,28 +1501,96 @@ def ground_temporal(
     )
 
 
-def _monitor_orders(
-    info: SnapInfo,
-    action: GroundAction,
-    monitors: tuple["Monitor", ...],
-    support: Mapping[int, frozenset[int]],
-) -> SnapInfo:
-    """Un paso que puede cambiar algo de lo que vigila un monitor lee y escribe sus hechos (y
-    lee lo vigilado), así que esos pasos quedan ordenados entre sí como en la secuencia: el
-    resultado de un monitor depende del orden en que cambian sus fórmulas."""
-    written = {*action.add_facts, *action.del_facts}
-    for effect in action.conditional:
-        written |= {*effect.add_facts, *effect.del_facts}
-    variables = {v.variable for v in action.numeric} | {
-        v.variable for effect in action.conditional for v in effect.numeric
-    }
-    reads, writes = set(info.reads), set(info.writes)
-    for monitor in monitors:
-        watched = _expand_derived(set(bits(monitor.mask)), support)
-        if written & watched or variables & set(monitor.variables):
-            reads |= watched | {-(v + 1) for v in monitor.variables} | set(monitor.facts)
-            writes |= set(monitor.facts)
-    return replace(info, reads=tuple(sorted(reads)), writes=tuple(sorted(writes)))
+def _final_phase(
+    model: "PreferenceModel",
+    new_index: dict[int, int],
+    actions: list[GroundAction],
+    running: Iterable[int],
+) -> tuple["PreferenceModel", list[GroundAction]]:
+    """La fase final de las preferencias en la tarea temporal (o con el tiempo
+    discretizado): sus índices entre las acciones que quedan (``new_index``: de los de la
+    tarea clásica a los de la temporal; la fase final siempre se queda), y ``_end`` exige
+    además que no haya ninguna acción durativa en curso (sus hechos ``running``, como el
+    objetivo de la tarea temporal)."""
+    end_actions = tuple(new_index[i] for i in model.end_actions)
+    running = tuple(running)
+    actions = list(actions)
+    for i in end_actions:
+        action = actions[i]
+        actions[i] = replace(action, neg_facts=tuple(sorted({*action.neg_facts, *running})))
+    model = replace(
+        model,
+        first_auxiliary=new_index[model.first_auxiliary]
+        if model.first_auxiliary in new_index
+        else len(actions),
+        end_actions=end_actions,
+        resolutions=tuple(
+            (tuple(new_index[i] for i in indices), weight, satisfied)
+            for indices, weight, satisfied in model.resolutions
+        ),
+    )
+    return model, actions
+
+
+@dataclass(frozen=True)
+class _MonitorWatch:
+    """Lo que vigila cada monitor (sus fórmulas, con los hechos derivados sustituidos por
+    aquello de lo que dependen) y, al revés, qué monitores vigilan cada hecho y cada
+    variable. Se calcula una vez: en storage p10 (4139 monitores y 9546 acciones), calcularlo
+    para cada acción llevaba 25 s."""
+
+    #: Por monitor: lo que lee un paso que puede cambiarlo (lo vigilado, sus variables con la
+    #: codificación de :class:`SnapInfo` y sus hechos) y lo que escribe (sus hechos).
+    reads: tuple[frozenset[int], ...]
+    writes: tuple[frozenset[int], ...]
+    by_fact: Mapping[int, tuple[int, ...]]
+    by_variable: Mapping[int, tuple[int, ...]]
+
+    @classmethod
+    def build(
+        cls, monitors: tuple["Monitor", ...], support: Mapping[int, frozenset[int]]
+    ) -> "_MonitorWatch":
+        reads, writes = [], []
+        by_fact: dict[int, list[int]] = {}
+        by_variable: dict[int, list[int]] = {}
+        for i, monitor in enumerate(monitors):
+            watched = _expand_derived(set(bits(monitor.mask)), support)
+            for fact in watched:
+                by_fact.setdefault(fact, []).append(i)
+            for variable in monitor.variables:
+                by_variable.setdefault(variable, []).append(i)
+            reads.append(
+                frozenset(watched | {-(v + 1) for v in monitor.variables} | set(monitor.facts))
+            )
+            writes.append(frozenset(monitor.facts))
+        return cls(
+            tuple(reads),
+            tuple(writes),
+            {k: tuple(v) for k, v in by_fact.items()},
+            {k: tuple(v) for k, v in by_variable.items()},
+        )
+
+    def orders(self, info: SnapInfo, action: GroundAction) -> SnapInfo:
+        """Un paso que puede cambiar algo de lo que vigila un monitor lee y escribe sus
+        hechos (y lee lo vigilado), así que esos pasos quedan ordenados entre sí como en la
+        secuencia: el resultado de un monitor depende del orden en que cambian sus
+        fórmulas."""
+        written = {*action.add_facts, *action.del_facts}
+        for effect in action.conditional:
+            written |= {*effect.add_facts, *effect.del_facts}
+        variables = {v.variable for v in action.numeric} | {
+            v.variable for effect in action.conditional for v in effect.numeric
+        }
+        touched: set[int] = set()
+        for fact in written:
+            touched.update(self.by_fact.get(fact, ()))
+        for variable in variables:
+            touched.update(self.by_variable.get(variable, ()))
+        reads, writes = set(info.reads), set(info.writes)
+        for i in touched:
+            reads |= self.reads[i]
+            writes |= self.writes[i]
+        return replace(info, reads=tuple(sorted(reads)), writes=tuple(sorted(writes)))
 
 
 def _timed_literal_actions(

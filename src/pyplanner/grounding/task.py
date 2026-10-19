@@ -29,7 +29,7 @@ del estado. :meth:`GroundTask.apply` los recalcula en cada sucesor (ver
 """
 
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -307,6 +307,11 @@ class GroundTask:
             (y minimizar el coste minimiza la métrica); ``False`` si el coste es 1.
         metric_offset: valor de la métrica en el estado inicial, si ``metric_is_cost``. El
             valor de la métrica de un plan es ``metric_offset`` más su coste.
+        metric_sign: 1 si la métrica se minimiza y −1 si se maximiza: los costes y
+            ``metric_offset`` son los de la métrica que se minimiza (su negación, si se
+            maximiza), y el valor de la original es ``metric_sign`` por el de esa.
+        metric_time_weight: en una tarea temporal, el peso de ``total-time`` (la duración del
+            plan) en la métrica que se minimiza; no está en los costes.
         notes: avisos del grounding (por ejemplo, por qué la métrica no se usa como coste).
         axioms: axiomas de los predicados derivados, ordenados por estrato.
         monitors: restricciones de trayectoria duras (PDDL 3), que se actualizan tras cada
@@ -328,6 +333,8 @@ class GroundTask:
     variables: tuple[FluentTerm, ...] = ()
     metric_is_cost: bool = False
     metric_offset: float | None = None
+    metric_sign: float = 1.0
+    metric_time_weight: float = 0.0
     notes: tuple[str, ...] = ()
     axioms: tuple[Axiom, ...] = ()
     monitors: tuple["Monitor", ...] = ()
@@ -363,6 +370,12 @@ class GroundTask:
     def variable_index(self) -> dict[FluentTerm, int]:
         """Índice de cada variable numérica en ``variables``."""
         return {variable: i for i, variable in enumerate(self.variables)}
+
+    def with_unit_costs(self) -> "GroundTask":
+        """La tarea con todas las acciones a coste 1 (para el primer plan de la búsqueda
+        *anytime*), también las de su relajación si son otras (ver
+        :meth:`pyplanner.grounding.temporal.TemporalTask.with_unit_costs`)."""
+        return replace(self, actions=unit_costs(self.actions))
 
     @cached_property
     def _actions_by_trigger(
@@ -459,3 +472,8 @@ class GroundTask:
     def atoms(self, state: State) -> list[Atom]:
         """Los hechos ciertos en ``state`` (para depurar y mostrar)."""
         return [self.facts[i] for i in bits(state.facts)]
+
+
+def unit_costs(actions: Sequence[GroundAction]) -> tuple[GroundAction, ...]:
+    """Las acciones con coste 1."""
+    return tuple(replace(a, cost=1.0) for a in actions)
