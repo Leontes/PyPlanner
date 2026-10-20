@@ -22,8 +22,9 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 Las seis iteraciones de la planificación original están completas, y la v0.7 añade la
 primera parte del trabajo opcional. Después se han cubierto los huecos de cobertura
 (preferencias en tareas temporales, y literales iniciales temporizados, restricciones y
-preferencias con procesos y eventos). Queda: más diversidad en el portfolio,
-programación lineal entera para las disyunciones y un estudio de la integración de HTN.
+preferencias con procesos y eventos) y se han probado dos búsquedas locales para dar más
+diversidad al portfolio. Queda: programación lineal entera para las disyunciones y un
+estudio de la integración de HTN.
 
 **Modo estricto:** toda construcción tiene que tener su requisito declarado en
 `:requirements`. Una entrada que usa algo todavía no soportado se rechaza con un error
@@ -63,6 +64,8 @@ claro.
 - **Búsquedas:** GBFS, A* y WA*, con evaluación inmediata o perezosa, acciones útiles,
   exploración por tipos, búsqueda por novedad (IW y BFWS), landmarks en colas alternadas
   (al estilo de LAMA), evaluación por lotes y búsqueda *anytime* (con preferencias).
+  También *enforced hill-climbing* (FF) y paseos aleatorios (Arvand), fuera de los
+  portfolios porque no resuelven nada que no resuelvan ya.
 - **Rendimiento:** heurísticas y generación de sucesores compiladas con Numba, con
   resultados idénticos a la implementación de referencia en Python. También hay evaluación
   por lotes en GPU con PyTorch.

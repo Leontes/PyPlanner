@@ -1,7 +1,9 @@
 """Tests del motor de búsqueda y de su configuración."""
 
+import subprocess
 import threading
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -10,6 +12,7 @@ from pyplanner.frontend import read_domain, read_problem
 from pyplanner.grounding import GroundTask, State, ground
 from pyplanner.heuristics import Evaluation, Heuristic
 from pyplanner.plan import simulate
+from pyplanner.planner import solve
 from pyplanner.search import (
     DEFAULT_CORES,
     DEFAULT_PORTFOLIO,
@@ -23,6 +26,8 @@ from pyplanner.search import (
 )
 from tests.tasks import build, chain, fork, goal_state, token, unreachable
 from tests.tiers import DOMINIOS_DIR
+
+VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
 
 
 def tier1(domain: str, problem: str) -> GroundTask:
@@ -60,7 +65,13 @@ def test_astar_is_optimal_even_with_batches(name: str, batch_size: int) -> None:
 
 @pytest.mark.parametrize("name", sorted(PRESETS))
 def test_unsolvable_task_is_proven(name: str) -> None:
-    result = search(token(), PRESETS[name])
+    config = PRESETS[name]
+    if config.algorithm == "mrw":
+        # Los paseos aleatorios no pueden demostrarlo: terminan por el límite de tiempo.
+        result = search(token(), config.with_changes(max_time=0.2))
+        assert result.status is SearchStatus.LIMIT_REACHED and result.plan is None
+        return
+    result = search(token(), config)
     assert result.status is SearchStatus.UNSOLVABLE
     assert result.plan is None
 
@@ -159,6 +170,8 @@ def test_portfolio_for_zero_cores() -> None:
         ({"batch_size": 0}, "batch_size"),
         ({"max_time": 0}, "max_time"),
         ({"max_expansions": -1}, "max_expansions"),
+        ({"algorithm": "mrw", "lazy": True}, "paseos aleatorios"),
+        ({"algorithm": "ehc", "exploration": "type-based"}, "paseos aleatorios"),
     ],
 )
 def test_invalid_configs(changes: dict[str, object], message: str) -> None:
@@ -169,6 +182,7 @@ def test_invalid_configs(changes: dict[str, object], message: str) -> None:
 def test_config_helpers() -> None:
     assert PRESETS["astar-hmax"].is_optimal
     assert not PRESETS["gbfs-ff"].is_optimal
+    assert PRESETS["ehc-tff-pref"].is_complete and not PRESETS["mrw-tff"].is_complete
     assert PRESETS["gbfs-ff"].to_dict()["heuristic"] == "ff"
 
 
@@ -232,6 +246,56 @@ def test_goal_that_is_not_first_in_a_batch_waits() -> None:
     result = search(task, config, heuristic=TableHeuristic(task, table))
     assert result.cost == 1
     assert result.statistics.expanded == 2  # s y n
+
+
+def test_enforced_hill_climbing_falls_back_to_gbfs() -> None:
+    # Desde s, solo la trampa mejora h (1 < 2), pero no tiene salida: la búsqueda en
+    # anchura desde ella se agota, y GBFS encuentra s-a-t.
+    task = graph([("s", "trap"), ("s", "a"), ("a", "t")], "t")
+    table = {"s": 2, "trap": 1, "a": 2, "t": 0}
+    config = SearchConfig("ehc-table", "ehc", "blind")
+    result = search(task, config, heuristic=TableHeuristic(task, table))
+    assert result.status is SearchStatus.SOLVED and result.cost == 2
+    assert "GBFS" in result.message and result.config_name == "ehc-table"
+
+
+def test_random_walks_are_reproducible_and_without_cycles() -> None:
+    """Con la misma semilla, el mismo plan; y sin ciclos (ningún estado se repite)."""
+    first = search(BLOCKS, PRESETS["mrw-tff-pref"])
+    assert first.plan is not None
+    assert search(BLOCKS, PRESETS["mrw-tff-pref"]).plan == first.plan
+    state, seen = BLOCKS.init, {BLOCKS.init}
+    for index in first.plan:
+        successor = BLOCKS.apply(state, BLOCKS.actions[index])
+        assert successor is not None and successor not in seen
+        state = successor
+        seen.add(state)
+
+
+@pytest.mark.parametrize("name", ["ehc-tff-pref", "mrw-tff-pref"])
+@pytest.mark.parametrize(
+    "instance",
+    ["tier3-pddl21/temporal/driverlog/p02", "tier5-pddl3/preferences/storage/p02"],
+)
+def test_local_searches_in_temporal_and_preference_tasks(
+    name: str, instance: str, tmp_path: Path
+) -> None:
+    """Planes válidos (VAL) en una tarea temporal y con preferencias (la búsqueda anytime
+    encadena después WA*: con los paseos aleatorios, sin el paso con los costes reales)."""
+    base = DOMINIOS_DIR / instance
+    domain = read_domain(base.parent / "domain.pddl")
+    problem = read_problem(base.with_suffix(".pddl"), domain)
+    result = solve(domain, problem, [PRESETS[name]], 10)
+    assert result.plan is not None
+    if VALIDATE.exists():
+        plan_file = tmp_path / "plan"
+        plan_file.write_text(result.plan.to_ipc())
+        output = subprocess.run(
+            [str(VALIDATE), str(base.parent / "domain.pddl"), str(base.with_suffix(".pddl")),
+             str(plan_file)],
+            capture_output=True, text=True, check=False,
+        ).stdout  # fmt: skip
+        assert "Plan valid" in output, output
 
 
 def test_lazy_search_dead_end_and_limits() -> None:

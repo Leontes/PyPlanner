@@ -11,7 +11,9 @@ from typing import Any, Literal
 from pyplanner.errors import PDDLError
 from pyplanner.heuristics import DEVICES, HEURISTICS, PREFERRED_HEURISTICS, TENSOR_HEURISTICS
 
-Algorithm = Literal["gbfs", "astar", "wastar", "iw"]
+Algorithm = Literal["gbfs", "astar", "wastar", "iw", "ehc", "mrw"]
+#: Búsquedas locales (ver :mod:`pyplanner.search.local`).
+LOCAL_ALGORITHMS = ("ehc", "mrw")
 TieBreaking = Literal["fifo", "lifo", "random"]
 Exploration = Literal["none", "type-based"]
 
@@ -27,12 +29,16 @@ class SearchConfig:
     Attributes:
         name: nombre para identificarla (en el portfolio y en las estadísticas).
         algorithm: ``"gbfs"`` (voraz, prioridad h), ``"astar"`` (g + h), ``"wastar"``
-            (g + weight · h) o ``"iw"`` (búsqueda en anchura que poda los estados de
-            novedad mayor que ``novelty``; incompleta).
+            (g + weight · h), ``"iw"`` (búsqueda en anchura que poda los estados de
+            novedad mayor que ``novelty``; incompleta), ``"ehc"`` (*enforced
+            hill-climbing* de FF; si se queda sin salida, sigue con GBFS) o ``"mrw"``
+            (paseos aleatorios de Arvand; incompleta). Ver :mod:`pyplanner.search.local`.
         heuristic: nombre de la heurística (ver :data:`pyplanner.heuristics.HEURISTICS`).
         weight: peso de la heurística en WA* (≥ 1).
         preferred_operators: usa una segunda cola con los sucesores generados por acciones
-            útiles y alterna entre las dos. Necesita una heurística que las calcule.
+            útiles y alterna entre las dos. Necesita una heurística que las calcule. En EHC,
+            busca primero solo con las acciones útiles; en los paseos aleatorios, las
+            prefiere al elegir cada paso.
         lazy: evaluación perezosa. Los sucesores entran en la cola con el valor heurístico
             del padre y solo se evalúan al sacarlos. No es compatible con A*.
         tie_breaking: desempate entre nodos con la misma prioridad: ``"fifo"``,
@@ -86,7 +92,7 @@ class SearchConfig:
     max_memory: int | None = None
 
     def __post_init__(self) -> None:
-        if self.algorithm not in ("gbfs", "astar", "wastar", "iw"):
+        if self.algorithm not in ("gbfs", "astar", "wastar", "iw", *LOCAL_ALGORITHMS):
             raise ConfigError(f"{self.name}: algoritmo desconocido '{self.algorithm}'")
         if self.heuristic not in HEURISTICS:
             raise ConfigError(f"{self.name}: heurística desconocida '{self.heuristic}'")
@@ -118,6 +124,13 @@ class SearchConfig:
             raise ConfigError(f"{self.name}: la novedad necesita evaluación inmediata")
         if self.landmarks and (self.algorithm != "gbfs" or self.novelty):
             raise ConfigError(f"{self.name}: los landmarks solo se usan con GBFS sin novedad")
+        if self.algorithm in LOCAL_ALGORITHMS and (
+            self.lazy or self.novelty or self.landmarks or self.exploration != "none"
+        ):
+            raise ConfigError(
+                f"{self.name}: EHC y los paseos aleatorios no admiten evaluación perezosa, "
+                "novedad, landmarks ni exploración por tipos"
+            )
         if self.batch_size < 1:
             raise ConfigError(f"{self.name}: batch_size tiene que ser ≥ 1")
         if self.max_batch_size < self.batch_size:
@@ -133,8 +146,9 @@ class SearchConfig:
 
     @property
     def is_complete(self) -> bool:
-        """``True`` si encuentra plan siempre que lo haya (todas salvo IW, que poda)."""
-        return self.algorithm != "iw"
+        """``True`` si encuentra plan siempre que lo haya (todas salvo IW, que poda, y los
+        paseos aleatorios)."""
+        return self.algorithm not in ("iw", "mrw")
 
     @property
     def is_optimal(self) -> bool:
@@ -233,6 +247,10 @@ PRESETS: dict[str, SearchConfig] = {
             adaptive_batch=True,
             device="hybrid",
         ),
+        # Búsquedas locales (trabajo opcional, punto 5; ver pyplanner.search.local).
+        SearchConfig("ehc-tff-pref", "ehc", "tff", preferred_operators=True),
+        SearchConfig("mrw-tff", "mrw", "tff", seed=1),
+        SearchConfig("mrw-tff-pref", "mrw", "tff", preferred_operators=True, seed=1),
         SearchConfig("iw1", "iw", "blind", novelty=1),
         SearchConfig("iw2", "iw", "blind", novelty=2),
         SearchConfig("astar-hmax", "astar", "hmax"),

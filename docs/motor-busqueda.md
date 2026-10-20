@@ -769,8 +769,8 @@ desarrollo, en tareas aleatorias con muchos empates y costes 0.
 
 `SearchConfig` define por completo una búsqueda y se valida al crearla. Campos:
 
-- `algorithm`: `gbfs`, `astar`, `wastar` (con `weight`) o `iw` (ver "Búsqueda por
-  novedad");
+- `algorithm`: `gbfs`, `astar`, `wastar` (con `weight`), `iw` (ver "Búsqueda por
+  novedad"), `ehc` o `mrw` (ver "Búsquedas locales");
 - `heuristic`;
 - `preferred_operators`: dos colas alternas, la normal y la de acciones útiles;
 - `lazy`: evaluación perezosa; no se puede usar con A*. Las acciones de un nodo con la
@@ -799,11 +799,12 @@ Garantías:
 - **Óptimo:** A* con `blind` o `hmax` devuelve planes óptimos, también con lotes. En la
   búsqueda inmediata, un objetivo solo se acepta si es el primero que sale de la cola en
   su lote.
-- **Completo:** todas las configuraciones lo son salvo IW(k). Los callejones sin salida que
-  se descartan son estados desde los que el objetivo es inalcanzable incluso en la
-  relajación. IW poda estados por su novedad: si agota la cola habiendo podado alguno,
-  termina con `failed` (sin plan, pero sin demostrar que no lo haya), nunca con
-  `unsolvable`.
+- **Completo:** todas las configuraciones lo son salvo IW(k) y los paseos aleatorios. Los
+  callejones sin salida que se descartan son estados desde los que el objetivo es
+  inalcanzable incluso en la relajación. IW poda estados por su novedad: si agota la cola
+  habiendo podado alguno, termina con `failed` (sin plan, pero sin demostrar que no lo
+  haya), nunca con `unsolvable`. Los paseos aleatorios no terminan sin plan: los para el
+  límite de tiempo.
 - **Cancelable:** `search(..., stop=evento)` consulta el evento periódicamente.
 
 Configuraciones predefinidas (`pyplanner configs`):
@@ -826,8 +827,39 @@ Configuraciones predefinidas (`pyplanner configs`):
 | `bfws-ff` | BFWS con h_FF | |
 | `bfws-goalcount` | BFWS con objetivos pendientes | sin heurística de relajación |
 | `iw1`, `iw2` | IW(1), IW(2) | incompletas; solo para problemas de anchura baja |
+| `ehc-tff-pref` | *enforced hill-climbing* (FF) + h_TFF + acciones útiles | si se atasca, sigue con GBFS; fuera de los portfolios |
+| `mrw-tff`, `mrw-tff-pref` | paseos aleatorios (Arvand), puros o con acciones útiles (MHA) | incompletas; fuera de los portfolios |
 | `astar-hmax` | A* + h_max | óptima |
 | `astar-blind` | A* ciega | óptima; coste uniforme |
+
+## Búsquedas locales (trabajo opcional, punto 5)
+
+Para dar diversidad al portfolio, dos búsquedas que no mantienen una cola global, sino
+que avanzan desde el mejor estado encontrado (`pyplanner.search.local`):
+
+- ***Enforced hill-climbing*** (`algorithm="ehc"`; Hoffmann y Nebel, 2001): desde el
+  estado actual, una búsqueda en anchura hasta el primer estado de h menor (o un
+  objetivo), que pasa a ser el actual. Con acciones útiles, la búsqueda en anchura solo
+  usa las de cada estado y, si así no encuentra salida, lo intenta con todas. Si tampoco
+  (un callejón que la heurística no reconoce), sigue con GBFS con la misma heurística y el
+  tiempo que queda, como FF: así es completa.
+- **Paseos aleatorios** (`algorithm="mrw"`; Arvand, Nakhost y Müller, 2009): desde el
+  estado actual, paseos de 10 pasos al azar, y solo se evalúa el estado al que llega cada
+  uno (en lotes). En cuanto uno mejora la menor h, la búsqueda salta a él; tras 2000
+  paseos sin mejorarla, salta al mejor igualmente, y tras 7 saltos así vuelve a empezar
+  desde el estado inicial. Los paseos se alargan (×1,5 cada 300 sin mejorar). Con
+  acciones útiles, cada paso las elige con probabilidad proporcional a exp(Q/10), donde Q
+  cuenta las veces que la acción ha sido útil en los estados evaluados (MHA). Es
+  incompleta.
+
+Las dos dejan ciclos en el plan (volver a un estado ya visitado); se quitan al final si el
+plan sin ellos sigue siendo válido y no cuesta más. Con preferencias, la búsqueda
+*anytime* pasa de los paseos aleatorios directamente a WA*: no terminan sin plan, así que
+con la cota se quedarían con todo el tiempo.
+
+No están en los portfolios: en las 97 instancias que el portfolio de 7 núcleos no
+resolvía no aportan ninguna (ver
+[Rendimiento medido](#trabajo-opcional-búsquedas-locales)).
 
 ## Búsqueda por novedad
 
@@ -1610,3 +1642,26 @@ Variantes descartadas:
   *anytime* no cambiaba los costes de la relajación cuando es otra tarea (las variables
   lineales de la 3b), y la heurística guiaba con las milésimas por paso de las
   preferencias. Arreglado (`GroundTask.with_unit_costs`).
+
+### Trabajo opcional: búsquedas locales
+
+Medido el 2026-10-19 con `medidas/medir-local.sh` (local): `ehc-tff-pref`, `mrw-tff` y
+`mrw-tff-pref`, 60 s y 1,5 GB por búsqueda, en las 97 instancias que no resolvía ningún
+miembro del portfolio de 7 núcleos en las medidas de los landmarks (slitherlink 15,
+transport 13, floor-tile 12, ricochet-robots 12, satellite con TIL 11, recharging-robots
+11, elevator 10, parc-printer 7 y 6 más).
+
+- **Paseos aleatorios:** ninguna. No es la velocidad: dan de 1 a 14 millones de pasos en
+  60 s (transport p03: 1,4 millones; floor-tile p09: 14 millones), pero no encuentran el
+  camino.
+- **EHC:** 4 (recharging-robots p04 y p15, scanalyzer-3d p18, satellite p08). Pero con el
+  código actual (el grounding de tareas grandes y la guarda de inicio son posteriores a
+  aquellas medidas), las 4 ya las resuelve algún miembro: p04 cinco de los siete (desde
+  27 s), p15 `wastar-add-3` (36 s) y `lazy-ff-pref` (44 s), p18 cinco (desde 25 s) y
+  satellite p08 `gbfs-tff-pref-tb` (18 s) y el híbrido (23 s). EHC solo gana tiempo en
+  satellite p08 (8 s).
+- El resto acaba por tiempo, salvo los 5 errores de memoria al instanciar de
+  recharging-robots.
+
+Así que no se añaden a los portfolios (decisión del usuario): quedan como configuraciones
+predefinidas.

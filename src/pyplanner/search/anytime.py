@@ -11,7 +11,9 @@ de coste menor; ver :func:`pyplanner.search.engine.search`):
    parecen alcanzables). El coste del plan se calcula después con los costes reales;
 2. la configuración elegida con los costes reales y el **incumbente** del motor (ver
    :func:`pyplanner.search.engine.search`): cada estado expandido en el que se puede
-   terminar es un plan, y va dejando planes cada vez mejores;
+   terminar es un plan, y va dejando planes cada vez mejores. Con los paseos aleatorios
+   no: no terminan si no encuentran plan, así que con la cota se quedarían con todo el
+   tiempo (en storage p02 del tier 5 acababan con métrica 10, y WA* llega a 1);
 3. WA* con h_FF y acciones útiles, con pesos 5, 3, 2 y 1 (y la evaluación perezosa o
    inmediata, la exploración y el desempate de la elegida);
 4. A* con h_max, que es admisible: si agota la cola, el mejor plan es óptimo.
@@ -60,7 +62,9 @@ def anytime_schedule(first: SearchConfig) -> list[SearchConfig]:
         "seed": first.seed,
         "max_memory": first.max_memory,
     }
-    schedule = [first, first.with_changes(name=f"{first.name}+coste")]
+    schedule = [first]
+    if first.algorithm != "mrw":  # los paseos aleatorios no terminan sin plan
+        schedule.append(first.with_changes(name=f"{first.name}+coste"))
     schedule += [
         SearchConfig(
             f"{first.name}+wastar{weight:g}",
@@ -160,7 +164,7 @@ def search_anytime(
             None if first else bound,
             None if first else improved,
         )
-        _add(statistics, last.statistics)
+        statistics.add(last.statistics)
         if last.solved:
             assert last.plan is not None
             if first:
@@ -258,11 +262,3 @@ def _quality(task: GroundTask, plan: tuple[int, ...], cost: float) -> float:
         metric = preferences.metric(task, plan, final_state(task, plan))
         metric += task.metric_offset or 0.0
     return round(metric, 6)
-
-
-def _add(total: SearchStatistics, part: SearchStatistics) -> None:
-    for name in ("expanded", "generated", "evaluated", "reopened", "dead_ends", "pruned"):
-        setattr(total, name, getattr(total, name) + getattr(part, name))
-    total.evaluation_batches += part.evaluation_batches
-    total.largest_batch = max(total.largest_batch, part.largest_batch)
-    total.gpu_batches += part.gpu_batches
