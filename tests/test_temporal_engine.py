@@ -637,3 +637,66 @@ def test_a_write_that_keeps_the_value_is_separated_from_readers(tmp_path: Path) 
     if VALIDATE.exists():
         plan = Plan.from_indices(task, tuple(indices))
         assert "Plan valid" in val(PRODUCE_DOMAIN, PRODUCE_PROBLEM, plan, tmp_path)
+
+
+# --- Guarda de inicio (trabajo opcional, punto 4) --------------------------------------
+
+# Hornear una bandeja exige, todo el tiempo, que esté en ese horno (estático) y que el horno
+# esté cerrado; ninguna condición 'at start'.
+GUARDED = """
+(define (domain guarded)
+  (:requirements :typing :durative-actions :preferences)
+  (:types oven tray)
+  (:predicates (closed ?o - oven) (baked ?t - tray) (in ?t - tray ?o - oven))
+  (:action close :parameters (?o - oven) :precondition (and) :effect (closed ?o))
+  (:durative-action bake :parameters (?t - tray ?o - oven) :duration (= ?duration 2)
+    :condition (and (over all (in ?t ?o)) (over all (closed ?o)))
+    :effect (at end (baked ?t))))
+"""
+GUARDED_PROBLEM = """
+(define (problem guarded-1) (:domain guarded) (:objects o1 o2 - oven t1 - tray)
+  (:init (in t1 o1)) (:goal (and (baked t1) (preference shut (closed o2))))
+  (:metric minimize (* 2 (is-violated shut))))
+"""
+
+
+def test_start_guard() -> None:
+    """Las condiciones 'over all' que el inicio no toca se exigen ya al empezar: no se
+    instancia el inicio de la bandeja en el otro horno (nunca podría terminar), y el inicio
+    exige el horno cerrado (en la búsqueda y en la heurística)."""
+    task = build(GUARDED, GUARDED_PROBLEM)
+    assert isinstance(task, TemporalTask)
+    names = [str(f) for f in task.facts]
+    assert [n for n in names if n.startswith("(running@")] == ["(running@bake t1 o1)"]
+    start = next(a for a in task.actions if str(a) == "(bake@start t1 o1)")
+    assert names.index("(closed o1)") in start.pre_facts
+    result = search(task, PRESETS["gbfs-ff"])
+    assert result.plan is not None
+    steps = [str(s) for s in Plan.from_indices(task, result.plan).steps]
+    assert "(close o1)" in steps and "(bake t1 o1)" in steps
+
+
+def test_unit_costs_include_the_relaxation() -> None:
+    """Con variables lineales, la heurística usa otras acciones (las de la relajación): la
+    copia a coste unitario del primer plan de la búsqueda anytime también las cambia. Si
+    no, con preferencias, guiaba con las milésimas por paso de la métrica."""
+    from pyplanner.search.anytime import unit_cost
+
+    domain = """
+(define (domain heater-pref)
+  (:requirements :numeric-fluents :durative-actions :continuous-effects :preferences)
+  (:predicates (warm))
+  (:functions (temp))
+  (:durative-action heat :parameters () :duration (= ?duration 4)
+    :condition (and)
+    :effect (and (increase (temp) (* #t 2)) (at end (warm)))))
+"""
+    problem = """
+(define (problem heater-pref-1) (:domain heater-pref) (:init (= (temp) 0))
+  (:goal (and (warm) (preference hot (>= (temp) 100))))
+  (:metric minimize (* 3 (is-violated hot))))
+"""
+    task = build(domain, problem)
+    assert isinstance(task, TemporalTask) and task.relaxation_actions
+    assert any(a.cost != 1.0 for a in task.relaxation_actions)
+    assert all(a.cost == 1.0 for a in unit_cost(task).relaxation.actions)

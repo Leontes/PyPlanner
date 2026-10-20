@@ -20,9 +20,10 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 | v0.7 | — | Trabajo opcional: landmarks, plan relajado temporal, límite de memoria duro, grounding de tareas grandes y ritmos que fijan las acciones | ✅ |
 
 Las seis iteraciones de la planificación original están completas, y la v0.7 añade la
-primera parte del trabajo opcional. Queda: preferencias en tareas temporales y otros
-huecos de cobertura, más diversidad en el portfolio, programación lineal entera para las
-disyunciones y un estudio de la integración de HTN.
+primera parte del trabajo opcional. Después se han cubierto los huecos de cobertura
+(preferencias en tareas temporales, y literales iniciales temporizados, restricciones y
+preferencias con procesos y eventos). Queda: más diversidad en el portfolio,
+programación lineal entera para las disyunciones y un estudio de la integración de HTN.
 
 **Modo estricto:** toda construcción tiene que tener su requisito declarado en
 `:requirements`. Una entrada que usa algo todavía no soportado se rechaza con un error
@@ -46,12 +47,15 @@ claro.
   los estados que ya no llegan a tiempo.
 - **PDDL 3:** restricciones de trayectoria (los diez operadores modales, también con
   tiempo) vigiladas por monitores en el motor; preferencias compiladas a costes con los
-  pesos de la métrica, con búsqueda *anytime* que devuelve el mejor plan dentro del límite
-  de tiempo; y funciones de objetos (PDDL 3.1) compiladas a predicados.
+  pesos de la métrica (también las que se maximizan), con búsqueda *anytime* que devuelve
+  el mejor plan dentro del límite de tiempo, también en tareas temporales y con procesos y
+  eventos; y funciones de objetos (PDDL 3.1) compiladas a predicados.
 - **PDDL+:** procesos y eventos con el tiempo discretizado al estilo de ENHSP (una espera
   de δ, 1 por defecto), integración exacta con series de Taylor (Runge-Kutta si la serie
   no termina), eventos en su instante exacto y validación del plan con un paso diez veces
-  más fino (si falla, se busca otra vez con δ/2). Las tareas temporales con efectos
+  más fino (si falla, se busca otra vez con δ/2). Admite acciones durativas (con efectos
+  condicionales y continuos condicionales), literales iniciales temporizados,
+  restricciones de trayectoria y preferencias. Las tareas temporales con efectos
   continuos no lineales también van a este motor.
 - **Heurísticas:** blind, goalcount, h_max, h_add y h_FF con acciones útiles; con literales
   iniciales temporizados, h_TFF (un plan relajado que respeta los tiempos y las ventanas);

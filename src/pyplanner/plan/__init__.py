@@ -75,6 +75,22 @@ class Plan:
         if isinstance(task, TemporalTask | DiscreteTask):
             scheduled, makespan = task.schedule(indices)
             makespan = _clean(makespan)
+            temporal_metric = makespan if task.metric_is_makespan else None
+            temporal_violated: tuple[str, ...] = ()
+            preferences = task.preferences
+            if preferences is not None:
+                # La métrica de las preferencias y, con su peso, la duración (que no está
+                # en los costes).
+                final = final_state(task, indices)
+                value = preferences.metric(task, indices, final)
+                value += task.metric_time_weight * makespan
+                offset = task.metric_offset
+                temporal_metric = (
+                    _clean(task.metric_sign * (offset + value))
+                    if task.metric_is_cost and offset is not None
+                    else None
+                )
+                temporal_violated = tuple(preferences.violated(task, indices, final))
             return cls(
                 domain=task.domain_name,
                 problem=task.problem_name,
@@ -88,8 +104,9 @@ class Plan:
                     for s in scheduled
                 ),
                 cost=len(scheduled),
-                metric=makespan if task.metric_is_makespan else None,
+                metric=temporal_metric,
                 makespan=makespan,
+                violated=temporal_violated,
             )
         preferences = task.preferences
         if preferences is None:
@@ -111,7 +128,11 @@ class Plan:
             problem=task.problem_name,
             steps=tuple(PlanStep(a.name, a.args) for a in actions),
             cost=cost,
-            metric=offset + metric if task.metric_is_cost and offset is not None else None,
+            metric=(
+                _clean(task.metric_sign * (offset + metric))
+                if task.metric_is_cost and offset is not None
+                else None
+            ),
             unit_cost=not task.metric_is_cost,
             violated=tuple(violated),
         )

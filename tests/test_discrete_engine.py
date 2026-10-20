@@ -15,6 +15,7 @@ from pyplanner.frontend import read_domain, read_problem
 from pyplanner.grounding.discrete import WAIT, DiscreteTask
 from pyplanner.grounding.flows import Flow
 from pyplanner.grounding.numeric import Const, Op, Var
+from pyplanner.grounding.task import State
 from pyplanner.loader import load_domain, load_problem
 from pyplanner.loader.ast import Atom
 from pyplanner.pddl import parse_domain, parse_problem
@@ -258,10 +259,7 @@ def test_events_that_never_stop_make_the_step_invalid() -> None:
 
 @pytest.mark.parametrize(
     ("problem", "message"),
-    [
-        ("(:init (at 5 (open a)))", "literales iniciales temporizados"),
-        ("(:init) (:constraints (sometime (open a)))", "restricciones de trayectoria"),
-    ],
+    [("(:init) (:constraints (always-within 3 (open a) (done)))", "always-within")],
 )
 def test_unsupported_with_processes(problem: str, message: str) -> None:
     text = TANK.replace(":time)", ":time :durative-actions :timed-initial-literals :constraints)")
@@ -279,6 +277,192 @@ def test_continuous_variables_do_not_count_for_novelty() -> None:
     table.novelty(state)
     waited = task.apply(state, task.wait)
     assert waited is not None and table.novelty(waited) == 2  # solo cambia (level)
+
+
+# --- Literales iniciales temporizados y restricciones (trabajo opcional, punto 4) ------
+
+# Una bomba que llena un depósito a ritmo 2, solo con luz de día (un TIL la trae a las 1 y
+# otro se la lleva a las 6); al anochecer, un evento la para.
+SPRINKLER = """
+(define (domain sprinkler)
+  (:requirements :time :negative-preconditions :timed-initial-literals :numeric-fluents
+                 :constraints)
+  (:predicates (pumping) (daylight))
+  (:functions (water))
+  (:action start-pump :parameters ()
+    :precondition (and (daylight) (not (pumping))) :effect (pumping))
+  (:action stop-pump :parameters () :precondition (pumping) :effect (not (pumping)))
+  (:process pump :parameters () :precondition (pumping)
+    :effect (increase (water) (* #t 2)))
+  (:event dusk :parameters () :precondition (and (pumping) (not (daylight)))
+    :effect (not (pumping))))
+"""
+
+
+def sprinkler(constraints: str = "") -> str:
+    section = f"(:constraints {constraints})" if constraints else ""
+    return f"""
+(define (problem sprinkler-1) (:domain sprinkler)
+  (:init (= (water) 0) (at 1 (daylight)) (at 6 (not (daylight))))
+  (:goal (and (>= (water) 8) (not (pumping)))) {section})
+"""
+
+
+def solve_text(
+    domain: str, problem: str, tmp_path: Path, time_limit: float = 20
+) -> tuple[Plan | None, str]:
+    """El plan del portfolio de 1 núcleo y lo que dice VAL de él (vacío sin VAL)."""
+    loaded = load_domain(parse_domain(domain))
+    result = solve(
+        loaded, load_problem(parse_problem(problem), loaded), [PRESETS["bfws-ff-pref"]], time_limit
+    )
+    if result.plan is None or not VALIDATE.exists():
+        return result.plan, ""
+    files = {"domain.pddl": domain, "problem.pddl": problem}
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    return result.plan, val(
+        tmp_path / "domain.pddl", tmp_path / "problem.pddl", result.plan, tmp_path
+    )
+
+
+def test_timed_literals_with_processes(tmp_path: Path) -> None:
+    """Los TIL son eventos de un reloj global; una acción no coincide con un TIL (VAL no lo
+    admite): va ε después."""
+    plan, report = solve_text(SPRINKLER, sprinkler(), tmp_path)
+    assert plan is not None
+    assert [(str(s), s.time) for s in plan.steps] == [("(start-pump)", 1.01)]
+    assert not report or "Plan valid" in report
+
+
+def test_constraints_with_processes(tmp_path: Path) -> None:
+    """Como VAL, las restricciones se comprueban en los sucesos. Con 'within 4', el agua
+    tiene que llegar a 2 en un suceso antes de las 4: no basta con esperar (no hay ninguno
+    hasta el anochecer), así que la bomba se para y se vuelve a poner en marcha; si solo se
+    puede poner una vez, no hay plan. Con 'within 7', el anochecer (a las 6) sirve."""
+    plan, report = solve_text(SPRINKLER, sprinkler("(within 4 (>= (water) 2))"), tmp_path)
+    assert plan is not None and len(plan.steps) == 3
+    assert not report or "Plan valid" in report
+    once = "(at-most-once (pumping))"
+    plan, _ = solve_text(SPRINKLER, sprinkler(f"(and (within 4 (>= (water) 2)) {once})"), tmp_path)
+    assert plan is None
+    plan, report = solve_text(
+        SPRINKLER, sprinkler(f"(and (within 7 (>= (water) 2)) {once})"), tmp_path
+    )
+    assert plan is not None and [str(s) for s in plan.steps] == ["(start-pump)"]
+    assert not report or "Plan valid" in report
+
+
+def test_waits_until_the_next_change_update_the_monitors() -> None:
+    """La espera hasta el siguiente cambio llega al TIL de las 1, que trae la luz: incumple
+    'always (not (daylight))' tanto al buscar (``transition``) como al aplicarla."""
+    task = build(SPRINKLER, sprinkler("(always (not (daylight)))"))
+    assert isinstance(task, DiscreteTask)
+    assert task.apply(task.init, task.jump) is None
+    assert task.transition(task.init, task.jump)[0] is None
+    assert task.transition(task.init, task.wait)[0] is None
+
+
+@pytest.mark.parametrize(("early", "once", "violated"), [(1, 5, ["early"]), (5, 2, ["once"])])
+def test_preferences_with_processes(
+    early: int, once: int, violated: list[str], tmp_path: Path
+) -> None:
+    """'early' (el agua llega a 2 antes de las 3) solo se cumple parando la bomba y
+    volviéndola a poner en marcha (las restricciones se comprueban en los sucesos), y eso
+    incumple 'once': se renuncia a la más barata."""
+    domain = SPRINKLER.replace(":constraints)", ":constraints :preferences)")
+    problem = f"""
+(define (problem sprinkler-1) (:domain sprinkler)
+  (:init (= (water) 0) (at 1 (daylight)) (at 6 (not (daylight))))
+  (:goal (and (>= (water) 8) (not (pumping))))
+  (:constraints (and (preference early (within 3 (>= (water) 2)))
+                     (preference once (at-most-once (pumping)))))
+  (:metric minimize (+ (* {early} (is-violated early)) (* {once} (is-violated once)))))
+"""
+    task = build(domain, problem)
+    assert isinstance(task, DiscreteTask) and task.preferences is not None
+    plan, report = solve_text(domain, problem, tmp_path, time_limit=5)
+    assert plan is not None
+    assert plan.metric == pytest.approx(min(early, once))
+    assert list(plan.violated) == violated
+    assert not report or "Plan valid" in report
+
+
+# --- Efectos condicionales en acciones durativas (trabajo opcional, punto 4) -----------
+
+# Un horno que calienta a ritmo 1 mientras hornea, y a ritmo 3 si el turbo estaba puesto al
+# empezar; hornea si la puerta sigue cerrada todo el tiempo. Un resorte abre la puerta al
+# llegar a 2 de calor, salvo que esté cerrada con llave.
+OVEN_PLUS = """
+(define (domain oven-plus)
+  (:requirements :time :durative-actions :conditional-effects :negative-preconditions
+                 :numeric-fluents :continuous-effects)
+  (:predicates (closed) (locked) (turbo) (baking) (baked))
+  (:functions (heat))
+  (:action close-door :parameters () :precondition (not (closed)) :effect (closed))
+  (:action lock-door :parameters () :precondition (and (closed) (not (locked)))
+    :effect (locked))
+  (:action set-turbo :parameters () :precondition (not (turbo)) :effect (turbo))
+  (:durative-action bake :parameters () :duration (= ?duration 4)
+    :condition (at start (not (baking)))
+    :effect (and (at start (baking)) (at end (not (baking)))
+                 (increase (heat) (* #t 1))
+                 (when (at start (turbo)) (increase (heat) (* #t 2)))
+                 (when (over all (closed)) (at end (baked)))))
+  (:event spring :parameters () :precondition (and (closed) (not (locked)) (>= (heat) 2))
+    :effect (not (closed))))
+"""
+
+
+def oven_plus(goal: str, init: str = "") -> str:
+    return f"""
+(define (problem oven-plus-1) (:domain oven-plus) (:init (= (heat) 0) {init}) (:goal {goal}))
+"""
+
+
+def test_conditional_effects_with_over_all_conditions(tmp_path: Path) -> None:
+    """Como en la 3b, un vigilante: se activa al empezar si la puerta está cerrada y se
+    apaga en cuanto se abre (aquí, con el resorte, a mitad de una espera); entonces el
+    horno no hornea. Con la puerta cerrada con llave antes de llegar a 2, sí."""
+    task = build(OVEN_PLUS, oven_plus("(baked)"))
+    assert isinstance(task, DiscreteTask)
+    flag, end = Atom("cond@bake@0"), task.actions[action(task, "(bake@end)")]
+    state: State | None = task.init
+    for name in ("(close-door)", "(bake@start)"):
+        assert state is not None
+        state = task.apply(state, task.actions[action(task, name)])
+    assert state is not None and flag in task.atoms(state)
+    state = task.apply(state, task.wait)
+    assert state is not None and flag in task.atoms(state)  # calor 1,01
+    state = task.apply(state, task.wait)
+    assert state is not None and {Atom("closed"), flag}.isdisjoint(task.atoms(state))
+    while state is not None and not end.applicable(state):
+        state = task.apply(state, task.wait)
+    assert state is not None
+    state = task.apply(state, end)
+    assert state is not None and Atom("baked") not in task.atoms(state)
+    plan, report = solve_text(OVEN_PLUS, oven_plus("(baked)"), tmp_path)
+    assert plan is not None and "(lock-door)" in [str(s) for s in plan.steps]
+    assert not report or "Plan valid" in report
+
+
+def test_conditional_continuous_effects(tmp_path: Path) -> None:
+    """Un efecto continuo condicional se decide al empezar: con el turbo, el horno calienta
+    a ritmo 3 (12 en las 4 unidades que dura); sin él, a ritmo 1."""
+    for init, expected in (("", 4.0), ("(turbo)", 12.0)):
+        task = build(OVEN_PLUS, oven_plus("(baked)", f"(locked) {init}"))
+        assert isinstance(task, DiscreteTask)
+        end = task.actions[action(task, "(bake@end)")]
+        state = task.apply(task.init, task.actions[action(task, "(bake@start)")])
+        while state is not None and not end.applicable(state):
+            state = task.apply(state, task.wait)
+        assert state is not None
+        heat = task.variable_index[next(v for v in task.variables if str(v) == "(heat)")]
+        assert state.values[heat] == pytest.approx(expected)
+    goal = "(and (>= (heat) 10) (not (baking)))"
+    plan, report = solve_text(OVEN_PLUS, oven_plus(goal, "(locked)"), tmp_path)
+    assert plan is not None and [str(s) for s in plan.steps] == ["(set-turbo)", "(bake)"]
+    assert not report or "Plan valid" in report
 
 
 # --- Tier 6 con VAL -------------------------------------------------------------------

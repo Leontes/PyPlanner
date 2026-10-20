@@ -597,12 +597,14 @@ funcione.
   5,7 GB a 75 s y 2,9 GB. Scanalyzer p18 y recharging-robots p15 ya se resuelven; las
   recharging-robots más grandes siguen sin caber en 1,5 GB.
 
-  Encontrado al medir, pendiente: la memoria de las tareas temporales con muchas acciones
+  Encontrado al medir: la memoria de las tareas temporales con muchas acciones
   durativas. Satellite con TIL (p17, 17 000 acciones) llega a casi 1 GB porque tiene
   58 000 hechos `running@a` (uno por acción durativa instanciada): los bitsets de cada
   acción, y los de los estados con acciones en curso, son enteros de varios KB. (Medido
   en el punto 3: lo que agotaba la memoria de las búsquedas perezosas era su cola, ya
-  arreglado; en las inmediatas pesa el tiempo de evaluar, no los estados.)
+  arreglado; en las inmediatas pesa el tiempo de evaluar, no los estados.) Arreglado en
+  el punto 4 con la guarda de inicio: eran inicios que nunca podían terminar, y p17 baja a
+  11 262 hechos y 138 MB.
 
 - **Plan relajado temporal, h_TFF** (el punto 3 de la lista de abajo, la parte B de la
   heurística temporal; 2026-10-18). Ver
@@ -658,14 +660,36 @@ funcione.
    temporales: en POPF no es mejor en todos los dominios.
    Empezar midiendo dónde se queda corta h_FF: con la parte A, `lazy-ff-pref` no resuelve
    satellite p02 (tier 4, con TIL) en 60 s, aunque `bfws-ff-pref` sí.
-4. **Huecos de cobertura.** Hoy dan un error claro y ningún tier los usa:
-   - **preferencias en tareas temporales** (de la iteración 5c): la fase final como pasos
-     instantáneos al final del plan, y los monitores blandos con las marcas de instante de
-     la 5b. El tier 5 no tiene ningún dominio que las use;
-   - **límites del motor discretizado** (iteración 6): literales iniciales temporizados,
-     restricciones de trayectoria y preferencias con procesos y eventos; efectos
-     condicionales que dependen de condiciones `over all` y efectos continuos condicionales
-     en las acciones durativas.
+4. ✅ **Huecos de cobertura** (hecho en la rama `opcional/cobertura`, 2026-10-19, pendiente
+   de fusionar; ver [motor-busqueda.md](motor-busqueda.md#preferencias-y-búsqueda-anytime-iteración-5c)
+   y [Procesos y eventos](motor-busqueda.md#procesos-y-eventos-iteración-6b)). Daban un
+   error claro y ningún tier los usaba:
+   - **preferencias en tareas temporales** (de la iteración 5c): la fase final fuera de la
+     red temporal, y los monitores blandos con las marcas de instante de la 5b. Las de las
+     condiciones `at start` y `at end` son preferencias de la precondición del inicio o
+     del fin. `total-time` en una métrica con preferencias se informa y no se optimiza
+     (decisión del usuario). Las métricas que se maximizan se minimizan negadas;
+   - **límites del motor discretizado** (iteración 6): literales iniciales temporizados
+     (eventos de un reloj global), restricciones de trayectoria (en los *happenings*, como
+     VAL), preferencias, efectos condicionales que dependen de condiciones `over all` y
+     efectos continuos condicionales en las acciones durativas;
+   - encontrado al medir: la **guarda de inicio**. Las condiciones `over all` que los
+     efectos de inicio no pueden tocar se exigen ya al empezar, así que el grounding deja
+     de instanciar inicios que nunca pueden terminar. Storage (desde p06) y pathways (desde
+     p08) agotaban 3 GB al instanciar, y satellite p17 baja de 957 a 138 MB. La ven la
+     búsqueda y la heurística (decisión del usuario tras medir: quitarla de la heurística
+     daba las mismas búsquedas que sin guarda, pero 3 preferencias temporales menos de 98).
+     En satellite, driverlog y zenotravel el portfolio resuelve lo mismo que en la v0.7;
+   - medido en las preferencias temporales de la IPC 2006 (storage, trucks, tpp,
+     pathways y pipesworld): con los tres primeros miembros de los portfolios se resuelven
+     80 de 98, todos los planes válidos. Las métricas que no coinciden con las de VAL
+     (todas las de tpp y pathways) son errores de VAL: evalúa el `>` estricto de las
+     restricciones de trayectoria como `>=`;
+   - encontrado al medir: el orden de los pasos que vigilan los monitores se calcula con
+     un índice. Storage p10 instanciaba en 26 s; ahora tarda 1,3 s.
+
+   Quedan con un error claro: las preferencias sobre condiciones `over all` y
+   `always-within` con procesos y eventos.
 5. **Más diversidad en el portfolio**: *enforced hill-climbing* (FF) y paseos aleatorios
    (Arvand). El portfolio ya es diverso (BFWS, exploración por tipos, goalcount aleatorio):
    solo si aparece un dominio que lo pida.

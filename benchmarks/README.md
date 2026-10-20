@@ -61,8 +61,8 @@ si falla, se busca otra vez con δ/2 (la tabla da el δ final cuando no es 1).
 ## Colecciones locales (fuera de git)
 
 Para elegir los portfolios con los landmarks (trabajo opcional, punto 2) se midieron dos
-colecciones más, que no están en el repositorio (están en `.git/info/exclude`). Se rehacen
-así:
+colecciones más, y para las preferencias en tareas temporales (punto 4), una tercera. No
+están en el repositorio (están en `.git/info/exclude`). Se rehacen así:
 
 - **`classical/`**: 17 colecciones de 20 instancias, con el mismo formato (`domain.pddl`
   o `domain-pNN.pddl` por problema, como openstacks y parc-printer, y `pNN.pddl`):
@@ -82,3 +82,12 @@ así:
 - **`temporal/`**: driverlog y zenotravel de la IPC 2002 (*time-simple-automatic*) de
   potassco, instancias 1 a 17, con el dominio del tier 3 (que lleva su errata). p01 y p02
   son las del tier.
+- **`temporal-preferences/`**: storage, trucks, tpp, pathways y pipesworld,
+  `ipc-2006/domains/*-preferences-complex` de potassco (`cf19edf`), instancias 1 a 20
+  (pipesworld solo tiene 18): 98 problemas con acciones durativas, preferencias (en el
+  objetivo, en las condiciones de las acciones y en las restricciones de trayectoria) y
+  restricciones duras. Erratas: (‡) storage declaraba dos veces el tipo `area` (como en el
+  tier 5) y se ha quitado la primera declaración; (‡) en tpp, `?g -goods` tenía el guion
+  pegado al tipo; (*) pathways usa `not` en las precondiciones sin declarar
+  `:negative-preconditions`; (‡) nueve problemas de pathways (p08, p09, p12, p14 y p16 a
+  p20) daban dos valores iniciales a la misma función: se queda el último, el que usa VAL.

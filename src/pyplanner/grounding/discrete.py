@@ -73,9 +73,30 @@ que se informa es la duración del plan si es ``(minimize (total-time))``.
 Si falla (un evento que debía dispararse a mitad de una espera, por ejemplo), el
 planificador lo vuelve a buscar con δ/2 (ver :func:`pyplanner.planner.solve`).
 
-**Límites** (error claro): literales iniciales temporizados, restricciones de trayectoria,
-preferencias, efectos condicionales que dependen de condiciones ``over all`` y efectos
-continuos condicionales.
+**Literales iniciales temporizados** (trabajo opcional, punto 4): son eventos de un reloj
+global, ``til@clock``, que avanza a ritmo 1 (ver :func:`_timed_literal_events`), así que se
+disparan en su instante exacto. Una espera que acaba justo en el instante de un TIL deja
+pasar además ε: VAL no admite que una acción lea un hecho en el mismo instante en que un TIL
+lo cambia.
+
+**Restricciones de trayectoria** (trabajo opcional, punto 4): los monitores de la 5b, con
+los instantes de ``within``, ``hold-after`` y ``hold-during`` como eventos del mismo reloj.
+Como VAL, se comprueban en los sucesos: tras cada acción, y tras una espera solo si un
+evento o un TIL han cambiado los hechos (el final de una espera en la que no pasa nada no
+es un suceso).
+
+**Efectos condicionales en acciones durativas** (trabajo opcional, punto 4): con
+condiciones ``over all``, un vigilante (como en la 3b) que se apaga en cuanto la condición
+deja de cumplirse, tras cada paso; un efecto continuo condicional se decide al empezar: un
+hecho recuerda si su condición se cumplía, y un proceso aparte lo aplica mientras la acción
+sigue en curso.
+
+**Preferencias** (trabajo opcional, punto 4): como en la 5c, compiladas en costes, con la
+fase final al final de las acciones (tras las esperas), fuera del tiempo: no deja pasar ε
+ni dispara eventos. ``_end`` exige además que no haya acciones durativas en curso. La
+métrica ya no es la duración: cada espera cuesta lo que un paso (``step_cost``).
+
+**Límites** (error claro): ``always-within``.
 """
 
 import itertools
@@ -87,7 +108,13 @@ from typing import cast
 
 from pyplanner.errors import UnsupportedFeatureError
 from pyplanner.grounding.flows import DECIMALS, Flow
-from pyplanner.grounding.grounder import Binding, GroundingContext, ground_with_context
+from pyplanner.grounding.grounder import (
+    Binding,
+    GroundingContext,
+    ground_with_context,
+    has_preferences,
+    marker_times,
+)
 from pyplanner.grounding.monitors import MonitorRule
 from pyplanner.grounding.normalize import Fact
 from pyplanner.grounding.numeric import (
@@ -108,10 +135,14 @@ from pyplanner.grounding.task import (
 )
 from pyplanner.grounding.temporal import (
     TemporalStep,
+    Watch,
+    _effect_predicates,
+    _final_phase,
     _functions_of,
     _replace_duration,
     _split_condition,
     _split_effect,
+    _start_guard,
     _uses_duration_var,
     _Watch,
 )
@@ -149,6 +180,8 @@ from pyplanner.loader.ast import (
 
 #: Paso de tiempo por defecto.
 DELTA = 1.0
+#: Reloj global de los literales iniciales temporizados (ver _timed_literal_events).
+_TIL_CLOCK = "til@clock"
 #: Separación entre una acción instantánea y el paso siguiente (la tolerancia de VAL).
 EPSILON = 0.01
 #: Coste de una acción instantánea (ver la documentación del módulo): unos 2ε, como fracción
@@ -218,6 +251,8 @@ class RunningAction:
         minimum_bounds, minimums: las cotas inferiores de su duración (variables fijadas
             al empezar y valores fijos): hasta ellas tiene que seguir en curso.
         maximum_bounds, maximums: las cotas superiores: como mucho hasta ellas sigue.
+        watches: vigilantes de sus efectos condicionales con condiciones ``over all`` (ver
+            :class:`pyplanner.grounding.temporal.Watch`).
     """
 
     name: str
@@ -231,6 +266,7 @@ class RunningAction:
     minimums: tuple[float, ...] = ()
     maximum_bounds: tuple[int, ...] = ()
     maximums: tuple[float, ...] = ()
+    watches: tuple[Watch, ...] = ()
 
     def invariant_holds(self, state: State) -> bool:
         return self.invariant is None or any(c.holds(state) for c in self.invariant)
@@ -270,6 +306,8 @@ class DiscreteTask(GroundTask):
         kinds: tipo de cada acción de ``actions`` (:data:`INSTANT`, :data:`START_SNAP`…).
         durative_of: acción durativa de cada inicio y fin (-1 en las demás).
         metric_is_makespan: ``True`` si la métrica es ``(minimize (total-time))``.
+        til_clock: variable del reloj de los literales iniciales temporizados (-1 si no hay).
+        til_times: instantes de los literales iniciales temporizados.
     """
 
     delta: float = DELTA
@@ -280,6 +318,8 @@ class DiscreteTask(GroundTask):
     kinds: tuple[int, ...] = ()
     durative_of: tuple[int, ...] = ()
     metric_is_makespan: bool = False
+    til_clock: int = -1
+    til_times: tuple[float, ...] = ()
 
     @cached_property
     def continuous_variables(self) -> frozenset[int]:
@@ -288,13 +328,19 @@ class DiscreteTask(GroundTask):
 
     @property
     def wait(self) -> GroundAction:
-        """La espera de δ (la última acción)."""
-        return self.actions[-1]
+        """La espera de δ: la última acción, o la última antes de la fase final de las
+        preferencias."""
+        return self.actions[self._wait_index]
 
     @property
     def jump(self) -> GroundAction:
-        """La espera hasta el siguiente cambio (la penúltima acción)."""
-        return self.actions[-2]
+        """La espera hasta el siguiente cambio (la anterior a la espera de δ)."""
+        return self.actions[self._wait_index - 1]
+
+    @cached_property
+    def _wait_index(self) -> int:
+        preferences = self.preferences
+        return (len(self.actions) if preferences is None else preferences.first_auxiliary) - 1
 
     # --- Semántica de los pasos ---------------------------------------------------------
 
@@ -305,25 +351,61 @@ class DiscreteTask(GroundTask):
 
     def transition(self, state: State, action: GroundAction) -> tuple[State | None, float]:
         """El sucesor y el coste del paso: la espera hasta el siguiente cambio cuesta lo que
-        avanza (A* sigue minimizando la duración); los demás pasos, su coste fijo."""
-        if action.index == self.jump.index:
-            return self.wait_until(state)
-        return self.apply(state, action), action.cost
+        avanza (A* sigue minimizando la duración); los demás pasos, su coste fijo. Con
+        preferencias, la métrica no es la duración: cada espera cuesta lo que un paso."""
+        successor, elapsed = self.step(state, action)
+        if action.index == self.jump.index and self.preferences is None:
+            return successor, elapsed
+        return successor, action.cost
 
     def step(self, state: State, action: GroundAction) -> tuple[State | None, float]:
         """Aplica un paso (ver :meth:`apply`) y devuelve también el tiempo que pasa."""
         if self.kinds[action.index] == WAIT_SNAP:
             if action.index == self.jump.index:
-                return self.wait_until(state)
-            length = self.wait_length(state)
-            return self.elapse(state, length), length
+                reached, elapsed = self.wait_until(state)
+            else:
+                length = self.wait_length(state)
+                reached, elapsed = self._past_timed_literal(self.elapse(state, length), length)
+            if reached is not None and reached.facts == state.facts:
+                return reached, elapsed  # sin sucesos: los monitores no lo ven (como VAL)
+            return self._monitored(state, reached), elapsed
+        preferences = self.preferences
+        if preferences is not None and action.index >= preferences.first_auxiliary:
+            return action.apply(state), 0.0  # fase final de las preferencias: fuera del tiempo
         successor = action.apply(state)
         if successor is None:
             return None, 0.0
         successor = self.settle(State(successor.facts, _round(successor.values, state)))
         if successor is None:
             return None, 0.0
-        return self.elapse(successor, self.epsilon), self.epsilon
+        if self.kinds[action.index] == START_SNAP:
+            successor = self._started(
+                state, successor, self.durative[self.durative_of[action.index]]
+            )
+        return self._monitored(state, self.elapse(successor, self.epsilon)), self.epsilon
+
+    @staticmethod
+    def _started(before: State, after: State, running: RunningAction) -> State:
+        """Los vigilantes de una acción que empieza (efectos condicionales con condiciones
+        ``over all``, como en la 3b): se activan si se cumplen sus condiciones (las ``at
+        start`` antes de empezar, las ``over all`` después). Mientras dura, :meth:`settle`
+        los apaga en cuanto la condición ``over all`` deja de cumplirse."""
+        facts = after.facts
+        for watch in running.watches:
+            if watch.starts(before, after):
+                facts |= 1 << watch.flag
+            else:
+                facts &= ~(1 << watch.flag)
+        return after if facts == after.facts else State(facts, after.values)
+
+    def _monitored(self, before: State, after: State | None) -> State | None:
+        """Los monitores de las restricciones de trayectoria tras un suceso (una acción, o una
+        espera en la que un evento o un TIL cambian los hechos), en el estado al que llega el
+        paso; ``None`` si incumple alguna. Como VAL, que solo las comprueba en los sucesos:
+        el final de una espera en la que no pasa nada no lo es."""
+        if after is None or not self.monitors:
+            return after
+        return self.monitor_evaluator.update(before, after)
 
     def wait_length(self, state: State) -> float:
         """Lo que avanza una espera: δ, o menos si antes una acción durativa en curso llega
@@ -352,7 +434,22 @@ class DiscreteTask(GroundTask):
             r for r in self.durative if r.invariant is not None and state.facts >> r.running & 1
         ]
         reached, step = self._until_change(state, length, watched, scan=True)
-        return self.settle(reached), step
+        return self._past_timed_literal(self.settle(reached), step)
+
+    def _past_timed_literal(
+        self, state: State | None, elapsed: float
+    ) -> tuple[State | None, float]:
+        """Si la espera termina justo en el instante de un literal inicial temporizado, deja
+        pasar además ε: VAL no admite que una acción lea un hecho en el mismo instante en que
+        un TIL lo cambia (como con dos acciones, ver la documentación del módulo)."""
+        if state is None or self.til_clock < 0:
+            return state, elapsed
+        clock = state.values[self.til_clock]
+        if clock is None or not any(
+            t > 0 and abs(clock - t) < _TIME_TOLERANCE for t in self.til_times
+        ):
+            return state, elapsed
+        return self.elapse(state, self.epsilon), round(elapsed + self.epsilon, DECIMALS)
 
     def jump_length(self, state: State) -> float | None:
         """Lo que avanzaría ``_wait-until`` con el flujo actual (``None`` si nada): hasta la
@@ -569,10 +666,18 @@ class DiscreteTask(GroundTask):
         state = self._cascade(state)
         if state is None:
             return None
+        facts = state.facts
         for running in self.durative:
-            if state.facts >> running.running & 1 and not running.invariant_holds(state):
+            if not facts >> running.running & 1:
+                continue
+            if not running.invariant_holds(state):
                 return None
-        return state
+            # Los vigilantes se apagan en cuanto su condición 'over all' deja de cumplirse:
+            # durante una espera, los hechos solo cambian aquí (con los eventos).
+            for watch in running.watches:
+                if facts >> watch.flag & 1 and not watch.holds(state):
+                    facts &= ~(1 << watch.flag)
+        return state if facts == state.facts else State(facts, state.values)
 
     def _cascade(self, state: State | None) -> State | None:
         """Los eventos en cascada y los predicados derivados (``None`` si los eventos no
@@ -708,7 +813,8 @@ class DiscreteTask(GroundTask):
                 for var, rate in process.rates
             )
             effects.extend(ConditionalEffect(c, (), (), numeric) for c in process.conditions)
-        wait = replace(self.wait, conditional=tuple(effects))
+        actions = list(self.actions)
+        actions[self.wait.index] = replace(self.wait, conditional=tuple(effects))
         rules = []
         for event in self.events:
             base = Condition(event.pre_facts, event.neg_facts, event.numeric_pre)
@@ -725,12 +831,12 @@ class DiscreteTask(GroundTask):
             self.domain_name,
             self.problem_name,
             self.facts,
-            (*self.actions[:-1], wait),
+            tuple(actions),
             self.init,
             self.goal,
             self.variables,
             axioms=self.axioms,
-            monitor_rules=tuple(rules),
+            monitor_rules=(*rules, *self.monitor_rules),
         )
 
     # --- Plan -----------------------------------------------------------------------------
@@ -739,6 +845,8 @@ class DiscreteTask(GroundTask):
         """El plan en el tiempo: cada acción instantánea en su instante y cada acción
         durativa con su inicio y su duración. Devuelve también la duración total (el
         instante del último paso que no es una espera)."""
+        if self.preferences is not None:
+            plan = self.preferences.plan_actions(plan)
         state, time, makespan = self.init, 0.0, 0.0
         steps: list[TemporalStep] = []
         started: dict[int, float] = {}
@@ -837,14 +945,46 @@ class _Durative:
     minimums: tuple[Expression, ...] = ()
     maximum_bounds: tuple[Function, ...] = ()
     maximums: tuple[Expression, ...] = ()
+    watches: tuple[_Watch, ...] = ()
+
+
+def _timed_literal_events(
+    problem: Problem, times: Sequence[float]
+) -> tuple[list[Action], list[Predicate], Function]:
+    """Los literales iniciales temporizados como eventos: un reloj global (``til@clock``,
+    que un proceso siempre activo hace avanzar a ritmo 1 desde el instante 0) y, por cada
+    instante *t_k* de ``times``, un evento ``til@k`` que se dispara cuando el reloj llega a
+    *t_k* y aplica sus literales (si los hay) una sola vez (``til-done@k``). Como los demás
+    eventos, se dispara en su instante exacto, y una espera hasta el siguiente cambio se
+    detiene en él."""
+    clock = Function(_TIL_CLOCK, ())
+    clock_term = FluentTerm(clock.name, ())
+    actions = [
+        Action(
+            f"{_TIL_CLOCK}@{_RUN}", (), And(()), NumericEffect("increase", clock_term, Number(1.0))
+        )
+    ]
+    predicates: list[Predicate] = []
+    for k, time in enumerate(times):
+        done = Atom(f"til-done@{k}")
+        predicates.append(Predicate(done.predicate))
+        effects: list[Effect] = [done]
+        for literal in problem.timed_literals:
+            if literal.time == time:
+                effects.append(literal.atom if literal.positive else Not(literal.atom))
+        precondition = And((Not(done), Comparison(">=", clock_term, Number(time))))
+        actions.append(Action(f"til@{k}@{_EVENT}", (), precondition, And(tuple(effects))))
+    return actions, predicates, clock
 
 
 def _compile_durative(
-    action: DurativeAction, changing: frozenset[str]
+    action: DurativeAction, changing: frozenset[str], domain: Domain, volatile: frozenset[str]
 ) -> tuple[list[Action], _Durative, list[Predicate], list[Function]]:
     """Compila una acción durativa. ``changing``: funciones que algo modifica (las cotas de
     la duración que no dependen de ellas se comparan tal cual, sin función intermedia: así
-    la heurística ve cuánto falta)."""
+    la heurística ve cuánto falta). ``volatile``: predicados derivados y los que cambian
+    los eventos (que se disparan en el mismo instante del inicio): no entran en la guarda
+    del inicio (ver :func:`pyplanner.grounding.temporal._start_guard`)."""
     name, parameters = action.name, action.parameters
     variables = tuple(p.variable for p in parameters)
     running = Predicate(f"running@{name}", parameters)
@@ -856,16 +996,6 @@ def _compile_durative(
     flags: list[Predicate] = []
     watches: list[_Watch] = []
     effects, continuous = _split_effect(action.effect, action, (), flags, watches)
-    if watches:
-        raise UnsupportedFeatureError(
-            f"acción durativa '{name}': los efectos condicionales con condiciones 'over all' "
-            "todavía no se admiten en dominios con procesos y eventos"
-        )
-    if any(c.condition is not None for c in continuous):
-        raise UnsupportedFeatureError(
-            f"acción durativa '{name}': los efectos continuos condicionales todavía no se "
-            "admiten en dominios con procesos y eventos"
-        )
 
     fixed = next((c.value for c in action.duration if c.comparator == "=" and c.time != END), None)
     uses_start = any(_uses_duration_var(e) for e in effects[START])
@@ -881,6 +1011,32 @@ def _compile_durative(
         running_atom,
         NumericEffect("assign", clock_term, Number(0.0)),
     ]
+    end_effects: list[Effect] = [*(_effect_with(e, clock_term) for e in effects[END])]
+    # Los efectos continuos: los incondicionales, en el proceso de la acción; cada uno
+    # condicional se decide al empezar (como en la 3b): un hecho recuerda si su condición se
+    # cumplía, y un proceso aparte lo aplica mientras la acción sigue en curso.
+    rates: list[Effect] = [NumericEffect("increase", clock_term, Number(1.0))]
+    gated: list[Action] = []
+    for k, item in enumerate(continuous):
+        rate = _replace_duration(item.effect.rate, fixed)
+        numeric = NumericEffect(item.effect.op, item.effect.fluent, rate)  # type: ignore[arg-type]
+        if item.condition is None:
+            rates.append(ForallEffect(item.parameters, numeric) if item.parameters else numeric)
+            continue
+        flag_parameters = (*parameters, *item.parameters)
+        flag = Predicate(f"rate@{name}@{k}", flag_parameters)
+        flags.append(flag)
+        atom = Atom(flag.name, tuple(p.variable for p in flag_parameters))
+        set_flag: Effect = When(item.condition, atom)
+        clear: Effect = Not(atom)
+        if item.parameters:
+            set_flag = ForallEffect(item.parameters, set_flag)
+            clear = ForallEffect(item.parameters, clear)
+        start_effects.append(set_flag)
+        end_effects.append(clear)
+        gated.append(
+            Action(f"{name}#{k}@{_RUN}", flag_parameters, And((running_atom, atom)), numeric)
+        )
     end_conditions: list[Formula] = [
         *(_formula_with(c, clock_term) for c in conditions[END]),
     ]
@@ -918,28 +1074,19 @@ def _compile_durative(
         end_conditions.append(invariant)
     end_conditions.append(running_atom)
 
+    guard = _start_guard(action, conditions[ALL], effects[START], domain, volatile)
     start = Action(
         f"{name}@start",
         parameters,
-        And((And(tuple(conditions[START])), Not(running_atom))),
+        And((And(tuple(conditions[START])), *guard, Not(running_atom))),
         And(tuple(start_effects)),
     )
     end = Action(
         f"{name}@end",
         parameters,
         And(tuple(end_conditions)),
-        And(
-            (
-                *(_effect_with(e, clock_term) for e in effects[END]),
-                Not(running_atom),
-            )
-        ),
+        And((*end_effects, Not(running_atom))),
     )
-    rates: list[Effect] = [NumericEffect("increase", clock_term, Number(1.0))]
-    for item in continuous:
-        rate = _replace_duration(item.effect.rate, fixed)
-        numeric = NumericEffect(item.effect.op, item.effect.fluent, rate)  # type: ignore[arg-type]
-        rates.append(ForallEffect(item.parameters, numeric) if item.parameters else numeric)
     run = Action(f"{name}@{_RUN}", parameters, running_atom, And(tuple(rates)))
     compiled = _Durative(
         action,
@@ -952,8 +1099,30 @@ def _compile_durative(
         tuple(minimums),
         tuple(maximum_bounds),
         tuple(maximums),
+        tuple(watches),
     )
-    return [start, end, run], compiled, [running, *flags], [clock, *bounds]
+    return [start, end, run, *gated], compiled, [running, *flags], [clock, *bounds]
+
+
+def _watches(
+    item: _Durative,
+    args: tuple[str, ...],
+    binding: Binding,
+    context: GroundingContext,
+    fact_index: Mapping[Atom, int],
+) -> tuple[Watch, ...]:
+    """Los vigilantes de una acción instanciada (los de ``forall``, expandidos); uno cuyo
+    hecho no es alcanzable nunca se activa y se descarta."""
+    watches = []
+    for watch in item.watches:
+        for inner in context.normalizer.expand(watch.parameters, binding):
+            values = (*args, *(inner[p.name] for p in watch.parameters))
+            flag = fact_index.get(Atom(watch.flag.name, tuple(Constant(v) for v in values)))
+            if flag is None:
+                continue
+            start = None if watch.start is None else context.conditions(watch.start, inner)
+            watches.append(Watch(flag, start, context.conditions(watch.over_all, inner)))
+    return tuple(watches)
 
 
 def _variables(
@@ -1027,23 +1196,18 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
     """Instancia un dominio con procesos y eventos (ver la documentación del módulo)."""
     if delta <= 0:
         raise ValueError("el paso de tiempo δ tiene que ser positivo")
-    if problem.timed_literals:
-        raise UnsupportedFeatureError(
-            "los literales iniciales temporizados todavía no se admiten con procesos y eventos"
-        )
-    if domain.constraints is not None or problem.constraints is not None:
-        raise UnsupportedFeatureError(
-            "las restricciones de trayectoria todavía no se admiten con procesos y eventos"
-        )
 
     compiled: dict[str, _Durative] = {}
     actions: list[Action] = list(domain.actions)
     predicates: list[Predicate] = list(domain.predicates)
     functions: list[Function] = list(domain.functions)
     changing = _changing_functions(domain)
+    volatile = domain.derived_predicates | {
+        name for event in domain.events for name in _effect_predicates(event.effect)
+    }
     for durative_action in domain.durative_actions:
         schemas, item, extra_predicates, extra_functions = _compile_durative(
-            durative_action, changing
+            durative_action, changing, domain, volatile
         )
         compiled[durative_action.name] = item
         actions += schemas
@@ -1052,6 +1216,23 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
     actions += [
         Action(f"{e.name}@{_EVENT}", e.parameters, e.precondition, e.effect) for e in domain.events
     ]
+    # Los TIL y los instantes de las restricciones con tiempo (TIL sin literales: su hecho
+    # til-done@k marca que el instante ha pasado, ver pyplanner.grounding.monitors), como
+    # eventos de un reloj global.
+    til_times = tuple(sorted({literal.time for literal in problem.timed_literals}))
+    markers = marker_times(domain, problem)
+    clock_times = sorted({*til_times, *markers})
+    preferences = has_preferences(domain, problem)
+    if clock_times:
+        til_actions, til_predicates, til_clock = _timed_literal_events(problem, clock_times)
+        actions += til_actions
+        predicates += til_predicates
+        functions.append(til_clock)
+        problem = replace(
+            problem,
+            values=(*problem.values, (FluentTerm(til_clock.name, ()), 0.0)),
+            timed_literals=(),
+        )
     actions += [
         Action(f"{p.name}@{_PROCESS}", p.parameters, p.precondition, _as_effect(p.effect))
         for p in domain.processes
@@ -1065,7 +1246,15 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
         processes=(),
         events=(),
     )
-    task, context = ground_with_context(flat, replace(problem, metric=None))
+    # Con preferencias, la métrica se compila en los costes (con su total-time, que se
+    # informa y no se optimiza: la tarea es temporal aunque no tenga marcas).
+    task, context = ground_with_context(
+        flat,
+        problem if preferences else replace(problem, metric=None),
+        time_markers={t: f"til-done@{k}" for k, t in enumerate(clock_times) if t in markers},
+    )
+    if any(m.kind == "always-within" for m in task.monitors):
+        raise UnsupportedFeatureError("'always-within' todavía no se admite con procesos y eventos")
 
     processes: dict[tuple[str, tuple[str, ...]], list[GroundAction]] = {}
     events: list[GroundAction] = []
@@ -1123,26 +1312,45 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
                 _constants(item.minimums, binding, context),
                 _variables(item.maximum_bounds, args, var_index),
                 _constants(item.maximums, binding, context),
+                _watches(item, args, binding, context, task.fact_index),
             )
         )
 
+    # Las acciones: las del dominio y los inicios y fines, las dos esperas y, con
+    # preferencias, la fase final (ver pyplanner.grounding.preferences). Sin preferencias,
+    # cada acción cuesta ACTION_COST y cada espera, lo que avanza; con ellas, los costes del
+    # grounder (un paso más lo que añaden a la métrica) y lo que un paso por espera.
+    model = task.preferences
+    first_auxiliary = len(task.actions) if model is None else model.first_auxiliary
     real: list[GroundAction] = []
     kinds: list[int] = []
     durative_of: list[int] = []
-    for action in task.actions:
+    renumbered: dict[int, int] = {}
+    for action in task.actions[:first_auxiliary]:
         base, _, kind = action.name.rpartition("@")
+        cost = ACTION_COST if model is None else action.cost
         if not base:  # acción del dominio (sin @)
-            real.append(replace(action, index=len(real), cost=ACTION_COST))
             kinds.append(INSTANT)
             durative_of.append(-1)
         elif kind in (START, END) and (base, action.args) in instance_of:
-            real.append(replace(action, index=len(real), cost=ACTION_COST))
             kinds.append(START_SNAP if kind == START else END_SNAP)
             durative_of.append(instance_of[(base, action.args)])
-    for name in (WAIT_UNTIL, WAIT):  # la espera de δ, la última
-        real.append(GroundAction(len(real), name, (), (), (), (), cost=delta))
+        else:
+            continue
+        renumbered[action.index] = len(real)
+        real.append(replace(action, index=len(real), cost=cost))
+    for name in (WAIT_UNTIL, WAIT):  # la espera de δ, la última antes de la fase final
+        cost = delta if model is None else model.step_cost
+        real.append(GroundAction(len(real), name, (), (), (), (), cost=cost))
         kinds.append(WAIT_SNAP)
         durative_of.append(-1)
+    if model is not None:
+        for action in task.actions[first_auxiliary:]:
+            renumbered[action.index] = len(real)
+            real.append(replace(action, index=len(real)))
+            kinds.append(INSTANT)
+            durative_of.append(-1)
+        model, real = _final_phase(model, renumbered, real, (r.running for r in running_actions))
 
     goal = tuple(
         Condition(
@@ -1159,7 +1367,7 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
         and metric.direction == "minimize"
         and isinstance(metric.expression, TotalTime)
     )
-    if metric is not None and not is_makespan:
+    if model is None and metric is not None and not is_makespan:
         notes.append(
             "con procesos y eventos solo se usa la métrica (minimize (total-time)); esta se ignora"
         )
@@ -1173,13 +1381,22 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
         variables=task.variables,
         notes=tuple(notes),
         axioms=task.axioms,
+        monitors=task.monitors,
+        monitor_rules=task.monitor_rules,
         delta=delta,
         processes=tuple(ground_processes),
         events=tuple(events),
         durative=tuple(running_actions),
         kinds=tuple(kinds),
         durative_of=tuple(durative_of),
-        metric_is_makespan=is_makespan,
+        metric_is_makespan=is_makespan and model is None,
+        metric_is_cost=task.metric_is_cost,
+        metric_offset=task.metric_offset,
+        metric_sign=task.metric_sign,
+        metric_time_weight=task.metric_time_weight,
+        preferences=model,
+        til_clock=var_index.get((_TIL_CLOCK, ()), -1),
+        til_times=til_times,
     )
     # Los relojes empiezan en 0 (aunque cada inicio lo vuelve a poner): con un valor
     # indefinido, la heurística no podría contar las esperas que faltan para el final.
@@ -1188,7 +1405,9 @@ def ground_discrete(domain: Domain, problem: Problem, delta: float = DELTA) -> D
         if values[instance.clock] is None:
             values[instance.clock] = 0.0
     # Los eventos que se cumplen al principio se disparan en el instante 0.
-    init = discrete.settle(State(task.init.facts, _round(tuple(values))))
+    init = discrete._monitored(
+        task.init, discrete.settle(State(task.init.facts, _round(tuple(values))))
+    )
     if init is None:
         notes.append("el estado inicial rompe una invariante o sus eventos no se detienen")
         return replace(discrete, goal=(), notes=tuple(notes))

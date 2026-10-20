@@ -183,6 +183,10 @@ def search_anytime(
         step += 1
 
     statistics.time = time.perf_counter() - start
+    if task.metric_time_weight:
+        # La duración del plan está en la métrica pero no en los costes: que no haya un plan
+        # de menor coste no demuestra que este sea óptimo.
+        lower_bound = None
     if best is None:
         if last is None:  # no ha dado tiempo a empezar, o la cota compartida ya es 0
             status = SearchStatus.LIMIT_REACHED if lower_bound is None else SearchStatus.CANCELLED
@@ -217,7 +221,7 @@ def search_anytime(
 
 def unit_cost(task: GroundTask) -> GroundTask:
     """La tarea con todas las acciones a coste 1 (para el primer plan)."""
-    return replace(task, actions=tuple(replace(a, cost=1.0) for a in task.actions))
+    return task.with_unit_costs()
 
 
 def path_cost(task: GroundTask, plan: tuple[int, ...]) -> float:
@@ -242,12 +246,18 @@ def _bound(best: SearchResult | None, shared: SharedBound | None) -> float | Non
 
 
 def _quality(task: GroundTask, plan: tuple[int, ...], cost: float) -> float:
-    """La métrica del plan si las preferencias la definen; si no, su coste."""
+    """La métrica del plan si las preferencias la definen (como la informa el plan: con su
+    signo si se maximiza y, en una tarea temporal, con la duración); si no, su coste."""
     preferences = task.preferences
     if preferences is None:
         return round(cost, 6)
-    metric = preferences.metric(task, plan, final_state(task, plan))
-    return round(metric + (task.metric_offset or 0.0), 6)
+    from pyplanner.plan import Plan
+
+    metric = Plan.from_indices(task, plan).metric
+    if metric is None:
+        metric = preferences.metric(task, plan, final_state(task, plan))
+        metric += task.metric_offset or 0.0
+    return round(metric, 6)
 
 
 def _add(total: SearchStatistics, part: SearchStatistics) -> None:

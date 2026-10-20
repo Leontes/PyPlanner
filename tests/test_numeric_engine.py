@@ -134,7 +134,7 @@ def test_action_costs_come_from_the_metric() -> None:
 @pytest.mark.parametrize(
     ("metric", "note"),
     [
-        ("(:metric maximize (total-cost))", "se maximiza"),
+        ("(:metric maximize (total-cost))", "no es una constante no negativa"),
         ("", None),
     ],
 )
