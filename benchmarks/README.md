@@ -68,7 +68,9 @@ están en el repositorio (están en `.git/info/exclude`). Se rehacen así:
   o `domain-pNN.pddl` por problema, como openstacks y parc-printer, y `pNN.pddl`):
   - las 14 de `ipc-2011/domains/*-sequential-satisficing` de
     [potassco/pddl-instances](https://github.com/potassco/pddl-instances) (`cf19edf`),
-    sin el sufijo en el nombre;
+    sin el sufijo en el nombre: barman, elevator, floor-tile, no-mystery, openstacks,
+    parc-printer, parking, peg-solitaire, scanalyzer-3d, sokoban, tidybot, transport,
+    visit-all y woodworking;
   - recharging-robots, ricochet-robots y slitherlink de `sat/` de
     [ipc2023-classical/ipc2023-dataset](https://github.com/ipc2023-classical/ipc2023-dataset)
     (`1e29a0e`).
