@@ -18,13 +18,15 @@ El planificador crece por iteraciones, y cada una amplía el lenguaje PDDL sopor
 | v0.5 | 5 | PDDL 3: restricciones de trayectoria, preferencias y funciones de objetos | ✅ |
 | v0.6 | 6 | PDDL+: procesos y eventos | ✅ |
 | v0.7 | — | Trabajo opcional: landmarks, plan relajado temporal, límite de memoria duro, grounding de tareas grandes y ritmos que fijan las acciones | ✅ |
+| v0.8 | — | Trabajo opcional: preferencias en tareas temporales, TIL, restricciones y preferencias con procesos y eventos, y búsquedas locales (EHC y paseos aleatorios) | ✅ |
 
-Las seis iteraciones de la planificación original están completas, y la v0.7 añade la
-primera parte del trabajo opcional. Después se han cubierto los huecos de cobertura
-(preferencias en tareas temporales, y literales iniciales temporizados, restricciones y
-preferencias con procesos y eventos) y se han probado dos búsquedas locales para dar más
-diversidad al portfolio. Queda: programación lineal entera para las disyunciones y un
-estudio de la integración de HTN.
+Las seis iteraciones de la planificación original están completas. La v0.7 añade la
+primera parte del trabajo opcional, y la v0.8 cubre los huecos de cobertura (preferencias
+en tareas temporales, y literales iniciales temporizados, restricciones y preferencias con
+procesos y eventos) y añade dos búsquedas locales para dar más diversidad al portfolio. La
+programación lineal entera para las disyunciones sobre variables continuas está hecha en
+la rama `opcional/milp`, sin fusionar: ninguna colección la necesita. Queda un estudio de
+la integración de HTN.
 
 **Modo estricto:** toda construcción tiene que tener su requisito declarado en
 `:requirements`. Una entrada que usa algo todavía no soportado se rechaza con un error

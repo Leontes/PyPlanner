@@ -9,4 +9,4 @@ import os
 # caso el portfolio lo detecta y arranca los procesos con ``spawn``.
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

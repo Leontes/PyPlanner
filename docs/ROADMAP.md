@@ -13,6 +13,7 @@ proyecto avanza en 6 iteraciones y cada una amplía el lenguaje que se acepta:
 | 5 | PDDL 3 (restricciones de trayectoria y preferencias; `:object-fluents`) | v0.5 | ✅ |
 | 6 | PDDL+ (procesos y eventos) | v0.6 | ✅ |
 | — | Trabajo opcional, primera parte | v0.7 | ✅ |
+| — | Trabajo opcional, segunda parte | v0.8 | ✅ |
 
 **Planificación original cerrada** (2026-10-07): las 6 iteraciones están completas y los
 tiers 1 a 6 se resuelven y validan con VAL con todos los portfolios. Lo que sigue es el
@@ -22,6 +23,12 @@ trabajo opcional: técnicas del repertorio y un estudio de la integración de HT
 **v0.7** (2026-10-18): la primera parte del trabajo opcional, con las ramas fusionadas
 juntas: límite de memoria duro, landmarks con colas alternadas, plan relajado temporal
 (h_TFF), grounding de tareas grandes y ritmos que fijan las acciones.
+
+**v0.8** (2026-10-20): la segunda parte del trabajo opcional: los huecos de cobertura
+(punto 4) y las búsquedas locales (punto 5), fusionados en ese orden. La programación
+lineal entera para las disyunciones (punto 6) está hecha en la rama `opcional/milp`, pero
+no se fusiona (decisión del usuario): no es determinante para el planificador, y queda
+implementada por si alguna vez hace falta.
 
 Referencia principal del lenguaje: [planning.wiki](https://planning.wiki/ref/pddl/requirements).
 PDDL 3 se incluye para no dejar ninguna versión a medias, no por una necesidad concreta.
@@ -660,8 +667,7 @@ funcione.
    temporales: en POPF no es mejor en todos los dominios.
    Empezar midiendo dónde se queda corta h_FF: con la parte A, `lazy-ff-pref` no resuelve
    satellite p02 (tier 4, con TIL) en 60 s, aunque `bfws-ff-pref` sí.
-4. ✅ **Huecos de cobertura** (hecho en la rama `opcional/cobertura`, 2026-10-19, pendiente
-   de fusionar; ver [motor-busqueda.md](motor-busqueda.md#preferencias-y-búsqueda-anytime-iteración-5c)
+4. ✅ **Huecos de cobertura** (hecho en la v0.8, rama `opcional/cobertura`, 2026-10-19; ver [motor-busqueda.md](motor-busqueda.md#preferencias-y-búsqueda-anytime-iteración-5c)
    y [Procesos y eventos](motor-busqueda.md#procesos-y-eventos-iteración-6b)). Daban un
    error claro y ningún tier los usaba:
    - **preferencias en tareas temporales** (de la iteración 5c): la fase final fuera de la
@@ -692,8 +698,8 @@ funcione.
    `always-within` con procesos y eventos.
 5. ✅ **Más diversidad en el portfolio**: *enforced hill-climbing* (FF) y paseos aleatorios
    (Arvand). El portfolio ya es diverso (BFWS, exploración por tipos, goalcount aleatorio):
-   solo si aparece un dominio que lo pida. Hecho en la rama `opcional/diversidad`
-   (2026-10-19, sobre `opcional/cobertura`, pendiente de fusionar; ver
+   solo si aparece un dominio que lo pida. Hecho en la v0.8, rama `opcional/diversidad`
+   (2026-10-19; ver
    [motor-busqueda.md](motor-busqueda.md#búsquedas-locales-trabajo-opcional-punto-5)):
    - `ehc-tff-pref` (EHC con acciones útiles; si se atasca, GBFS, como FF) y `mrw-tff` y
      `mrw-tff-pref` (paseos aleatorios, puros o con MHA), en `pyplanner.search.local`;
@@ -713,7 +719,10 @@ funcione.
      invariantes disyuntivas) con **programación lineal entera** (HiGHS, ya disponible con
      `scipy.optimize.milp`). El coste en eficiencia es importante (la programación entera
      puede ser exponencial), así que se activaría solo en los dominios que lo necesiten,
-     como la programación lineal ahora.
+     como la programación lineal ahora. Hecho en la rama `opcional/milp` (2026-10-20), sin
+     fusionar (decisión del usuario): ninguna colección lo necesita, así que no es
+     determinante; queda implementado por si alguna vez hace falta (su documentación está
+     en la rama).
 7. **Estudio de la integración de HTN** (planificación jerárquica): viabilidad de aceptar
    dominios HTN (HDDL, el lenguaje del track HTN de las IPC) y de combinar la
    descomposición jerárquica con nuestro motor de búsqueda. Sería una mejora bienvenida
