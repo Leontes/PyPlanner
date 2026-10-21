@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyplanner"
-version = "0.9.0"
+version = "1.0.0"
 description = "PDDL planner in Python, from STRIPS to PDDL+, based on forward heuristic search"
 readme = "README.md"
 requires-python = ">=3.12"
