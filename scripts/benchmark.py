@@ -4,10 +4,10 @@ Uso::
 
     python scripts/benchmark.py ipc-2004/satellite-time-time-windows-strips \\
         -c gbfs-ff-pref bfws-ff-pref -t 60 -m 2500 -w 4
-    python scripts/benchmark.py -d tests/tiers.toml -c bfws-ff-pref -p p01
+    python scripts/benchmark.py -d tests/dataset.toml -c bfws-ff-pref -p p01
 
 Los problemas salen del catálogo PDDLDomains del submódulo ``vendor/PDDLDomains`` (el mismo
-que usan los tests, ver ``tests/tiers.py``):
+que usan los tests, ver ``tests/catalog.py``):
 
 * una colección, por su identificador o, si no es ambigua, por su parte final
   (``satellite-time-time-windows-strips``);
@@ -178,7 +178,7 @@ def _problems(source: str | None, dataset: str | None) -> list[tuple[dict[str, s
     if source is not None and Path(source).is_dir():
         return [({}, _domain_of(p), p) for p in sorted(Path(source).glob("p[0-9]*.pddl"))]
     sys.path.insert(0, str(ROOT))
-    from tests.tiers import catalog
+    from tests.catalog import catalog
 
     domains = catalog()  # siempre el del submódulo (y desde aquí se puede importar pddldomains)
     if dataset is not None:

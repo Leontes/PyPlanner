@@ -5,8 +5,8 @@ from typing import Any
 import pytest
 
 from pyplanner.pddl import parse_file, parse_pddl, write_pddl
+from tests.catalog import Instance, instances
 from tests.samples import DOMAIN, PROBLEM
-from tests.tiers import Instance, discover_instances
 
 EMPTY = {"op": "and", "args": []}
 
@@ -34,11 +34,11 @@ def test_empty_conjunction_is_written_compactly() -> None:
     assert ":precondition (and)" in write_pddl(document)
 
 
-TIER1 = [i for i in discover_instances() if i.tier == 1]
+STRIPS = [i for i in instances() if i.level == 1]
 
 
-@pytest.mark.parametrize("instance", TIER1, ids=lambda i: i.id)
-def test_round_trip_tier1(instance: Instance) -> None:
+@pytest.mark.parametrize("instance", STRIPS, ids=lambda i: i.id)
+def test_round_trip_strips(instance: Instance) -> None:
     for path in (instance.domain, instance.problem):
         document = parse_file(path, locations=False)
         del document["source"]

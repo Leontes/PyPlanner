@@ -30,7 +30,7 @@ from pyplanner.loader.ast import (
 )
 from pyplanner.pddl import parse_domain, parse_pddl, parse_problem, write_pddl
 from pyplanner.schema import validate_document
-from tests.tiers import tier_dir
+from tests.catalog import collection_dir
 
 # Un depósito que se llena mientras el grifo está abierto y se desborda si pasa de 10.
 TANK = """
@@ -89,9 +89,9 @@ def test_processes_and_events_in_documents() -> None:
         assert parse_pddl(write_pddl(doc), locations=False) == doc
 
 
-@pytest.mark.parametrize("domain", ["car", "generator"])
-def test_tier6_documents_round_trip(domain: str) -> None:
-    directory = tier_dir(f"tier6/{domain}")
+@pytest.mark.parametrize("collection", ["smtplan/car-nodrag", "smtplan/generator-events"])
+def test_pddlplus_documents_round_trip(collection: str) -> None:
+    directory = collection_dir(collection)
     for name in ("domain", "p01", "p02"):
         doc = parse_pddl((directory / f"{name}.pddl").read_text(), locations=False)
         validate_document(doc)
@@ -155,13 +155,13 @@ def test_processes_and_events_in_the_ast() -> None:
     )
 
 
-def test_tier6_processes() -> None:
-    car = read_domain(tier_dir("tier6/car") / "domain.pddl")
+def test_pddlplus_collections_processes() -> None:
+    car = read_domain(collection_dir("smtplan/car-nodrag") / "domain.pddl")
     [moving] = car.processes
     assert isinstance(moving.effect, DurativeAnd) and len(moving.effect.args) == 3
     assert moving.effect.args[1] == ContinuousEffect("increase", FluentTerm("d"), FluentTerm("v"))
     assert [e.name for e in car.events] == ["engineexplode"]
-    generator = read_domain(tier_dir("tier6/generator") / "domain.pddl")
+    generator = read_domain(collection_dir("smtplan/generator-events") / "domain.pddl")
     [refuelling] = generator.processes
     assert isinstance(refuelling.effect, DurativeAnd)
     rate = refuelling.effect.args[0].rate  # type: ignore[union-attr]
@@ -214,9 +214,9 @@ def test_processes_from_json() -> None:
     assert problem.domain_name == "tank"
 
 
-def test_tier6_problems_load() -> None:
-    for name in ("car", "generator"):
-        directory = tier_dir(f"tier6/{name}")
+def test_pddlplus_problems_load() -> None:
+    for collection in ("smtplan/car-nodrag", "smtplan/generator-events"):
+        directory = collection_dir(collection)
         domain = read_domain(directory / "domain.pddl")
         for problem in ("p01", "p02"):
             assert read_problem(directory / f"{problem}.pddl", domain).values

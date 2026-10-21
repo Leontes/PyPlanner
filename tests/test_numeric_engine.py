@@ -1,4 +1,4 @@
-"""Motor numérico (iteración 3a): grounding, semántica de los efectos, h^hbd y búsqueda."""
+"""Motor numérico: grounding, semántica de los efectos, h^hbd y búsqueda."""
 
 import math
 

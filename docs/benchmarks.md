@@ -1,7 +1,7 @@
 # Benchmarks de medición
 
 Para **medir** el rendimiento del planificador se usan colecciones más grandes que las de
-los [tiers](tiers.md), todas del catálogo
+los [problemas de prueba](pruebas.md), todas del catálogo
 [PDDLDomains](https://github.com/Leontes/PDDLDomains) del submódulo `vendor/PDDLDomains`.
 No forman parte de los tests: hay instancias que el planificador puede no resolver.
 
@@ -14,7 +14,7 @@ es ambigua, su parte final), un dataset del catálogo (`-d`, por nombre o un fic
 ```
 python scripts/benchmark.py ipc-2004/satellite-time-time-windows-strips \
     -c gbfs-ff-pref bfws-ff-pref -t 60 -m 2500 -w 3
-python scripts/benchmark.py -d tests/tiers.toml -c bfws-ff-pref
+python scripts/benchmark.py -d tests/dataset.toml -c bfws-ff-pref
 ```
 
 Cada proceso tiene además un límite duro de memoria (`--memory` + 512 MB) que cubre
@@ -23,7 +23,8 @@ memoria disponible: dos medidas sin esas garantías agotaron la memoria de WSL. 
 miembro de los portfolios que usa la GPU, `-w 3`.
 
 Las erratas corregidas de cada colección están en su ficha del catálogo (`info.toml`), con
-las mismas marcas que en los tiers: (*) para las de `:requirements` y (‡) para las demás.
+las mismas marcas que en los problemas de prueba: (*) para las de `:requirements` y (‡)
+para las demás.
 
 ## Colecciones
 

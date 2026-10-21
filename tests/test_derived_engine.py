@@ -15,9 +15,9 @@ from pyplanner.pddl import parse_pddl, write_pddl
 from pyplanner.plan import Plan
 from pyplanner.search import PRESETS, SearchStatus, search
 from pyplanner.search.engine import EagerSearch
+from tests.catalog import VALIDATE
 from tests.tasks import build
 from tests.test_heuristics import ACCELERATED_DEVICES, all_states
-from tests.tiers import VALIDATE
 
 # Un grafo dirigido cuyos arcos se pueden cortar. reach es el cierre transitivo desde el
 # origen (regla recursiva, estrato 0) e isolated, su negación sobre los nodos (estrato 1).
@@ -272,8 +272,9 @@ def test_temporal_steps_are_ordered_after_what_derived_facts_depend_on(tmp_path:
 
 
 def test_derived_facts_on_continuous_variables_use_the_discrete_engine(tmp_path: Path) -> None:
-    """El programa lineal de la 3b no puede decidir un hecho derivado de una variable que
-    cambia de forma continua: la tarea pasa al motor con el tiempo discretizado (6b)."""
+    """El programa lineal del motor temporal no puede decidir un hecho derivado de una
+    variable que cambia de forma continua: la tarea pasa al motor con el tiempo
+    discretizado."""
     domain = """
 (define (domain tank)
   (:requirements :durative-actions :derived-predicates :numeric-fluents :continuous-effects)

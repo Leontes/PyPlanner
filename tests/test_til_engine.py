@@ -11,10 +11,10 @@ from pyplanner.heuristics import create_heuristic, numba_available
 from pyplanner.heuristics.deadlines import DeadlineHeuristic
 from pyplanner.plan import Plan, simulate
 from pyplanner.search import PRESETS, SearchStatus, search
+from tests.catalog import VALIDATE, collection_dir
 from tests.tasks import build
 from tests.test_heuristics import random_walk_states
 from tests.test_temporal_engine import light
-from tests.tiers import VALIDATE, tier_dir
 
 # Una ventana: (open) solo es cierto entre los instantes 10 y 20, y (work) lo necesita
 # durante toda la acción. El hecho solo lo cambian los TIL: no es estático.
@@ -199,7 +199,7 @@ def satellite(name: str) -> TemporalTask:
     from pyplanner.frontend import read_domain, read_problem
     from pyplanner.grounding import ground
 
-    directory = tier_dir("tier4/timed-initial-literals/satellite")
+    directory = collection_dir("ipc-2004/satellite-time-time-windows-strips")
     domain = read_domain(directory / "domain.pddl")
     task = ground(domain, read_problem(directory / f"{name}.pddl", domain))
     assert isinstance(task, TemporalTask)

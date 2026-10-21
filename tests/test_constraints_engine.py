@@ -11,8 +11,8 @@ from pyplanner.grounding.temporal import TemporalTask
 from pyplanner.heuristics import create_heuristic
 from pyplanner.plan import Plan, simulate
 from pyplanner.search import PRESETS, SearchStatus, search
+from tests.catalog import VALIDATE, collection_dir
 from tests.tasks import build
-from tests.tiers import VALIDATE, tier_dir
 
 # Lámparas que se encienden y se apagan.
 SWITCHES = """
@@ -230,7 +230,7 @@ def test_temporal_untimed_constraints(tmp_path: Path) -> None:
 
 
 def test_trucks() -> None:
-    path = tier_dir("tier5/constraints/trucks")
+    path = collection_dir("ipc-2006/trucks-time-constraints")
     domain, problem = (path / "domain.pddl").read_text(), (path / "p01.pddl").read_text()
     task, plan = solve(domain, problem, "bfws-ff-pref")
     assert len(task.monitors) == 3

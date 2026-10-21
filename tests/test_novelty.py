@@ -9,8 +9,8 @@ from pyplanner.portfolio import _most_informative
 from pyplanner.search import PRESETS, ConfigError, SearchConfig, SearchStatus, search
 from pyplanner.search.novelty import NoveltyTable
 from pyplanner.search.result import SearchResult
+from tests.catalog import collection_dir
 from tests.tasks import chain, dead_end, fork, token
-from tests.tiers import tier_dir
 
 # --- Tabla de novedad -----------------------------------------------------------------
 
@@ -106,7 +106,7 @@ def test_invalid_novelty_configurations(changes: dict[str, object], message: str
 
 
 def blocksworld() -> tuple[object, ...]:
-    directory = tier_dir("tier1/blocksworld")
+    directory = collection_dir("ipc-2000/blocks-strips-untyped")
     domain = read_domain(directory / "domain.pddl")
     return domain, read_problem(directory / "p01.pddl", domain)
 

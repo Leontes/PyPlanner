@@ -1,6 +1,6 @@
-"""Motor discretizado de PDDL+ (iteración 6b): integración de los procesos, eventos en su
-instante exacto, acciones durativas compiladas, validación con un paso más fino y planes
-del tier 6 validados con VAL."""
+"""Motor discretizado de PDDL+: integración de los procesos, eventos en su instante exacto,
+acciones durativas compiladas, validación con un paso más fino y planes de las colecciones
+de PDDL+ validados con VAL."""
 
 import math
 import re
@@ -23,8 +23,8 @@ from pyplanner.plan import Plan, simulate
 from pyplanner.planner import solve
 from pyplanner.search import PRESETS, SearchStatus, search
 from pyplanner.search.novelty import NoveltyTable
+from tests.catalog import VALIDATE, collection_dir
 from tests.tasks import build
-from tests.tiers import VALIDATE, tier_dir
 
 # --- Integración ---------------------------------------------------------------------
 
@@ -203,7 +203,8 @@ def test_invariants_are_checked_with_a_finer_step() -> None:
 
 
 # Un calefactor: la potencia crece con el tiempo y la temperatura, con la potencia
-# (t²/2). Es PDDL 2.1 (sin procesos), pero la programación lineal de la 3b no lo admite.
+# (t²/2). Es PDDL 2.1 (sin procesos), pero la programación lineal del motor temporal no lo
+# admite.
 HEATER = """
 (define (domain heater)
   (:requirements :numeric-fluents :durative-actions :continuous-effects)
@@ -275,7 +276,7 @@ def test_continuous_variables_do_not_count_for_novelty() -> None:
     assert waited is not None and table.novelty(waited) == 2  # solo cambia (level)
 
 
-# --- Literales iniciales temporizados y restricciones (trabajo opcional, punto 4) ------
+# --- Literales iniciales temporizados y restricciones ---------------------------------
 
 # Una bomba que llena un depósito a ritmo 2, solo con luz de día (un TIL la trae a las 1 y
 # otro se la lleva a las 6); al anochecer, un evento la para.
@@ -384,7 +385,7 @@ def test_preferences_with_processes(
     assert not report or "Plan valid" in report
 
 
-# --- Efectos condicionales en acciones durativas (trabajo opcional, punto 4) -----------
+# --- Efectos condicionales en acciones durativas --------------------------------------
 
 # Un horno que calienta a ritmo 1 mientras hornea, y a ritmo 3 si el turbo estaba puesto al
 # empezar; hornea si la puerta sigue cerrada todo el tiempo. Un resorte abre la puerta al
@@ -417,7 +418,7 @@ def oven_plus(goal: str, init: str = "") -> str:
 
 
 def test_conditional_effects_with_over_all_conditions(tmp_path: Path) -> None:
-    """Como en la 3b, un vigilante: se activa al empezar si la puerta está cerrada y se
+    """Como en el motor temporal, un vigilante: se activa al empezar si la puerta está cerrada y se
     apaga en cuanto se abre (aquí, con el resorte, a mitad de una espera); entonces el
     horno no hornea. Con la puerta cerrada con llave antes de llegar a 2, sí."""
     task = build(OVEN_PLUS, oven_plus("(baked)"))
@@ -461,7 +462,7 @@ def test_conditional_continuous_effects(tmp_path: Path) -> None:
     assert not report or "Plan valid" in report
 
 
-# --- Tier 6 con VAL -------------------------------------------------------------------
+# --- Colecciones de PDDL+ con VAL -----------------------------------------------------
 
 
 def val(domain: Path, problem: Path, plan: Plan, tmp_path: Path) -> str:
@@ -475,10 +476,10 @@ def val(domain: Path, problem: Path, plan: Plan, tmp_path: Path) -> str:
     ).stdout
 
 
-@pytest.mark.parametrize("name", ["car", "generator"])
+@pytest.mark.parametrize("collection", ["smtplan/car-nodrag", "smtplan/generator-events"])
 @pytest.mark.parametrize("problem", ["p01", "p02"])
-def test_tier6(name: str, problem: str, tmp_path: Path) -> None:
-    directory = tier_dir(f"tier6/{name}")
+def test_pddlplus_collections(collection: str, problem: str, tmp_path: Path) -> None:
+    directory = collection_dir(collection)
     domain_path, problem_path = directory / "domain.pddl", directory / f"{problem}.pddl"
     domain = read_domain(domain_path)
     result = solve(domain, read_problem(problem_path, domain), [PRESETS["bfws-ff-pref"]],
@@ -493,7 +494,7 @@ def test_tier6(name: str, problem: str, tmp_path: Path) -> None:
 
 
 def test_cli_delta(capsys: pytest.CaptureFixture[str]) -> None:
-    car = tier_dir("tier6/car")
+    car = collection_dir("smtplan/car-nodrag")
     code = main(["solve", "-c", "bfws-ff-pref", "--delta", "0.5",
                  str(car / "domain.pddl"), str(car / "p01.pddl")])  # fmt: skip
     assert code == 0

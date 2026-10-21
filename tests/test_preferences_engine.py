@@ -24,10 +24,10 @@ from pyplanner.portfolio import run_portfolio
 from pyplanner.schema import validate_document
 from pyplanner.search import PRESETS, SearchStatus, search
 from pyplanner.search.anytime import anytime_schedule, search_anytime
+from tests.catalog import VALIDATE, collection_dir
 from tests.tasks import build
-from tests.tiers import VALIDATE, tier_dir
 
-STORAGE = tier_dir("tier5/preferences/storage")
+STORAGE = collection_dir("ipc-2006/storage-preferences-qualitative")
 
 # Lámparas que se encienden y se apagan.
 SWITCHES = """

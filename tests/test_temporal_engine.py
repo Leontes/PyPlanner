@@ -1,4 +1,4 @@
-"""Motor temporal (iteración 3b): acciones de inicio y fin, órdenes, red temporal y planes."""
+"""Motor temporal: acciones de inicio y fin, órdenes, red temporal y planes."""
 
 import pickle
 import subprocess
@@ -21,10 +21,10 @@ from pyplanner.loader.ast import FluentTerm
 from pyplanner.plan import Plan, simulate
 from pyplanner.schema import validate_document
 from pyplanner.search import PRESETS, SearchStatus, search
+from tests.catalog import VALIDATE, collection_dir
 from tests.tasks import build
 from tests.test_heuristics import ACCELERATED_DEVICES
 from tests.test_numeric_engine import reachable
-from tests.tiers import VALIDATE, tier_dir
 
 requires_val = pytest.mark.skipif(not VALIDATE.exists(), reason="VAL no está compilado")
 
@@ -438,11 +438,10 @@ def test_relaxation_integrates_continuous_effects() -> None:
 
 
 # --- Certificación: combinaciones poco habituales ------------------------------------
-# No hay benchmarks públicos que las usen: el dominio ad hoc greenhouse (tier3/temporal/
-# greenhouse, propios/greenhouse en el catálogo) las reúne todas. Aquí se prueba con más
-# problemas y pieza a pieza.
+# No hay benchmarks públicos que las usen: el dominio ad hoc greenhouse (propios/greenhouse
+# en el catálogo) las reúne todas. Aquí se prueba con más problemas y pieza a pieza.
 
-GREENHOUSE_DOMAIN = (tier_dir("tier3/temporal/greenhouse") / "domain.pddl").read_text(
+GREENHOUSE_DOMAIN = (collection_dir("propios/greenhouse") / "domain.pddl").read_text(
     encoding="utf-8"
 )
 GREENHOUSE_PROBLEM = """
@@ -578,7 +577,7 @@ def test_temporal_tasks_and_states_can_be_pickled() -> None:
     assert restored == state and restored.timeline.earliest == state.timeline.earliest
 
 
-# --- Órdenes compatibles con VAL (corregidas en la iteración 4) ----------------------
+# --- Órdenes compatibles con VAL ------------------------------------------------------
 
 PRODUCE_DOMAIN = """
 (define (domain factory) (:requirements :durative-actions)
@@ -639,7 +638,7 @@ def test_a_write_that_keeps_the_value_is_separated_from_readers(tmp_path: Path) 
         assert "Plan valid" in val(PRODUCE_DOMAIN, PRODUCE_PROBLEM, plan, tmp_path)
 
 
-# --- Guarda de inicio (trabajo opcional, punto 4) --------------------------------------
+# --- Guarda de inicio -----------------------------------------------------------------
 
 # Hornear una bandeja exige, todo el tiempo, que esté en ese horno (estático) y que el horno
 # esté cerrado; ninguna condición 'at start'.

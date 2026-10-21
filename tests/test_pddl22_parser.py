@@ -25,7 +25,7 @@ from pyplanner.loader.ast import (
 )
 from pyplanner.pddl import parse_domain, parse_pddl, parse_problem, write_pddl
 from pyplanner.schema import validate_document
-from tests.tiers import tier_dir
+from tests.catalog import collection_dir
 
 DERIVED = ":typing :derived-predicates :negative-preconditions :existential-preconditions"
 BASE = "(:types t) (:predicates (p ?x - t) (q ?x - t) (r ?x ?y - t) (s))"
@@ -299,7 +299,7 @@ def test_schema_rejects_negative_times_and_compound_literals() -> None:
         validate_document(document)
 
 
-# --- Documentos completos y tier 4 ----------------------------------------------------
+# --- Documentos completos y colecciones de PDDL 2.2 -----------------------------------
 
 FULL_DOMAIN = f"""
 (define (domain d) (:requirements {DERIVED} :durative-actions :timed-initial-literals)
@@ -332,11 +332,11 @@ def test_round_trip_and_schema() -> None:
 
 @pytest.mark.parametrize(
     "directory",
-    ["derived-predicates/psr-middle", "timed-initial-literals/satellite"],
+    ["ipc-2004/psr-middle-derived-predicates-adl", "ipc-2004/satellite-time-time-windows-strips"],
 )
 @pytest.mark.parametrize("name", ["p01", "p02"])
-def test_tier4_benchmarks_load(directory: str, name: str) -> None:
-    path = tier_dir(f"tier4/{directory}")
+def test_pddl22_collections_load(directory: str, name: str) -> None:
+    path = collection_dir(directory)
     loaded = read_domain(path / "domain.pddl")
     result = read_problem(path / f"{name}.pddl", loaded)
     assert loaded.derived or result.timed_literals

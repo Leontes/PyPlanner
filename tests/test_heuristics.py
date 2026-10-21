@@ -14,8 +14,8 @@ from pyplanner.heuristics import (
     create_heuristic,
     numba_available,
 )
+from tests.catalog import Instance, instances
 from tests.tasks import chain, dead_end, fork, goal_state, token, unreachable
-from tests.tiers import Instance, discover_instances, planner_supports
 
 try:
     import torch
@@ -110,13 +110,10 @@ def random_walk_states(task: GroundTask, count: int, seed: int = 0) -> list[Stat
     return states
 
 
-SUPPORTED = [i for i in discover_instances() if planner_supports(i)]
-
-
 @requires_accelerated
 @pytest.mark.parametrize("device", ACCELERATED_DEVICES)
 @pytest.mark.parametrize("name", TENSOR_HEURISTICS)
-@pytest.mark.parametrize("instance", SUPPORTED, ids=lambda i: i.id)
+@pytest.mark.parametrize("instance", instances(), ids=lambda i: i.id)
 def test_accelerated_matches_reference(instance: Instance, name: str, device: str) -> None:
     domain = read_domain(instance.domain)
     task = ground(domain, read_problem(instance.problem, domain))

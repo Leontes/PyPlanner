@@ -1,0 +1,39 @@
+description = """
+Problemas de prueba de PyPlanner: los dos primeros de quince colecciones del catálogo, al menos
+dos por nivel de versión de PDDL, de STRIPS a PDDL+ (ver 'pddldomains levels'). Como en el
+dataset by-level, cada colección es un grupo level<N>/<colección>, con el nivel que le da el
+catálogo.
+"""
+description-en = """
+PyPlanner test problems: the first two of fifteen catalog collections, at least two per PDDL
+version level, from STRIPS to PDDL+ (see 'pddldomains levels'). As in the by-level dataset,
+each collection is a group level<N>/<collection>, with the level the catalog assigns to it.
+"""
+
+[[select]]
+collections = [
+    # Nivel 1, STRIPS
+    "ipc-2000/blocks-strips-untyped",
+    "ipc-1998/gripper-round-1-strips",
+    # Nivel 2, PDDL 1.2 (ADL)
+    "ipc-2023-classical/rubiks-cube",
+    "ipc-2023-classical/slitherlink",
+    # Nivel 3, PDDL 2.1: numéricos
+    "ipc-2023-numeric/counters",
+    "ipc-2023-numeric/zenotravel",
+    # Nivel 3, PDDL 2.1: temporales (greenhouse reúne casos límite, ver su ficha)
+    "ipc-2002/driverlog-time-simple-automatic",
+    "ipc-2002/zenotravel-time-simple-automatic",
+    "propios/greenhouse",
+    # Nivel 4, PDDL 2.2: predicados derivados y literales iniciales temporizados
+    "ipc-2004/psr-middle-derived-predicates-adl",
+    "ipc-2004/satellite-time-time-windows-strips",
+    # Nivel 5, PDDL 3: restricciones de trayectoria y preferencias
+    "ipc-2006/trucks-time-constraints",
+    "ipc-2006/storage-preferences-qualitative",
+    # Nivel 6, PDDL+: procesos y eventos
+    "smtplan/car-nodrag",
+    "smtplan/generator-events",
+]
+problems = ["p01", "p02"]
+group = "level{level}/{id}"

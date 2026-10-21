@@ -1,4 +1,4 @@
-"""Landmarks de la relajación y su conteo al estilo de LAMA (trabajo opcional, punto 2)."""
+"""Landmarks de la relajación y su conteo al estilo de LAMA."""
 
 import pytest
 

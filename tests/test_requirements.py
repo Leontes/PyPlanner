@@ -34,10 +34,10 @@ def test_strips_is_supported() -> None:
 def test_unsupported_requirements_are_reported_expanded() -> None:
     assert unsupported_requirements([":object-fluents"]) == []  # PDDL 3.1
     assert unsupported_requirements([":preferences", ":constraints"]) == []  # PDDL 3
-    assert unsupported_requirements([":derived-predicates"]) == []  # PDDL 2.2: iteración 4
-    assert unsupported_requirements([":fluents"]) == []  # numérico: iteración 3a
-    assert unsupported_requirements([":durative-actions"]) == []  # temporal: iteración 3b
-    assert unsupported_requirements([":time"]) == []  # PDDL+: iteración 6
+    assert unsupported_requirements([":derived-predicates"]) == []  # PDDL 2.2
+    assert unsupported_requirements([":fluents"]) == []  # PDDL 2.1, numérico
+    assert unsupported_requirements([":durative-actions"]) == []  # PDDL 2.1, temporal
+    assert unsupported_requirements([":time"]) == []  # PDDL+
     assert unsupported_requirements([":adl", ":open-world"]) == [":open-world"]
 
 

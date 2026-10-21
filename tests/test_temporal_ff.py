@@ -1,5 +1,4 @@
-"""h_TFF: el plan relajado temporal (trabajo opcional, punto 3: parte B de la heurística
-temporal)."""
+"""h_TFF: el plan relajado temporal, con los instantes más tempranos de las acciones."""
 
 import pytest
 
@@ -10,12 +9,12 @@ from pyplanner.heuristics import create_heuristic, numba_available
 from pyplanner.heuristics.temporal_ff import TemporalFFHeuristic
 from pyplanner.plan import simulate
 from pyplanner.search import PRESETS, SearchStatus, search
+from tests.catalog import collection_dir
 from tests.tasks import build
 from tests.test_heuristics import random_walk_states
 from tests.test_search import GRIPPER
 from tests.test_temporal_engine import light
 from tests.test_til_engine import deadline_heuristic, reachable_states, satellite, window
-from tests.tiers import tier_dir
 
 # La puerta a cierra antes de que quepa la acción que la cruza: h_FF propone cruzarla (tiene
 # el índice menor) y h_TFF, la puerta b.
@@ -34,8 +33,8 @@ TWO_GATES_PROBLEM = """
 """
 
 
-def temporal_tier(path: str, problem: str = "p01") -> TemporalTask:
-    directory = tier_dir(path)
+def catalog_task(collection: str, problem: str = "p01") -> TemporalTask:
+    directory = collection_dir(collection)
     domain = read_domain(directory / "domain.pddl")
     task = ground(domain, read_problem(directory / f"{problem}.pddl", domain))
     assert isinstance(task, TemporalTask)
@@ -107,14 +106,14 @@ def tasks_and_states() -> list[tuple[str, TemporalTask, list[State]]]:
     for name in ("p01", "p02"):
         task = satellite(name)
         cases.append((f"satellite-{name}", task, random_walk_states(task, 800, seed=3)))
-    for path in (
-        "tier3/temporal/driverlog",
-        "tier3/temporal/zenotravel",
-        "tier3/temporal/greenhouse",
-        "tier5/constraints/trucks",
+    for collection in (
+        "ipc-2002/driverlog-time-simple-automatic",
+        "ipc-2002/zenotravel-time-simple-automatic",
+        "propios/greenhouse",
+        "ipc-2006/trucks-time-constraints",
     ):
-        task = temporal_tier(path)
-        cases.append((path.rsplit("/", 1)[1], task, random_walk_states(task, 400, seed=5)))
+        task = catalog_task(collection)
+        cases.append((collection.rsplit("/", 1)[1], task, random_walk_states(task, 400, seed=5)))
     return cases
 
 
@@ -136,7 +135,7 @@ def test_tensors_match_the_reference() -> None:
 @pytest.mark.parametrize("preset", ["gbfs-tff-pref", "lazy-tff-pref", "bfws-tff-pref"])
 def test_tff_searches_find_valid_plans(preset: str) -> None:
     tasks: list[GroundTask] = [window(5), two_gates(), satellite("p01"), satellite("p02")]
-    tasks += [temporal_tier("tier3/temporal/driverlog"), GRIPPER]
+    tasks += [catalog_task("ipc-2002/driverlog-time-simple-automatic"), GRIPPER]
     for task in tasks:
         result = search(task, PRESETS[preset])
         assert result.status is SearchStatus.SOLVED and result.plan is not None

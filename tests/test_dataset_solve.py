@@ -1,9 +1,9 @@
-"""Evaluación por tiers del planificador completo: plan encontrado y validado con VAL.
+"""El planificador completo sobre los problemas de prueba: plan encontrado y validado con VAL.
 
-Cada instancia de los tiers soportados se resuelve con el portfolio de cada número de
-núcleos (de 1 a 7), y el plan se valida con VAL (``tools/bin/Validate``, ver
-``scripts/build_val.sh``). Si el plan informa de la métrica, tiene que coincidir con la de
-VAL. Si VAL no está compilado, estos tests se saltan.
+Cada problema de prueba (``tests/dataset.toml``, de STRIPS a PDDL+) se resuelve con el
+portfolio de cada número de núcleos (de 1 a 7), y el plan se valida con VAL
+(``tools/bin/Validate``, ver ``scripts/build_val.sh``). Si el plan informa de la métrica,
+tiene que coincidir con la de VAL. Si VAL no está compilado, estos tests se saltan.
 """
 
 import re
@@ -15,13 +15,11 @@ import pytest
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.planner import solve
 from pyplanner.search import PORTFOLIOS, SearchStatus, portfolio_for_cores
-from tests.tiers import VALIDATE, Instance, discover_instances, planner_supports
+from tests.catalog import VALIDATE, Instance, instances
 
 requires_val = pytest.mark.skipif(
     not VALIDATE.exists(), reason="VAL no está compilado (scripts/build_val.sh)"
 )
-
-INSTANCES = [i for i in discover_instances() if planner_supports(i)]
 
 #: Límite de tiempo por instancia en los tests.
 TIME_LIMIT = 120.0
@@ -45,10 +43,8 @@ def validate_with_val(instance: Instance, plan_file: Path) -> str:
 
 @requires_val
 @pytest.mark.parametrize("cores", sorted(PORTFOLIOS), ids=lambda n: f"{n}-cores")
-@pytest.mark.parametrize("instance", INSTANCES, ids=lambda i: i.id)
-def test_supported_tiers_are_solved_and_validated(
-    instance: Instance, cores: int, tmp_path: Path
-) -> None:
+@pytest.mark.parametrize("instance", instances(), ids=lambda i: i.id)
+def test_dataset_is_solved_and_validated(instance: Instance, cores: int, tmp_path: Path) -> None:
     domain = read_domain(instance.domain)
     problem = read_problem(instance.problem, domain)
     result = solve(domain, problem, portfolio_for_cores(cores), time_limit=TIME_LIMIT)
@@ -67,7 +63,7 @@ def test_val_rejects_a_bad_plan(tmp_path: Path) -> None:
     """Comprueba que la validación con VAL detecta planes incorrectos."""
     if not VALIDATE.exists():
         pytest.skip("VAL no está compilado")
-    instance = next(i for i in discover_instances() if i.tier == 1)
+    instance = next(i for i in instances() if i.level == 1)
     plan_file = tmp_path / "bad.ipc"
     plan_file.write_text("(this-action-does-not-exist)\n")
     assert "Plan valid" not in validate_with_val(instance, plan_file)

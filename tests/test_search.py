@@ -24,18 +24,18 @@ from pyplanner.search import (
     portfolio_for_cores,
     search,
 )
+from tests.catalog import VALIDATE, collection_dir
 from tests.tasks import build, chain, fork, goal_state, token, unreachable
-from tests.tiers import VALIDATE, tier_dir
 
 
-def tier1(domain: str, problem: str) -> GroundTask:
-    base = tier_dir(f"tier1/{domain}")
+def catalog_task(collection: str, problem: str) -> GroundTask:
+    base = collection_dir(collection)
     loaded = read_domain(base / "domain.pddl")
     return ground(loaded, read_problem(base / f"{problem}.pddl", loaded))
 
 
-GRIPPER = tier1("gripper", "p01")
-BLOCKS = tier1("blocksworld", "p02")
+GRIPPER = catalog_task("ipc-1998/gripper-round-1-strips", "p01")
+BLOCKS = catalog_task("ipc-2000/blocks-strips-untyped", "p02")
 
 
 @pytest.mark.parametrize("name", sorted(PRESETS))
@@ -273,15 +273,18 @@ def test_random_walks_are_reproducible_and_without_cycles() -> None:
 @pytest.mark.parametrize("name", ["ehc-tff-pref", "mrw-tff-pref"])
 @pytest.mark.parametrize(
     "instance",
-    ["tier3/temporal/driverlog/p02", "tier5/preferences/storage/p02"],
+    [
+        "ipc-2002/driverlog-time-simple-automatic/p02",
+        "ipc-2006/storage-preferences-qualitative/p02",
+    ],
 )
 def test_local_searches_in_temporal_and_preference_tasks(
     name: str, instance: str, tmp_path: Path
 ) -> None:
     """Planes válidos (VAL) en una tarea temporal y con preferencias (la búsqueda anytime
     encadena después WA*: con los paseos aleatorios, sin el paso con los costes reales)."""
-    group, _, stem = instance.rpartition("/")
-    base = tier_dir(group)
+    collection, _, stem = instance.rpartition("/")
+    base = collection_dir(collection)
     domain_path, problem_path = base / "domain.pddl", base / f"{stem}.pddl"
     domain = read_domain(domain_path)
     problem = read_problem(problem_path, domain)

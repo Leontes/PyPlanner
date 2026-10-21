@@ -173,8 +173,8 @@ Para integrarlo en otro sistema:
 - [docs/formato-json.md](docs/formato-json.md): el contrato JSON de entrada y salida.
 - [docs/motor-busqueda.md](docs/motor-busqueda.md): cómo funciona el motor, sus
   configuraciones y las medidas de rendimiento.
-- [docs/tiers.md](docs/tiers.md): los tiers de los tests, sacados del catálogo
-  PDDLDomains.
+- [docs/pruebas.md](docs/pruebas.md): los problemas de prueba, del catálogo PDDLDomains
+  y agrupados por versión de PDDL.
 - [docs/benchmarks.md](docs/benchmarks.md): colecciones más grandes para medir el
   rendimiento (`scripts/benchmark.py`), fuera de los tests, y las rutas que tenían antes
   del catálogo.
@@ -193,8 +193,8 @@ src/pyplanner/
   plan/         planes: formatos IPC y JSON, validación interna
   planner.py    fachada: de dominio y problema a plan
   cli.py        interfaz de línea de comandos
-tests/          tests (pytest); tiers.toml: el dataset de los tiers
-vendor/PDDLDomains/  submódulo: el catálogo de dominios PDDL (tiers y benchmarks)
+tests/          tests (pytest); dataset.toml: los problemas de prueba
+vendor/PDDLDomains/  submódulo: el catálogo de dominios PDDL (problemas de prueba y de medida)
 docs/           documentación
 scripts/        utilidades (compilar VAL, medir con benchmark.py)
 ```
@@ -210,11 +210,11 @@ pytest                   # tests
 ruff check . && ruff format --check . && mypy
 ```
 
-- **Tiers:** los tests usan problemas del catálogo
+- **Problemas de prueba:** los tests usan problemas del catálogo
   [PDDLDomains](https://github.com/Leontes/PDDLDomains), en el submódulo
-  `vendor/PDDLDomains` y fijado en un commit, organizados en tiers, uno por iteración
-  ([docs/tiers.md](docs/tiers.md)). Los tests resuelven todos los problemas de los tiers soportados con cada portfolio y
-  validan los planes con [VAL](https://github.com/KCL-Planning/VAL). Si VAL no está
-  compilado, esos tests se saltan.
+  `vendor/PDDLDomains` y fijado en un commit, con al menos dos colecciones por versión de
+  PDDL, de STRIPS a PDDL+ ([docs/pruebas.md](docs/pruebas.md)). Los tests resuelven todos
+  con cada portfolio y validan los planes con [VAL](https://github.com/KCL-Planning/VAL).
+  Si VAL no está compilado, esos tests se saltan.
 - **Equivalencia:** las implementaciones con Numba y PyTorch tienen tests que comprueban
   que dan exactamente los mismos resultados que la referencia en Python.

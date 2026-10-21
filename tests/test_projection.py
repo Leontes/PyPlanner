@@ -1,4 +1,4 @@
-"""Heurística del motor discretizado (iteración 6c): la proyección de las invariantes, la
+"""Heurística del motor discretizado: la proyección de las invariantes, la
 anticipación al empezar una acción, las acciones útiles que reducen el faltante y dónde se
 anula una condición a lo largo de un flujo exacto."""
 
@@ -14,9 +14,9 @@ from pyplanner.heuristics import create_heuristic
 from pyplanner.heuristics.projection import ProjectionHeuristic
 from pyplanner.plan import Plan
 from pyplanner.search import PRESETS, search
+from tests.catalog import VALIDATE
 from tests.tasks import build
 from tests.test_discrete_engine import val
-from tests.tiers import VALIDATE
 
 # Un generador que tiene que funcionar 10 unidades de tiempo gastando 1 por unidad, y un
 # repostaje de hasta 4 unidades que suma 2 por unidad sin llegar a la capacidad.

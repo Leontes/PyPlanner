@@ -8,13 +8,13 @@ from pyplanner.heuristics import numba_available
 from pyplanner.search import PRESETS, search
 from pyplanner.search.successors import CompiledSuccessors, create_successor_generator
 from tests.adl_tasks import ALL
+from tests.catalog import Instance, instances
 from tests.tasks import build, chain
 from tests.test_heuristics import all_states, random_walk_states
-from tests.tiers import Instance, discover_instances
 
 requires_numba = pytest.mark.skipif(not numba_available(), reason="Numba no está instalado")
 
-INSTANCES = [i for i in discover_instances() if i.tier <= 2]
+INSTANCES = [i for i in instances() if i.level <= 2]
 
 
 def load(instance: Instance) -> GroundTask:
@@ -60,7 +60,7 @@ def test_python_device_uses_the_reference() -> None:
 
 @requires_numba
 def test_search_is_identical_with_both_backends() -> None:
-    instance = next(i for i in INSTANCES if i.id == "tier2/slitherlink/p01")
+    instance = next(i for i in INSTANCES if i.id == "level2/ipc-2023-classical/slitherlink/p01")
     task = load(instance)
     reference = search(task, PRESETS["gbfs-ff-pref-tb"].with_changes(device="python"))
     compiled = search(task, PRESETS["gbfs-ff-pref-tb"])

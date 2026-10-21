@@ -29,9 +29,9 @@ from pyplanner.plan import Plan, simulate
 from pyplanner.search import PRESETS, SearchConfig, SearchStatus, search
 from pyplanner.search.engine import _TypeBuckets
 from tests.adl_tasks import ALL, CHOICE, DOORS, LIGHTS, ROTATE
+from tests.catalog import VALIDATE
 from tests.tasks import build
 from tests.test_heuristics import ACCELERATED_DEVICES, all_states
-from tests.tiers import VALIDATE
 
 
 def task_of(name: str) -> GroundTask:
