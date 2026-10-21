@@ -1,17 +1,17 @@
-"""h_TFF: plan relajado temporal (trabajo opcional, punto 3: parte B de la heurística temporal).
+"""h_TFF: plan relajado temporal.
 
 h_FF no sabe nada del tiempo: en satellite con ventanas de visibilidad, su plan relajado
-usa antenas que ya no van a ver el objetivo. La parte A
+usa antenas que ya no van a ver el objetivo. La relajación con plazos
 (:mod:`pyplanner.heuristics.deadlines`) solo descarta los estados que no pueden cumplir los
 plazos. h_TFF extrae además un **plan relajado que respeta los tiempos**, como el grafo de
 planificación temporal de POPF y OPTIC, y lo usa como heurística.
 
-**Instantes más tempranos.** Los de la parte A (:class:`DeadlineRelaxation`): el instante en
-que, como pronto, puede ser cierto cada nodo relajado (hechos, complementarios y
-condiciones numéricas), con las duraciones mínimas, los TIL pendientes y las ventanas de
-los hechos que solo cambian los TIL. Una acción relajada ocurre en el máximo de sus
-precondiciones (más la duración mínima en el fin de una durativa), retrasada hasta que
-quepa en sus ventanas.
+**Instantes más tempranos.** Los de la relajación con plazos (:class:`DeadlineRelaxation`):
+el instante en que, como pronto, puede ser cierto cada nodo relajado (hechos,
+complementarios y condiciones numéricas), con las duraciones mínimas, los TIL pendientes y
+las ventanas de los hechos que solo cambian los TIL. Una acción relajada ocurre en el
+máximo de sus precondiciones (más la duración mínima en el fin de una durativa), retrasada
+hasta que quepa en sus ventanas.
 
 **Soportador de cada hecho**, independiente del orden del cálculo, para que las tres
 implementaciones den lo mismo: la clave de un hecho es (instante, nivel), donde un hecho
@@ -23,7 +23,7 @@ instante en lugar del coste h_add.
 
 **Cláusula del objetivo:** la que, como pronto, se cumple antes (instante de sus hechos y
 sus ventanas; la primera si hay empate). Si ninguna se puede cumplir, el estado es un
-callejón sin salida: es exactamente la comprobación de la parte A.
+callejón sin salida: es exactamente la comprobación de la relajación con plazos.
 
 **Plan relajado y valor**, como en h_FF: desde los hechos de la cláusula que no son ciertos
 en el estado, el soportador de cada uno y, de él, sus precondiciones que no son ciertas. El
@@ -60,10 +60,11 @@ from pyplanner.heuristics.deadlines import INF, DeadlineRelaxation, _csr
 
 
 class TemporalRelaxedPlan:
-    """Estructuras del plan relajado temporal, una vez por tarea (sobre las de la parte A).
+    """Estructuras del plan relajado temporal, una vez por tarea (sobre las de la relajación
+    con plazos).
 
     Attributes:
-        deadlines: la relajación con instantes y ventanas de la parte A.
+        deadlines: la relajación con instantes y ventanas (con plazos).
         counted: por acción relajada, sus precondiciones sin ventanas (las que hay que
             conseguir).
     """

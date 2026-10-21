@@ -5,7 +5,7 @@ Los problemas que se resuelven en los tests son un dataset del catálogo,
 colecciones agrupada por nivel de versión de PDDL, de STRIPS (nivel 1) a PDDL+ (nivel 6),
 como el dataset ``by-level`` del catálogo: cada colección es un grupo
 ``level<N>/<colección>``, con el nivel que calcula el analizador del catálogo (ver
-``docs/pruebas.md``).
+``docs/es/pruebas.md``).
 
 El catálogo es siempre el del submódulo ``vendor/PDDLDomains``, fijado en un commit. Así los
 tests no dependen de ``$PDDL_DOMINIOS`` ni de otra copia instalada del paquete, y un cambio

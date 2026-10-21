@@ -4,7 +4,7 @@ Este módulo es la única fuente de verdad sobre qué requisitos acepta el plani
 fases del parser lo consultan: la fase 1 para rechazar pronto un fichero PDDL que no se
 puede procesar y la fase 2 porque su JSON de entrada puede venir de cualquier otra fuente.
 
-Cada iteración del roadmap añade sus requisitos a :data:`SUPPORTED_REQUIREMENTS`.
+Los que soporta el planificador están en :data:`SUPPORTED_REQUIREMENTS`.
 
 **Modo estricto.** Toda construcción que se use tiene que tener su requisito declarado
 (:func:`requirement_uses` y :func:`first_undeclared`). Las reglas siguen la gramática de
@@ -89,7 +89,7 @@ KNOWN_REQUIREMENTS: frozenset[str] = frozenset(
         ":timed-initial-literals",
         # PDDL+
         ":time",
-        # PDDL 3.x (:action-costs en la iteración 3; el resto en la iteración 5)
+        # PDDL 3.x
         ":constraints",
         ":preferences",
         ":action-costs",
@@ -118,12 +118,12 @@ REQUIREMENT_EXPANSIONS: dict[str, frozenset[str]] = {
     ":fluents": frozenset({":numeric-fluents"}),
 }
 
-#: Requisitos que el planificador soporta en la iteración actual.
+#: Requisitos que soporta el planificador.
 SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
     {
-        # Iteración 1
+        # STRIPS
         ":strips",
-        # Iteración 2 (PDDL 1.2, subconjunto ADL)
+        # PDDL 1.2 (subconjunto ADL)
         ":typing",
         ":negative-preconditions",
         ":disjunctive-preconditions",
@@ -131,21 +131,21 @@ SUPPORTED_REQUIREMENTS: frozenset[str] = frozenset(
         ":existential-preconditions",
         ":universal-preconditions",
         ":conditional-effects",
-        # Iteración 3a (PDDL 2.1 numérico y costes de acción de PDDL 3.1)
+        # PDDL 2.1 numérico y costes de acción de PDDL 3.1
         ":numeric-fluents",
         ":action-costs",
-        # Iteración 3b (PDDL 2.1 temporal)
+        # PDDL 2.1 temporal
         ":durative-actions",
         ":duration-inequalities",
         ":continuous-effects",
-        # Iteración 4 (PDDL 2.2)
+        # PDDL 2.2
         ":derived-predicates",
         ":timed-initial-literals",
-        # Iteración 5 (PDDL 3)
+        # PDDL 3
         ":constraints",
         ":preferences",
         ":object-fluents",
-        # Iteración 6 (PDDL+)
+        # PDDL+
         ":time",
     }
 )

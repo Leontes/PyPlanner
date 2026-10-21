@@ -247,7 +247,7 @@ PRESETS: dict[str, SearchConfig] = {
             adaptive_batch=True,
             device="hybrid",
         ),
-        # Búsquedas locales (trabajo opcional, punto 5; ver pyplanner.search.local).
+        # Búsquedas locales (ver pyplanner.search.local).
         SearchConfig("ehc-tff-pref", "ehc", "tff", preferred_operators=True),
         SearchConfig("mrw-tff", "mrw", "tff", seed=1),
         SearchConfig("mrw-tff-pref", "mrw", "tff", preferred_operators=True, seed=1),
@@ -259,13 +259,12 @@ PRESETS: dict[str, SearchConfig] = {
 }
 
 #: Portfolios por número de núcleos. Cada uno contiene al anterior y añade la configuración
-#: que más aporta. Elegidos con los landmarks (trabajo opcional, punto 2) en 475 instancias:
-#: 17 colecciones clásicas de las IPC 2011 y 2023, los tiers y las colecciones de medida
-#: del catálogo PDDLDomains (ver motor-busqueda.md y benchmarks.md). Cada portfolio
-#: resuelve todos los tiers:
+#: que más aporta. Elegidos midiendo en 475 instancias del catálogo PDDLDomains: 17
+#: colecciones clásicas de las IPC 2011 y 2023 y colecciones numéricas, temporales, con
+#: preferencias y de PDDL+. Cada portfolio resuelve todos los problemas de prueba:
 #:
 #: * 1 núcleo: BFWS con acciones útiles, la configuración más robusta (resuelve todos los
-#:   tiers) y con los mejores planes con preferencias;
+#:   problemas de prueba) y con los mejores planes con preferencias;
 #: * 2 núcleos: + la perezosa con landmarks y exploración por tipos, la mejor individual
 #:   en las clásicas;
 #: * 3 núcleos: + la más barata y aleatoria (objetivos pendientes);
@@ -278,7 +277,7 @@ PRESETS: dict[str, SearchConfig] = {
 #: * 7 núcleos: + GBFS con exploración por tipos.
 #:
 #: Los miembros con h_FF usan ``tff`` (el plan relajado temporal en las tareas con TIL; h_FF
-#: en las demás, con la misma búsqueda; trabajo opcional, punto 3), salvo la búsqueda
+#: en las demás, con la misma búsqueda), salvo la búsqueda
 #: perezosa, que con h_FF resuelve satellite p10 y p14 y con h_TFF no. La perezosa con
 #: landmarks no tiene versión con ``tff``.
 #:

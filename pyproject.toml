@@ -1,18 +1,20 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyplanner"
 version = "0.9.0"
-description = "Planificador PDDL en Python"
+description = "PDDL planner in Python, from STRIPS to PDDL+, based on forward heuristic search"
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "Leontes", email = "josesegmur@ugr.es" }]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "José Segura", email = "josesegmur@ugr.es" }]
 dependencies = [
     "jsonschema>=4.23",
     # Programación lineal (HiGHS) del motor temporal: efectos continuos y duraciones no
-    # fijas (iteración 3b).
+    # fijas.
     "scipy>=1.13",
 ]
 

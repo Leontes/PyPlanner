@@ -21,12 +21,12 @@ eso hace cuatro comprobaciones, en este orden:
      ``(increase|decrease f (* #t e))``, y efectos ``at start`` que no dependen de
      condiciones posteriores (``at end`` u ``over all``);
    * objetos declarados y con un tipo compatible con el del predicado;
-   * predicados derivados (iteración 4): declarados en ``:predicates``, con la aridad y
+   * predicados derivados: declarados en ``:predicates``, con la aridad y
      tipos compatibles en la cabeza de cada regla, ausentes de los efectos y del estado
      inicial, y **estratificables**: ninguno depende negativamente (bajo un número impar
      de negaciones, contando el antecedente de ``imply``) de sí mismo, directa o
      indirectamente;
-   * literales iniciales temporizados (iteración 4): solo en dominios temporales, sobre
+   * literales iniciales temporizados: solo en dominios temporales, sobre
      predicados no derivados y sin dar a un hecho dos valores en el mismo instante;
    * problema asociado a su dominio.
 
@@ -681,7 +681,7 @@ class _Context:
         self.check_argument_types(name, terms, function.parameters, scope, node, path)
         return FluentTerm(name, terms)
 
-    # --- PDDL 2.2 (iteración 4) -----------------------------------------------------
+    # --- PDDL 2.2 ------------------------------------------------------------------
 
     def derived_rule(self, node: JSON, path: str, scope: _Scope) -> DerivedRule:
         """Una regla ``:derived``: la cabeza es un predicado declarado, con la misma aridad
@@ -768,7 +768,7 @@ class _Context:
             float(node["time"]), self.basic_atom(literal, f"{path}.literal", scope, where)
         )
 
-    # --- Procesos y eventos (iteración 6, PDDL+) -------------------------------------
+    # --- Procesos y eventos (PDDL+) --------------------------------------------------
 
     def process(self, node: JSON, path: str, scope: _Scope) -> Process:
         parameters = self.parameters(node.get("parameters", []), path)
@@ -810,7 +810,7 @@ class _Context:
             effect = self.effect(node["effect"], f"{path}.effect", inner)
         return Event(node["name"].lower(), parameters, precondition, effect)
 
-    # --- Acciones durativas (iteración 3b) -------------------------------------------
+    # --- Acciones durativas ---------------------------------------------------------
 
     def durative_action(self, node: JSON, path: str, scope: _Scope) -> DurativeAction:
         parameters = self.parameters(node.get("parameters", []), path)

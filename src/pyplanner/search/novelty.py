@@ -35,7 +35,7 @@ def negated_facts(task: GroundTask) -> set[int]:
     En las tareas temporales se excluyen los hechos internos ``running@a``: el objetivo
     exige que ninguna acción siga en curso, y con miles de acciones durativas esos átomos
     hacían la novedad cara y poco discriminante (de 33 a 29 instancias resueltas en las
-    pruebas de la iteración 3b).
+    temporales medidas).
     """
     result = {f for clause in task.goal for f in clause.neg_facts}
     for action in task.actions:

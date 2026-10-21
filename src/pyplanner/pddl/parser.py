@@ -711,7 +711,7 @@ class _Parser:
             return self._term(expr)
         return self._expression(expr)
 
-    # --- Acciones durativas (iteración 3b) ---------------------------------------------
+    # --- Acciones durativas --------------------------------------------------------------
 
     def _duration(self, expr: SExpr) -> list[JSONDict]:
         """``:duration``: ``()``, una restricción o ``(and <restricciones>)``."""

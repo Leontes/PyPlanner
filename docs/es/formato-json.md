@@ -1,8 +1,10 @@
-# Formato JSON de entrada (versión 6)
+# Formato JSON de entrada (versión 7)
+
+[English](../en/json-format.md) · **Español**
 
 El planificador recibe los dominios y problemas en JSON. Este documento es el contrato para
 cualquier componente que quiera generar ese JSON sin pasar por PDDL. El esquema formal
-está en [`src/pyplanner/schema/pddl.schema.json`](../src/pyplanner/schema/pddl.schema.json)
+está en [`src/pyplanner/schema/pddl.schema.json`](../../src/pyplanner/schema/pddl.schema.json)
 (JSON Schema 2020-12). Si este documento y el esquema no coinciden, manda el esquema.
 
 ## Flujo
@@ -404,13 +406,13 @@ El planificador devuelve los planes con `"kind": "plan"` (`pyplanner solve -f js
 - `cost`: suma de los costes de las acciones. Sin una métrica que se pueda usar como
   coste, es el número de acciones.
 - `metric` (opcional, v3): valor de la métrica del problema, cuando los costes de las
-  acciones la representan (ver [motor-busqueda.md](motor-busqueda.md#motor-numérico-iteración-3a)).
+  acciones la representan (ver [motor-busqueda.md](motor-busqueda.md#motor-numérico)).
   Es el valor inicial de la métrica más `cost`, y coincide con el que calcula VAL. Con
   preferencias (v6), suma además los pesos de las incumplidas, y `cost` es solo la
   contribución de las acciones.
 - `violated` (opcional, v6): instancias de preferencias del objetivo y de las restricciones
   que el plan incumple, como `"nombre arg1 arg2"` (ver
-  [motor-busqueda.md](motor-busqueda.md#preferencias-y-búsqueda-anytime-iteración-5c)).
+  [motor-busqueda.md](motor-busqueda.md#preferencias-y-búsqueda-anytime)).
 
 ## Errores
 

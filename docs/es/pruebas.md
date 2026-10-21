@@ -1,5 +1,7 @@
 # Problemas de prueba
 
+[English](../en/tests.md) · **Español**
+
 Los tests resuelven un conjunto de problemas que cubre todo el lenguaje que acepta el
 planificador, de STRIPS a PDDL+, y validan cada plan con
 [VAL](https://github.com/KCL-Planning/VAL). Los problemas salen del catálogo
@@ -8,7 +10,7 @@ planificador, de STRIPS a PDDL+, y validan cada plan con
 
 ## El dataset
 
-[`tests/dataset.toml`](../tests/dataset.toml) es un dataset del catálogo: los problemas
+[`tests/dataset.toml`](../../tests/dataset.toml) es un dataset del catálogo: los problemas
 `p01` y `p02` de quince colecciones, al menos dos por **nivel de versión de PDDL**. Como en
 el dataset `by-level` del catálogo, cada colección es un grupo `level<N>/<colección>`. El
 nivel lo calcula el catálogo a partir de los requisitos que usa cada problema, en una escala
@@ -34,7 +36,7 @@ resolver todos los problemas de los niveles 1 a *N* (ver "Versión de PDDL (nive
 | 6 | PDDL+ | `smtplan/car-nodrag` (‡) | `:typing :durative-actions :fluents :time :negative-preconditions :timed-initial-literals` |
 | 6 | PDDL+ | `smtplan/generator-events` (*) (‡) | `:fluents :durative-actions :duration-inequalities :adl :typing :time :continuous-effects` |
 
-[`tests/catalog.py`](../tests/catalog.py) lee el dataset y da los problemas a los tests.
+[`tests/catalog.py`](../../tests/catalog.py) lee el dataset y da los problemas a los tests.
 Los identificadores de pytest son `<grupo>/<problema>`, por ejemplo
 `level3/ipc-2002/driverlog-time-simple-automatic/p01`. Los usan:
 
@@ -102,11 +104,3 @@ Son las del catálogo (ver su `docs/es/catalogo.md`):
   `:timed-initial-literals` y trucks necesita el motor temporal. Es lo esperado, porque
   la escala es acumulativa.
 
-
-## Antes del catálogo
-
-Hasta la versión 0.8, los problemas de prueba eran copias en `dominios/tierN-<nombre>/…`,
-organizadas en *tiers*, uno por iteración del [roadmap](ROADMAP.md). Los tiers 1 a 6 son
-los niveles 1 a 6 del catálogo, con los mismos ficheros (byte a byte, salvo el comentario
-de cabecera de greenhouse). La tabla de equivalencias de las rutas antiguas está en
-[benchmarks.md](benchmarks.md#rutas-anteriores).

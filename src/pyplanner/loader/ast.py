@@ -168,7 +168,7 @@ class Forall:
         return f"(forall ({' '.join(p.name for p in self.parameters)}) {self.arg})"
 
 
-# --- Expresiones numéricas (iteración 3) ---------------------------------------------
+# --- Expresiones numéricas -------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -220,7 +220,7 @@ class TotalTime:
 
 @dataclass(frozen=True)
 class DurationVar:
-    """``?duration``: la duración de la acción durativa en la que aparece (iteración 3b)."""
+    """``?duration``: la duración de la acción durativa en la que aparece."""
 
     def __str__(self) -> str:
         return "?duration"
@@ -318,12 +318,12 @@ class NumericEffect:
         return f"({self.op} {self.fluent} {self.value})"
 
 
-#: Efecto de una acción: añadidos (``Atom``), borrados (``Not(Atom)``), conjunciones; desde
-#: la iteración 2, efectos universales y condicionales; desde la 3, efectos numéricos.
+#: Efecto de una acción: añadidos (``Atom``), borrados (``Not(Atom)``), conjunciones, efectos
+#: universales y condicionales, y efectos numéricos.
 Effect = Atom | Not | And | ForallEffect | When | NumericEffect
 
 
-# --- Acciones durativas (iteración 3b) -----------------------------------------------
+# --- Acciones durativas ----------------------------------------------------------------
 
 #: Momentos de una acción durativa: al empezar, al terminar y durante toda la acción.
 START, END, ALL = "start", "end", "all"

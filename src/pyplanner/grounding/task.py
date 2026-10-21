@@ -22,7 +22,7 @@ Tras la normalización (ver :mod:`pyplanner.grounding.normalize`), todo es conju
   efectos condicionales;
 * el objetivo es una **disyunción** de condiciones (casi siempre, una sola).
 
-**Predicados derivados** (iteración 4). Sus hechos están en ``facts`` como los demás, pero
+**Predicados derivados.** Sus hechos están en ``facts`` como los demás, pero
 ninguna acción los cambia: los deducen los **axiomas** (:class:`Axiom`) a partir del resto
 del estado. :meth:`GroundTask.apply` los recalcula en cada sucesor (ver
 :mod:`pyplanner.grounding.axioms`), y el estado inicial ya los trae calculados.

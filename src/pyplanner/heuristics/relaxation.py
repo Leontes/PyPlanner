@@ -20,7 +20,7 @@ para cada objetivo pendiente elige su mejor *soportador* y repite con sus precon
 * **Acciones relajadas.** Cada operador da una acción relajada para sus efectos
   incondicionales y otra por cada efecto condicional (como en Fast Downward). Cada una
   recuerda su operador.
-* **Condiciones numéricas** (iteración 3): cada condición numérica distinta es un nodo más
+* **Condiciones numéricas**: cada condición numérica distinta es un nodo más
   de la relajación, con el enfoque de *h^hbd* (Scala, Haslum, Thiébaux y Ramírez, 2020).
   Una acción relajada cuyo efecto aumenta una expresión lineal en una cantidad constante Δ
   "logra" la condición repitiéndose ⌈déficit / Δ⌉ veces, así que la arista cuesta
@@ -28,12 +28,12 @@ para cada objetivo pendiente elige su mejor *soportador* y repite con sus precon
   son incrementos constantes (``assign``, ``scale-*``, valores variables) y las condiciones
   no lineales se tratan de forma **optimista**: una sola repetición basta. Así la
   heurística nunca declara un callejón sin salida que no lo es. Los efectos que empeoran una
-  condición se ignoran, como los borrados. La excepción (iteración 6c) es asignar una
+  condición se ignoran, como los borrados. La excepción es asignar una
   constante a la única variable de una condición: la logra si ese valor la cumple, y si no,
   solo sirve para definir la variable cuando no tiene valor (que otras acciones la aumenten
   después). Sin ella, poner en marcha el reloj de una acción durativa (``assign`` a 0)
   bastaba para la relajación para poder terminarla.
-* **Incrementos variables** (tras la v0.6): ``increase x e`` con ``e`` no constante (el
+* **Incrementos variables**: ``increase x e`` con ``e`` no constante (el
   ritmo de un proceso por δ en la espera del motor discretizado, que fijan otras acciones)
   solo mejora una condición si el cambio es positivo. Esa condición ("puerta") es un nodo
   más de la relajación, y la arista va en una copia de la acción relajada que la tiene como
@@ -43,10 +43,10 @@ para cada objetivo pendiente elige su mejor *soportador* y repite con sus precon
   tiempo que falta, poner en marcha el ritmo no hace subir el valor y acelerarlo lo baja.
   Sin ningún ρ, la arista sigue siendo optimista.
 * **Objetivo disyuntivo.** El valor es el mínimo entre las cláusulas.
-* **Restricciones de trayectoria** (iteración 5): las reglas de los monitores (``done`` de
+* **Restricciones de trayectoria**: las reglas de los monitores (``done`` de
   ``sometime``, quitar ``pending`` de ``sometime-after``) son acciones relajadas de coste 0
   con el mismo operador ficticio que los axiomas.
-* **Predicados derivados** (iteración 4). Cada axioma es una acción relajada de coste 0
+* **Predicados derivados.** Cada axioma es una acción relajada de coste 0
   que añade su hecho derivado. Todas comparten un **operador ficticio** (el de índice
   ``len(task.actions)``, de coste 0), que nunca es una acción útil. Las condiciones que
   **niegan** un hecho derivado se dan por ciertas, como hace Fast Downward por defecto: su

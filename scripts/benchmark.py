@@ -32,8 +32,9 @@ la suma de las métricas.
 Cada trabajo va en un proceso nuevo: uno reutilizado conservaría la memoria de la búsqueda
 anterior y llegaría antes a su límite.
 
-**Memoria:** como mucho 5 procesos a la vez y siempre con límite de memoria (dos medidas
-agotaron la memoria de WSL y obligaron a reiniciar). Cada proceso tiene dos límites:
+**Memoria:** como mucho 5 procesos a la vez y siempre con límite de memoria (sin límites,
+varias búsquedas grandes a la vez pueden agotar la memoria de la máquina). Cada proceso
+tiene dos límites:
 
 * el de la búsqueda (``max_memory``), que la termina con ``limit_reached``;
 * uno duro del sistema de ``--memory`` más 512 MB, que cubre también el grounding (el de
@@ -41,16 +42,15 @@ agotaron la memoria de WSL y obligaron a reiniciar). Cada proceso tiene dos lím
   en lugar de agotar la máquina. Es ``RLIMIT_AS`` (memoria virtual), salvo con las
   configuraciones que usan PyTorch (``cpu``, ``cuda``, ``hybrid``): CUDA reserva decenas de
   GB de memoria virtual que no usa, así que en ellas es ``RLIMIT_DATA`` (la memoria de
-  datos), con 1024 MB más para PyTorch y CUDA. Antes no tenían ninguno, y WSL se cayó
-  midiendo el miembro con GPU de los portfolios.
+  datos), con 1024 MB más para PyTorch y CUDA.
 
 Antes de empezar se comprueba que procesos × (``--memory`` + los márgenes) quepa en el 80 %
 de la memoria disponible.
 
 VAL se ejecuta al final, cuando ya no hay búsquedas, uno a uno y con su propio límite duro
-(el 80 % de la memoria disponible). Antes heredaba el de la búsqueda y se quedaba sin
-memoria en los planes grandes, que contaban como inválidos. Si VAL termina sin veredicto,
-el plan queda sin validar (``val_error``), no inválido.
+(el 80 % de la memoria disponible): con el de la búsqueda se quedaría sin memoria en los
+planes grandes. Si VAL termina sin veredicto, el plan queda sin validar (``val_error``), no
+inválido.
 """
 
 import argparse
@@ -131,7 +131,7 @@ def validate(row: dict[str, Any], domain: str, problem: str, memory: int) -> Non
     """Valida con VAL el plan de ``row`` (y lo quita de la fila).
 
     Se llama desde el proceso principal cuando ya no hay búsquedas, con un límite duro de
-    ``memory`` MB: si VAL lo heredara de la búsqueda, como antes, podría quedarse sin
+    ``memory`` MB: si VAL lo heredara de la búsqueda, podría quedarse sin
     memoria (storage p20 necesita 2,3 GB) y su plan contaría como inválido. Si VAL termina
     sin veredicto (sin memoria o con un fallo de segmentación), el plan queda sin validar
     (``valid`` es ``None``), no inválido.

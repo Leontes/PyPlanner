@@ -1,7 +1,8 @@
-# Motor de búsqueda (iteraciones 1 a 6)
+# Motor de búsqueda
 
-Cómo está construido el motor y cómo se usa. Las decisiones de fondo (portfolio, lotes,
-GPU, técnicas descartadas) están en el [roadmap](ROADMAP.md#motor-de-búsqueda-diseño-y-repertorio).
+[English](../en/search-engine.md) · **Español**
+
+Cómo está construido el motor y cómo se usa.
 
 ## Flujo
 
@@ -18,7 +19,7 @@ Domain + Problem (AST) ──ground()──► GroundTask ──search() / run_p
 | Plan | `pyplanner.plan` | Salida IPC o JSON y validación interna (simulación) |
 | Fachada | `pyplanner.planner.solve` | Encadena todo lo anterior |
 
-## Normalización ADL (iteración 2)
+## Normalización ADL
 
 El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
 `grounding/normalize.py`, de modo que la búsqueda solo ve estructuras conjuntivas:
@@ -28,7 +29,7 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
   empujan hasta los átomos e `imply` se trata como `(or (not a) b)`. `=` y los hechos
   estáticos se evalúan en el momento; las cláusulas contradictorias y las subsumidas se
   eliminan. Si la DNF supera 10 000 cláusulas se aborta con un error claro (esas fórmulas
-  necesitarán axiomas, iteración 4).
+  hay que escribirlas con predicados derivados).
 - **Precondición disyuntiva:** una `GroundAction` por cláusula, con el mismo nombre y
   argumentos, así que en el plan se ven igual.
 - **Efectos → efectos incondicionales + efectos condicionales** (`forall` se expande;
@@ -44,15 +45,15 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
   átomos, los de alguno de sus disyuntos. Las igualdades de la conjunción exterior juntan
   los parámetros iguales o los fijan a una constante. El punto fijo es **semi-ingenuo**:
   en cada vuelta, un esquema solo busca los candidatos que usan algún hecho nuevo (ver
-  `grounding/grounder.py` y "Rendimiento medido").
+  `grounding/grounder.py`).
 
 ## Tarea instanciada y estados
 
 - Un **estado** es un `State(facts, values)`: `facts` es un `int` usado como bitset sobre
   `GroundTask.facts`, y `values` la tupla de valores de las variables numéricas
   (`GroundTask.variables`; vacía en tareas proposicionales, `None` si el valor está
-  indefinido). Es una `NamedTuple`: se compara y se usa como clave de diccionario igual
-  que antes, con un coste medido de unos 0,3 µs por sucesor. Una acción es aplicable si
+  indefinido). Es una `NamedTuple`: se compara y se usa como clave de diccionario como una
+  tupla, con un coste medido de unos 0,3 µs por sucesor. Una acción es aplicable si
   `facts & pre == pre`, `facts & neg == 0` (precondiciones negativas) y se cumplen sus
   condiciones numéricas.
 - **Efectos condicionales:** las condiciones se evalúan sobre el estado **anterior**;
@@ -76,7 +77,7 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
 - Hechos y acciones tienen un orden determinista, así que dos ejecuciones iguales dan el
   mismo plan.
 
-## Motor numérico (iteración 3a)
+## Motor numérico
 
 - **Grounding.**
   - Las funciones que ninguna acción modifica son **estáticas**: se sustituyen por su
@@ -115,14 +116,14 @@ El grounder (`grounding/grounder.py`) normaliza cada instancia de acción con
   Las repeticiones dependen del estado. Los efectos que no son incrementos constantes y
   las condiciones no lineales son **optimistas** (una repetición basta), así que la
   heurística nunca declara un callejón sin salida falso. Los efectos que empeoran una
-  condición se ignoran, como los borrados. Desde la 6c, asignar una constante a la única
-  variable de una condición la logra solo si ese valor la cumple (si no, solo sirve para
-  definir la variable cuando no tiene valor). Desde la v0.7, un incremento variable
-  (`increase x y`) solo cuenta si es positivo, y sus repeticiones se cuentan con el valor
-  del estado (ver "Ritmos que fijan las acciones"). h_FF cuenta cada operador por su coste
-  por el máximo número de repeticiones que necesita.
+  condición se ignoran, como los borrados. Asignar una constante a la única variable de
+  una condición la logra solo si ese valor la cumple (si no, solo sirve para definir la
+  variable cuando no tiene valor). Un incremento variable (`increase x y`) solo cuenta si
+  es positivo, y sus repeticiones se cuentan con el valor del estado (ver "Ritmos que fijan
+  las acciones"). h_FF cuenta cada operador por su coste por el máximo número de
+  repeticiones que necesita.
 
-## Motor temporal (iteración 3b)
+## Motor temporal
 
 El motor temporal sigue a POPF (Coles, Coles, Fox y Long, 2010): búsqueda hacia delante
 sobre acciones de inicio y fin, con una red temporal simple (STN) que decide cuándo ocurre
@@ -140,25 +141,24 @@ cada paso. El código está en `grounding/temporal.py`.
   reutiliza tal cual: grounder, normalización ADL y numérica, sucesores compilados y
   *h^hbd* (Python, Numba y PyTorch) sobre la tarea de inicios y fines. Las acciones
   instantáneas del dominio conviven con las durativas.
-- **Guarda de inicio** (trabajo opcional, punto 4). Un literal `over all` que los efectos
-  de inicio no pueden tocar (otro predicado, o argumentos que por sus tipos no pueden ser
-  los mismos objetos; ni derivado) vale justo después de empezar lo mismo que antes: si no
-  se cumple, el inicio rompe al instante su propia invariante y se descarta. Exigirlo ya en
-  `a@start` no cambia la semántica, pero el grounding deja de instanciar inicios que nunca
-  pueden terminar. Antes, en satellite `take_image` tenía todas sus condiciones en
-  `over all`, así que su inicio se instanciaba para cada satélite, dirección, instrumento
-  y modo: p17 tenía 57 916 hechos (casi todos `running@a`) y llegaba a 957 MB. Ahora tiene
-  11 262 y 138 MB, con las mismas acciones. En las preferencias temporales de la IPC 2006,
-  storage p06 y pathways p08 agotaban 3 GB al instanciar. En el motor discretizado, la
-  guarda excluye además lo que cambian los eventos, que se disparan en el mismo instante.
+- **Guarda de inicio.** Un literal `over all` que los efectos de inicio no pueden tocar
+  (otro predicado, o argumentos que por sus tipos no pueden ser los mismos objetos; ni
+  derivado) vale justo después de empezar lo mismo que antes de empezar: si no se cumple, el
+  inicio rompe al instante su propia invariante y se descarta. Exigirlo ya en `a@start` no
+  cambia la semántica, pero el grounding deja de instanciar inicios que nunca pueden
+  terminar. En satellite, `take_image` tiene todas sus condiciones en `over all`: sin la
+  guarda, su inicio se instanciaría para cada satélite, dirección, instrumento y modo, y
+  p17 tendría 57 916 hechos (casi todos `running@a`) y 957 MB; con ella, 11 262 y 138 MB,
+  con las mismas acciones. En las preferencias temporales de la IPC 2006, storage p06 y
+  pathways p08 agotarían 3 GB al instanciar. En el motor discretizado, la guarda excluye
+  además lo que cambian los eventos, que se disparan en el mismo instante.
 
   La guarda va en la precondición de `a@start`, así que la ven la búsqueda (deja de
   generar inicios que la invariante descartaría) y la heurística (pide las condiciones
   `over all` ya al empezar, como POPF y TFD). Cambia la trayectoria de casi todas las
   búsquedas. Se probó a quitarla de la relajación: con el mismo orden de sucesores, BFWS
-  hacía exactamente las búsquedas de antes, pero con las preferencias temporales el
-  portfolio resolvía 3 instancias menos (con planes algo mejores). Ver las medidas en
-  [Rendimiento medido](#trabajo-opcional-huecos-de-cobertura).
+  hacía exactamente las mismas búsquedas, pero con las preferencias temporales el
+  portfolio resolvía 3 instancias menos (con planes algo mejores).
 - **Estado temporal.** Un `State` (hechos y valores) con una línea temporal adjunta. Se
   compara solo por la parte lógica (memoización al estilo de POPF), así que la detección
   de repetidos funciona como en la planificación clásica. Es incompleta: un estado
@@ -176,8 +176,8 @@ cada paso. El código está en `grounding/temporal.py`.
   lo han leído desde entonces. Un paso nuevo va, con una separación ε, después del último
   cambio de lo que lee o modifica y de los que leyeron lo que escribe. Los pasos
   independientes no se ordenan: la red temporal los hace simultáneos, y el plan sale en
-  paralelo aunque la búsqueda los eligiera en secuencia. Dos detalles corregidos en la
-  iteración 4, cuando los TIL llevaron a la búsqueda a planes que VAL rechazaba:
+  paralelo aunque la búsqueda los eligiera en secuencia. Dos detalles para que VAL acepte
+  los planes, sobre todo con TIL:
   - una escritura que no cambia el valor (añadir un hecho ya cierto) también se separa de
     los lectores, porque VAL no admite que en un mismo instante una acción lea un hecho y
     otra lo escriba. Solo cuentan los efectos incondicionales y los condicionales que se
@@ -244,7 +244,7 @@ cada paso. El código está en `grounding/temporal.py`.
   invariantes y condiciones no lineales, y `?duration` no fijo en el ritmo de un efecto
   continuo (ritmo × tiempo no es lineal).
 
-## Predicados derivados (iteración 4)
+## Predicados derivados
 
 - **Grounding.** Cada regla `:derived` se instancia como un esquema más del punto fijo
   de alcanzabilidad: su condición hace de precondición y su cabeza, de añadido. Cada
@@ -281,7 +281,7 @@ cada paso. El código está en `grounding/temporal.py`.
   continuos o `?duration` no fijo) da un error claro: el programa lineal no puede decidir
   su valor.
 
-## Literales iniciales temporizados (iteración 4)
+## Literales iniciales temporizados
 
 - **Compilación.** Cada instante distinto *t_k* de los TIL es una acción clásica `til@k` de
   coste 0 que aplica sus literales. Se encadenan con hechos `til-done@k`, así que la
@@ -326,7 +326,7 @@ cada paso. El código está en `grounding/temporal.py`.
     (`compiled_deadlines`), con el mismo resultado; para en cuanto alcanza el objetivo.
     Cuesta más o menos lo mismo que h_FF compilada (de 1 a 2 veces).
   - **Línea temporal.** Necesita la de cada estado evaluado: la calcula sin guardarla
-    (`TemporalState.peek_timeline`), para no perder el ahorro de memoria de la 3b.
+    (`TemporalState.peek_timeline`), para no perder el ahorro de memoria de no guardarlas.
   - **Aplazada en las búsquedas inmediatas.** Evaluar todos los sucesores con la
     comprobación doblaba el tiempo en los casos en que no ahorraba expansiones: la
     mayoría de los sucesores nunca se expanden. La búsqueda inmediata la pide a la
@@ -339,7 +339,7 @@ cada paso. El código está en `grounding/temporal.py`.
   - **Plan relajado que respeta los tiempos:** es h_TFF (ver la sección siguiente), una
     heurística aparte que incluye esta comprobación.
 
-## Plan relajado temporal: h_TFF (trabajo opcional)
+## Plan relajado temporal: h_TFF
 
 h_FF no ve el tiempo: en satellite, su plan relajado usa antenas cuya ventana de
 visibilidad ya ha pasado, y sus acciones útiles llevan a callejones sin salida. h_TFF
@@ -375,7 +375,7 @@ el grafo de planificación temporal de POPF y OPTIC (Coles, Coles, Fox y Long, 2
 - Cuesta más o menos lo mismo que h_FF compilada (satellite p02: 0,04 s por 1500 estados
   cada una, más la preparación de las entradas).
 
-## Restricciones de trayectoria (iteración 5b)
+## Restricciones de trayectoria
 
 Las restricciones duras de PDDL 3 (`:constraints` del dominio y del problema) son
 **monitores** del motor (`pyplanner.grounding.monitors`). Cada restricción instanciada (los
@@ -390,8 +390,8 @@ memoria.
   quede nada pendiente; `at end` se añade al objetivo.
 - **Con tiempo:** usan **marcas** de instante. En una tarea temporal, cada instante es un
   TIL sin literales (su hecho `til-done@k` es la marca): por la regla de OPTIC, los pasos
-  anteriores a un TIL pendiente ocurren no más tarde que él, y la heurística de plazos de
-  la iteración 4 entiende las ventanas que crean. En una tarea clásica, el instante es el
+  anteriores a un TIL pendiente ocurren no más tarde que él, y la heurística de plazos
+  entiende las ventanas que crean. En una tarea clásica, el instante es el
   número de pasos (como en VAL, la acción k ocurre en el instante k): un contador de pasos,
   saturado en el último instante que importa, enciende las marcas.
   - `within t φ`: `done` si φ se cumple antes de la marca;
@@ -413,7 +413,7 @@ memoria.
   pero su `hold-after` no funciona (falla con planes válidos o se cae): esos planes se
   comprueban con la simulación propia.
 
-## Preferencias y búsqueda anytime (iteración 5c)
+## Preferencias y búsqueda anytime
 
 Una preferencia es una condición deseable: cada incumplimiento suma a la métrica el
 coeficiente de su `(is-violated p)`, su **peso**. El grounder las compila a costes de
@@ -442,8 +442,9 @@ solo minimiza costes y el coste de un plan es su métrica.
   `(preference p (at end φ))` es como una del objetivo.
 - **Restricciones triviales.** Las que se cumplen en cualquier plan porque, con los hechos
   estáticos y los inalcanzables, sus fórmulas quedan en cierto o en falso (`always` de algo
-  siempre cierto, `sometime-before` de algo imposible...) se descartan, duras o blandas. Un `forall` sobre `always`, `hold-*` o las que tienen
-  disparador se instancia como una acción: solo con las asignaciones que hacen alcanzables
+  siempre cierto, `sometime-before` de algo imposible...) se descartan, duras o blandas.
+  Un `forall` sobre `always`, `hold-*` o las que tienen disparador se instancia como una
+  acción: solo con las asignaciones que hacen alcanzables
   los átomos necesarios para incumplirla o dispararla. En storage, la restricción de cajas
   incompatibles en zonas contiguas recorre solo las zonas conectadas: en p20 pasa de 2,8
   millones de instancias a las 37 000 que importan, y el grounding de 197 s y 2,7 GB a 6 s
@@ -496,28 +497,26 @@ alcanzar el límite de memoria.
   configuración, informa de cada plan mejor y todos comparten la mejor cota
   (`multiprocessing.Value`). Termina cuando se agota el tiempo, cuando todos han terminado
   o cuando uno demuestra el óptimo.
-- **Storage** (tier 5): p01 y p02 llegan al óptimo demostrado (métricas 0 y 1) en menos de
-  un segundo, con cualquier portfolio. Las métricas coinciden con las de VAL. Resultados
-  en `benchmarks/preferences/storage` en
-  [Rendimiento medido](#iteración-5c-preferencias-y-búsqueda-anytime).
-- **Métricas que se maximizan** (trabajo opcional, punto 4): maximizar es minimizar la
+- **Storage** (IPC 2006, preferencias cualitativas): p01 y p02 llegan al óptimo demostrado
+  (métricas 0 y 1) en menos de un segundo, con cualquier portfolio. Las métricas coinciden
+  con las de VAL.
+- **Métricas que se maximizan:** maximizar es minimizar la
   negación. Los costes son los de la negación y la métrica del plan se informa con su
   signo: `(maximize (+ (* 9.9 (- 1 (is-violated d1))) …))` es minimizar el peso 9,9 de
   `d1`. Si así algún peso o coste queda negativo, el error (o el coste unitario) es el de
   siempre.
-- **En tareas temporales** (trabajo opcional, punto 4): la tarea de inicios y fines se
-  compila igual (fase final, monitores blandos con las marcas de instante de la 5b,
+- **En tareas temporales:** la tarea de inicios y fines se compila igual (fase final,
+  monitores blandos con las marcas de instante de las restricciones de trayectoria,
   variantes de las acciones), con estos cambios:
   - las preferencias de una condición `at start` o `at end` de una acción durativa son
     preferencias de la precondición de su acción de inicio o de fin; las de `over all`
     no se admiten (error claro);
   - las acciones de la fase final no son pasos de la red temporal (no alargan el plan), y
     `_end` exige además que no quede ninguna acción durativa en curso;
-  - el orden de los pasos que cambian algo que vigila un monitor (5b) se calcula con un
-    índice de hechos y variables vigilados hacia sus monitores, calculado una vez. Antes
-    se recorrían todos los monitores para cada acción: en storage p10 (4139 monitores y
-    9546 acciones) eran 25 s de los 26 del grounding, y ahora es 1,3 s en total, con las
-    mismas órdenes;
+  - el orden de los pasos que cambian algo que vigila un monitor se calcula con un índice
+    de hechos y variables vigilados hacia sus monitores, calculado una vez, en lugar de
+    recorrer todos los monitores para cada acción: en storage p10 (4139 monitores y 9546
+    acciones), el grounding tarda 1,3 s en lugar de 26 s;
   - `total-time` en una métrica con preferencias es la duración del plan, que no es un
     coste de acción: la búsqueda no la optimiza (nota) y la métrica del plan la suma con
     su peso. Sin preferencias, la métrica de una tarea temporal sigue siendo solo
@@ -527,21 +526,22 @@ alcanzar el límite de memoria.
   estricta (`(> x 0)`) le parece incumplido siempre; y en pathways (IPC 2006) da p0a por
   incumplida pero no suma su peso a la métrica.
 
-## Procesos y eventos (iteración 6b)
+## Procesos y eventos
 
 Los dominios con procesos y eventos (PDDL+) van a un motor con el **tiempo discretizado**
 (`pyplanner.grounding.discrete`), al estilo de ENHSP, DiNo o UPMurphi. Las tareas
-temporales sin `:time` siguen en el motor de la 3b, que es más preciso, salvo las que este
+temporales sin `:time` siguen en el motor temporal, que es más preciso, salvo las que este
 no admite por sus efectos continuos (ritmos no lineales, como el repostaje de
 generator-nonlinear, donde el caudal crece con el tiempo que lleva repostando): esas pasan
-al motor discretizado, con una nota. Si tampoco las admite, el error es el de la 3b.
+al motor discretizado, con una nota. Si tampoco las admite, el error es el del motor
+temporal.
 
 - **Pasos de la búsqueda:** las acciones instantáneas, el inicio y el fin de cada acción
   durativa, y una acción `_wait` que deja pasar δ unidades de tiempo (1 por defecto;
   `--delta` en la CLI, `delta` en `solve`). La espera se acorta si antes una acción
-  durativa llega a una cota de su duración, para que pueda terminar justo a tiempo. Desde
-  la v0.7 hay además una espera hasta el siguiente cambio (`_wait-until`, ver "Ritmos que
-  fijan las acciones").
+  durativa llega a una cota de su duración, para que pueda terminar justo a tiempo. Hay
+  además una espera hasta el siguiente cambio (`_wait-until`, ver "Ritmos que fijan las
+  acciones").
 - **Integración exacta** (`pyplanner.grounding.flows`): durante una espera, las variables
   siguen la dinámica de los procesos activos. Se integra con series de Taylor, que en
   dinámicas polinómicas (car: la velocidad crece con la aceleración y la distancia con la
@@ -552,9 +552,9 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
 - **Eventos en su instante exacto.** Tras cada cambio, los eventos se disparan en cascada.
   Si durante una espera se cumple la precondición de un evento (o cambia qué procesos están
   activos), el instante se busca por bisección sobre el flujo exacto, como hace VAL, y la
-  espera sigue hasta completar δ. Sin esto, un evento se detectaba al final de la espera:
-  en generator, un depósito quedaba con combustible negativo y el generador recibía de
-  más, y la búsqueda acababa aprovechando ese error (5 de 8 instancias de
+  espera sigue hasta completar δ. Sin esto, un evento se detectaría al final de la espera:
+  en generator, un depósito quedaría con combustible negativo y el generador recibiría de
+  más, y la búsqueda acabaría aprovechando ese error (5 de 8 instancias de
   generator-events; 8 de 8 con el instante exacto).
 - **Invariantes:** las condiciones `over all` de las acciones durativas en curso se
   comprueban tras cada cambio (no en mitad de una espera).
@@ -566,14 +566,14 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
   (el reloj dentro de la duración). Las condiciones `over all` son invariantes.
 - **Coste:** δ por espera y unos 2ε por acción (ε por el tiempo que pasa y ε por ser un
   paso más; sin el segundo, A* devolvía planes con decenas de acciones inútiles que hacían
-  pasar el tiempo de ε en ε). Desde la v0.7, 1/64 en lugar de 0,02, para que las sumas de
-  costes sean exactas, y la espera hasta el siguiente cambio cuesta lo que avanza. La
-  métrica que se informa es la duración del plan.
+  pasar el tiempo de ε en ε). Es 1/64, para que las sumas de costes sean exactas, y la
+  espera hasta el siguiente cambio cuesta lo que avanza. La métrica que se informa es la
+  duración del plan.
 - **Heurística:** en la relajación, la espera es una acción con un efecto condicional por
   proceso (sus ritmos × δ); *h^hbd* cuenta las repeticiones si el ritmo es constante, como
   el reloj de una acción durativa. Los eventos son reglas relajadas de coste 0 sobre
-  hechos. Lo que la relajación no ve (las invariantes) lo añade la 6c, y los ritmos que
-  fijan las acciones, la v0.7.
+  hechos. Lo que la relajación no ve, las invariantes y los ritmos que fijan las acciones,
+  lo añaden las dos secciones siguientes.
 - **Novedad:** las variables que cambian de forma continua no cuentan. Toman un valor
   nuevo en cada espera, así que todo estado parecía nuevo y la tabla crecía sin fin (en
   generator-events p06, 85 000 átomos y 2 GB en 20 s). Limitar sus valores distintos (16,
@@ -583,53 +583,51 @@ al motor discretizado, con una nota. Si tampoco las admite, el error es el de la
   invariante que se rompe en mitad de una espera, por ejemplo), `solve` busca otra vez con
   δ/2, hasta 3 veces, dentro del límite de tiempo. Es más estricto que VAL, que solo
   comprueba las invariantes en los *happenings*: en generator p02, un plan que VAL daba
-  por válido dejaba la gasolina en −1,08 entre dos *happenings*. Desde la v0.7, cada espera
-  se recorre a trozos de δ/10 para comprobar los instantes de en medio, pero termina en el
-  estado de la búsqueda: el redondeo de miles de trozos se acumulaba, y un plan que agota
-  el combustible justo al final de una espera larga quedaba en −10⁻⁹.
+  por válido dejaba la gasolina en −1,08 entre dos *happenings*. Cada espera se recorre a
+  trozos de δ/10 para comprobar los instantes de en medio, pero termina en el estado de la
+  búsqueda: el redondeo de miles de trozos se acumularía, y un plan que agota el
+  combustible justo al final de una espera larga quedaría en −10⁻⁹.
 - **Sin plan:** agotar la búsqueda no demuestra nada (con un δ menor podría haber plan):
   termina con `failed`.
-- **Literales iniciales temporizados** (trabajo opcional, punto 4): son eventos de un
-  reloj global, `til@clock`, que avanza a ritmo 1, así que se disparan en su instante
-  exacto. Una espera que termina justo en el instante de un TIL deja pasar además ε: VAL
+- **Literales iniciales temporizados:** son eventos de un reloj global, `til@clock`, que
+  avanza a ritmo 1, así que se disparan en su instante exacto. Una espera que termina justo en el instante de un TIL deja pasar además ε: VAL
   no admite que una acción lea un hecho en el mismo instante en que un TIL lo cambia.
-- **Restricciones de trayectoria** (trabajo opcional, punto 4): los monitores de la 5b.
-  Los instantes de `within`, `hold-after` y `hold-during` son eventos del mismo reloj (TIL
-  sin literales). Como VAL, se comprueban en los *happenings*: tras cada acción, y tras una
+- **Restricciones de trayectoria:** los monitores de las tareas sin procesos. Los
+  instantes de `within`, `hold-after` y `hold-during` son eventos del mismo reloj (TIL sin
+  literales). Como VAL, se comprueban en los *happenings*: tras cada acción, y tras una
   espera solo si un evento o un TIL han cambiado los hechos. El final de una espera en la
   que no pasa nada no es un *happening*: comprobarlas también ahí daba por buenos planes
   que VAL rechaza (un `within` que se cumple en mitad de una espera). La espera hasta el
   siguiente cambio también pasa por los monitores.
-- **Efectos condicionales en las acciones durativas** (trabajo opcional, punto 4). Con
-  condiciones `over all`, un vigilante como el de la 3b: se activa al empezar si se
-  cumplen sus condiciones y se apaga en cuanto la condición `over all` deja de cumplirse.
+- **Efectos condicionales en las acciones durativas.** Con condiciones `over all`, un
+  vigilante como el del motor temporal: se activa al empezar si se cumplen sus condiciones
+  y se apaga en cuanto la condición `over all` deja de cumplirse.
   Durante una espera, los hechos solo cambian con los eventos, en su instante exacto, y ahí
   se comprueba: un evento que rompe la condición apaga el vigilante aunque otro la
   recupere antes del final de la espera. Un efecto continuo condicional se decide al
-  empezar (como en la 3b, solo puede depender de condiciones `at start`): un hecho
-  `rate@a@k` recuerda si la condición se cumplía, y un proceso aparte, `a#k@run`, aplica el
+  empezar (como en el motor temporal, solo puede depender de condiciones `at start`): un
+  hecho `rate@a@k` recuerda si la condición se cumplía, y un proceso aparte, `a#k@run`, aplica el
   ritmo mientras la acción sigue en curso.
-- **Preferencias** (trabajo opcional, punto 4): como en la 5c, compiladas en costes. La
-  fase final (`_end`, `_collect`, `_forgo`) va detrás de las esperas y queda fuera del
-  tiempo: no deja pasar ε ni dispara eventos. `_end` exige además que no haya acciones
+- **Preferencias:** como en las tareas sin procesos, compiladas en costes. La fase final
+  (`_end`, `_collect`, `_forgo`) va detrás de las esperas y queda fuera del tiempo: no deja pasar ε ni dispara eventos. `_end` exige además que no haya acciones
   durativas en curso. La métrica ya no es la duración: cada espera cuesta lo que un paso.
-  Las restricciones-preferencia son los monitores blandos de la 5c, también en los
-  *happenings*.
+  Las restricciones-preferencia son los monitores blandos de las preferencias, también en
+  los *happenings*.
 - **Límites** (error claro): `always-within` con procesos y eventos.
 
-## Heurística con procesos y eventos (iteración 6c)
+## Heurística con procesos y eventos
 
 La relajación ignora lo que empeora las condiciones, así que no ve las invariantes: para
 ella, el generador puede funcionar 1000 unidades con 960 de combustible y basta con
-esperar. Las búsquedas voraces esperaban hasta que la invariante se rompía y ya era tarde
-para repostar. La 6c añade lo que falta (`pyplanner.heuristics.projection`):
+esperar. Las búsquedas voraces esperarían hasta que la invariante se rompiera y ya fuera
+tarde para repostar. Lo que falta lo añade `pyplanner.heuristics.projection`:
 
 - **Duraciones en la relajación.** Las cotas de la duración que no dependen de nada que
   cambie se comparan con el reloj tal cual, sin una función intermedia que la relajación
-  no sabía cumplir. Asignar una constante (el reloj a 0 al empezar) ya no cuenta como
-  lograr cualquier condición sobre esa variable (ver "Motor numérico"). Los relojes valen
-  0 desde el estado inicial. Con esto, h(inicial) en generator pasa de 0,04 a unas 1000
-  esperas.
+  no sabría cumplir. Asignar una constante (el reloj a 0 al empezar) no cuenta como lograr
+  cualquier condición sobre esa variable (ver "Motor numérico"). Los relojes valen 0 desde
+  el estado inicial. Con esto, h(inicial) en generator es de unas 1000 esperas (sin ello,
+  0,04).
 - **Proyección** (`DiscreteTask.shortfall`): se simula el paso del tiempo sin hacer nada
   hasta el final obligatorio (la duración mínima) de cada acción durativa en curso con
   invariante. Si la invariante se rompe antes, cuenta lo que faltaba, y la heurística le
@@ -641,14 +639,14 @@ para repostar. La 6c añade lo que falta (`pyplanner.heuristics.projection`):
   tapaba cualquier faltante.
 - **Anticipación.** Si solo contaran las acciones en curso, empezar el generador subiría el
   valor de golpe (de 1000 a 1040 en generator-toricelli p02), y la búsqueda perezosa se
-  quedaba explorando los estados de antes: empezar y terminar un repostaje en ε da un
+  quedaría explorando los estados anteriores: empezar y terminar un repostaje en ε da un
   estado nuevo cada vez (93 000 estados sin pasar del estado inicial). Por eso también se
   simula empezar cada acción durativa con invariante y duración mínima que la base da como
   útil, y el valor es el mayor de los faltantes.
 - **Acciones útiles.** Las de la base no arreglan un faltante (para la relajación basta con
-  esperar), y la búsqueda perezosa, que pone a los sucesores el valor del padre, bajaba
-  esperando hasta que repostar ya no servía. Ahora, al expandir un estado con un faltante,
-  las útiles son las que lo reducen. Hacen falta tantas simulaciones como acciones
+  esperar), y la búsqueda perezosa, que pone a los sucesores el valor del padre, bajaría
+  esperando hasta que repostar ya no sirviera. Al expandir un estado con un faltante, las
+  útiles son las que lo reducen. Hacen falta tantas simulaciones como acciones
   candidatas (las que cambian valores o hechos de las condiciones de procesos y eventos),
   así que se calculan solo en los estados que se expanden (`Heuristic.helpful`), no en
   todos los que se evalúan.
@@ -656,31 +654,30 @@ para repostar. La 6c añade lo que falta (`pyplanner.heuristics.projection`):
   final del tramo, que en una espera de δ es lo previsto (la validación con δ/10 descubre
   el resto). La proyección avanza tramos de cientos de unidades. En generator-events, con
   los depósitos enganchados tarde, el combustible baja de 0 y se recupera (el caudal crece
-  con el cuadrado del tiempo), y la proyección no lo veía. Ahora comprueba entre cada dos
-  instantes en que se anula alguna de las condiciones numéricas en juego. Con un flujo
+  con el cuadrado del tiempo), y una proyección por tramos no lo vería. Por eso comprueba
+  entre cada dos instantes en que se anula alguna de las condiciones numéricas en juego. Con un flujo
   exacto, una condición polinómica es un polinomio en el tiempo: sus coeficientes son sus
   derivadas a lo largo del flujo (`Flow.crossings`), que se calculan una vez por condición,
   y sus raíces, con fórmula hasta grado 2. Con Runge-Kutta, solo la bisección.
-- **Rendimiento.** Sobre 1114e1d: el flujo redondea solo las variables que cambian, y los
-  valores tras una acción o un evento, solo los que cambian (los demás son los mismos
-  objetos, ya redondeados). La comprobación de cambios durante una espera evalúa una vez
-  lo del estado de partida, y solo los procesos con condiciones numéricas (los hechos no
-  cambian mientras pasa el tiempo). La búsqueda de generator-toricelli p09 con
-  `bfws-ff-pref` pasa de 13,1 a 6,2 s con el perfilador.
+- **Rendimiento.** El flujo redondea solo las variables que cambian, y los valores tras una
+  acción o un evento, solo los que cambian (los demás son los mismos objetos, ya
+  redondeados). La comprobación de cambios durante una espera evalúa una vez lo del estado
+  de partida, y solo los procesos con condiciones numéricas (los hechos no cambian mientras
+  pasa el tiempo). Así, la búsqueda de generator-toricelli p09 con `bfws-ff-pref` tarda la
+  mitad (de 13,1 a 6,2 s con el perfilador).
 
-## Ritmos que fijan las acciones (v0.7)
+## Ritmos que fijan las acciones
 
-A petición del proyecto principal, que no encontraba plan en uno de sus dominios: una
-economía con un proceso de producción cuyo ritmo fijan las acciones (poner y quitar
-trabajadores), donde llegar al objetivo exige encadenar acciones y esperas de miles de
-unidades de tiempo. Con la v0.6, h_FF trataba la espera como si bastara una para cualquier
-cantidad, y la única acción útil era esperar: la búsqueda no avanzaba. Son mecanismos
-generales, no de ese dominio:
+En algunos dominios, el ritmo de un proceso lo fijan las acciones: por ejemplo, una
+economía con un proceso de producción cuyo ritmo depende de los trabajadores que se ponen o
+se quitan, donde llegar al objetivo exige encadenar acciones y esperas de miles de unidades
+de tiempo. Sin estos mecanismos, h_FF trataría la espera como si bastara una para cualquier
+cantidad, la única acción útil sería esperar y la búsqueda no avanzaría:
 
 - **Incrementos variables en la relajación** (`pyplanner.heuristics.relaxation`): el efecto
   de la espera, ritmo × δ, no es constante, y *h^hbd* lo trataba de forma optimista: una
-  espera bastaba para cualquier cantidad, aunque el ritmo fuera 0. Ahora la arista exige
-  que el cambio sea positivo (un nodo más de la relajación, logrado por las acciones que
+  espera bastaría para cualquier cantidad, aunque el ritmo fuera 0. La arista exige que
+  el cambio sea positivo (un nodo más de la relajación, logrado por las acciones que
   suben el ritmo) y cuenta las esperas con el ritmo del estado o, si es menor, con el
   menor que le da una sola acción: ⌈déficit / max(ritmo·δ, ρ)⌉. Así, poner en marcha un
   ritmo no sube el valor y acelerarlo lo baja, y las acciones útiles pasan a ser las que
@@ -689,19 +686,19 @@ generales, no de ese dominio:
   avanza hasta el primer instante en que se cumple una condición numérica de una acción o
   un evento aplicables por sus hechos o del objetivo, o una acción durativa llega a una
   cota de su duración. Los instantes salen de las raíces exactas del flujo
-  (`Flow.crossings`, de la 6c); una invariante que se rompe por el camino invalida el
-  paso. Juntar 150 unidades a ritmo constante es un paso en lugar de 150. Cuesta lo que
+  (`Flow.crossings`); una invariante que se rompe por el camino invalida el paso. Juntar
+  150 unidades a ritmo constante es un paso en lugar de 150. Cuesta lo que
   avanza (`GroundTask.transition`), así que A* sigue minimizando la duración, y puede
-  mejorarla: en el depósito de los tests, de 2,02 a 1,67, porque ya no espera pasos
-  enteros de δ. No está en la relajación: es útil cuando lo es `_wait`.
-- **Costes exactos.** Con repeticiones de cientos o miles, las sumas de costes de 0,02
-  arrastraban ruido de redondeo, y en CUDA (que suma en otro orden) los empates entre
-  soportadores se rompían de otra forma: h_FF daba otro valor que la referencia. El coste
-  de una acción instantánea es ahora 1/64 (una fracción binaria cercana a 2ε) y las sumas
+  mejorarla: en el depósito de los tests, de 2,02 a 1,67, porque no espera pasos enteros
+  de δ. No está en la relajación: es útil cuando lo es `_wait`.
+- **Costes exactos.** Con repeticiones de cientos o miles, unas sumas de costes de 0,02
+  arrastrarían ruido de redondeo, y en CUDA (que suma en otro orden) los empates entre
+  soportadores se romperían de otra forma: h_FF daría otro valor que la referencia. El
+  coste de una acción instantánea es 1/64 (una fracción binaria cercana a 2ε) y las sumas
   son exactas: Python, Numba y PyTorch coinciden en todos los estados.
 - **Calidad.** La búsqueda voraz encuentra antes planes que esperan hasta la siguiente
   condición, y no siempre son los más cortos: en car-nodrag, acelerar, esperar hasta
-  d ≥ 30 y frenar dura 15,50 (antes, frenando antes en la rejilla de δ, 11,03).
+  d ≥ 30 y frenar dura 15,50 (frenando antes, en la rejilla de δ, 11,03).
 
 ## Heurísticas
 
@@ -725,8 +722,8 @@ generales, no de ese dominio:
 | `hybrid` | cada lote en Numba o en la GPU según su tamaño, con un umbral calibrado al empezar | con lotes adaptativos y tareas grandes (ver "Lotes adaptativos") |
 
 Los tres dan **exactamente los mismos valores y acciones útiles** que la referencia; los
-tests lo comprueban en los tiers 1 a 3 (numérico), en tareas hechas a mano y, durante el
-desarrollo, en tareas aleatorias con muchos empates y costes 0.
+tests lo comprueban en los problemas de prueba y en tareas hechas a mano, también
+aleatorias, con muchos empates y costes 0.
 
 - **Interfaz:** `evaluate_batch(states) -> list[Evaluation]`. Cada `Evaluation` lleva el
   valor (`inf` si es un callejón sin salida) y las acciones útiles.
@@ -811,7 +808,7 @@ Configuraciones predefinidas (`pyplanner configs`):
 
 | Nombre | Configuración | Notas |
 |--------|---------------|-------|
-| `gbfs-ff-pref-tb` | GBFS + h_FF + acciones útiles + exploración por tipos | la de 1 núcleo hasta la iteración 3b |
+| `gbfs-ff-pref-tb` | GBFS + h_FF + acciones útiles + exploración por tipos | |
 | `gbfs-ff-pref` | GBFS + h_FF + acciones útiles | |
 | `lazy-ff-pref` | GBFS perezosa + h_FF + acciones útiles | evalúa muchos menos estados |
 | `lazy-ff-pref-tb` | la anterior + exploración por tipos (semilla 1) | |
@@ -823,7 +820,7 @@ Configuraciones predefinidas (`pyplanner configs`):
 | `gbfs-add` | GBFS + h_add | |
 | `wastar-add-3` | WA* (w = 3) + h_add | |
 | `gbfs-goalcount-rnd` | GBFS + objetivos pendientes, desempate aleatorio | muy barata; aporta diversidad |
-| `bfws-ff-pref` | BFWS: GBFS con prioridad (novedad, h_FF) + acciones útiles | la más robusta (resuelve todos los tiers); en los portfolios, con `tff` (`bfws-tff-pref`, la de 1 núcleo) |
+| `bfws-ff-pref` | BFWS: GBFS con prioridad (novedad, h_FF) + acciones útiles | la más robusta (resuelve todos los problemas de prueba); en los portfolios, con `tff` (`bfws-tff-pref`, la de 1 núcleo) |
 | `bfws-ff` | BFWS con h_FF | |
 | `bfws-goalcount` | BFWS con objetivos pendientes | sin heurística de relajación |
 | `iw1`, `iw2` | IW(1), IW(2) | incompletas; solo para problemas de anchura baja |
@@ -832,7 +829,7 @@ Configuraciones predefinidas (`pyplanner configs`):
 | `astar-hmax` | A* + h_max | óptima |
 | `astar-blind` | A* ciega | óptima; coste uniforme |
 
-## Búsquedas locales (trabajo opcional, punto 5)
+## Búsquedas locales
 
 Para dar diversidad al portfolio, dos búsquedas que no mantienen una cola global, sino
 que avanzan desde el mejor estado encontrado (`pyplanner.search.local`):
@@ -857,9 +854,8 @@ plan sin ellos sigue siendo válido y no cuesta más. Con preferencias, la búsq
 *anytime* pasa de los paseos aleatorios directamente a WA*: no terminan sin plan, así que
 con la cota se quedarían con todo el tiempo.
 
-No están en los portfolios: en las 97 instancias que el portfolio de 7 núcleos no
-resolvía no aportan ninguna (ver
-[Rendimiento medido](#trabajo-opcional-búsquedas-locales)).
+No están en los portfolios: en las 97 instancias medidas que el portfolio de 7 núcleos no
+resolvía no aportan ninguna.
 
 ## Búsqueda por novedad
 
@@ -886,8 +882,8 @@ Lipovetzky y Geffner (2012, 2017); código en `search/novelty.py` y `search/engi
 
 ## Landmarks
 
-Trabajo opcional (punto 2); código en `heuristics/landmarks.py` y `search/engine.py`. Al
-estilo de LAMA (Richter y Westphal, 2010).
+Código en `heuristics/landmarks.py` y `search/engine.py`. Al estilo de LAMA (Richter y
+Westphal, 2010).
 
 - **Qué son.** Un landmark es un hecho que se cumple en algún momento de todo plan. Se
   calculan los de la relajación sin borrados, que también lo son de la tarea, sobre los
@@ -929,8 +925,7 @@ Código en `search/engine.py` y `heuristics/hybrid.py`.
   Numba por estado no depende del lote pero crece con la tarea; el de la GPU tiene un
   coste fijo alto por llamada y crece menos. Al empezar se miden los dos en la propia
   tarea (paseo aleatorio) y se fija el tamaño a partir del cual la GPU es más rápida; si
-  no lo es nunca, todo va a Numba. Coste por estado de h_FF (µs) en la máquina de
-  desarrollo (GTX 970):
+  no lo es nunca, todo va a Numba. Coste por estado de h_FF (µs) con una GTX 970:
 
   | Tarea | Numba (cualquier lote) | GPU, lote 64 | GPU, lote 256 |
   |-------|------------------------|--------------|---------------|
@@ -960,11 +955,9 @@ Resultados (driverlog y zenotravel temporales 12–17, un proceso, 60 s):
 
 - **El lote adaptativo es neutro para la búsqueda** (con paciencia 4 perdía instancias;
   con 8, no). Su valor es que habilita la GPU, que recorta un 30–55% en las tareas grandes.
-- **En el portfolio aporta poco en estas pruebas** (la búsqueda perezosa ya resuelve
-  zenotravel en pocos segundos), pero es la mejor sexta configuración: con las 7
-  candidatas medidas en las 34 instancias, el mejor portfolio de 6 es el de 5 más el
-  híbrido (93,8 s frente a 100,9 s), y WA* pasa al de 7. Con los landmarks se rehicieron
-  los portfolios, y el híbrido sigue en el de 6 y el de 7 (ver "Portfolio").
+- **En el portfolio aporta poco en estas tareas** (la búsqueda perezosa ya resuelve
+  zenotravel en pocos segundos), pero es el miembro con GPU de los portfolios de 6 y 7
+  (ver "Portfolio").
 
 ## Portfolio
 
@@ -974,7 +967,7 @@ cada uno contiene al anterior:
 
 | Núcleos | Búsquedas | Qué se añade |
 |---------|-----------|--------------|
-| 1 | `bfws-tff-pref` | BFWS, la más robusta: resuelve todos los tiers y da los mejores planes con preferencias; se ejecuta en el propio proceso |
+| 1 | `bfws-tff-pref` | BFWS, la más robusta: resuelve todos los problemas de prueba y da los mejores planes con preferencias; se ejecuta en el propio proceso |
 | 2 | + `lazy-ff-lm-pref-tb` | la perezosa con landmarks y exploración por tipos, la mejor individual en las tareas clásicas |
 | 3 | + `gbfs-goalcount-rnd` | la más barata y aleatoria |
 | 4 | + `wastar-add-3` | WA*, que da los mejores planes con preferencias |
@@ -982,15 +975,15 @@ cada uno contiene al anterior:
 | 6 | + `gbfs-tff-pref-hybrid` | lote adaptativo y evaluación híbrida CPU/GPU, el único miembro con GPU: casi empata con GBFS con exploración por tipos (una instancia menos, un 1 % más rápido) y se queda para las tareas grandes, donde la GPU rinde |
 | 7 | + `gbfs-tff-pref-tb` | GBFS con exploración por tipos |
 
-- Elegidos en el trabajo opcional de los landmarks con 475 instancias, clásicas y no
-  clásicas (ver "Rendimiento medido"). Cada uno resuelve todos los tiers. Del de 2 al de
-  5 son la mejor combinación posible de su tamaño; el de 6 y el de 7, por el miembro con
-  GPU, quedan a una instancia de la mejor.
+- Elegidos midiendo en 475 instancias del catálogo PDDLDomains, clásicas y no clásicas.
+  Cada uno resuelve todos los problemas de prueba. Del de 2 al de 5 son la mejor
+  combinación posible de su tamaño; el de 6 y el de 7, por el miembro con GPU, quedan a una
+  instancia de la mejor.
 - **Los miembros con h_FF usan `tff`** (h_TFF en las tareas con TIL y h_FF, con la misma
   búsqueda, en las demás), salvo `lazy-ff-pref`: con h_FF resuelve satellite p10 y p14, y
   con h_TFF no. La perezosa con landmarks no tiene versión con `tff`. En las tareas con
   TIL (satellite y trucks, 22 instancias), el portfolio de 1 núcleo pasa de 6 resueltas a
-  8 y los de 6 y 7 de 11 a 12; en las demás no cambia nada (ver "Rendimiento medido").
+  8 y los de 6 y 7 de 11 a 12; en las demás no cambia nada.
 - Con más de 7 núcleos se usa el de 7. Nunca hay más búsquedas que núcleos.
 - Los portfolios de 1 a 5 núcleos no usan la GPU: funcionan igual en cualquier máquina y
   no pagan el arranque de PyTorch y CUDA en las tareas pequeñas. Sin GPU, el miembro
@@ -1005,25 +998,24 @@ cada uno contiene al anterior:
 
 - Un proceso por configuración; gana el primer plan y el resto se cancelan. Con
   preferencias, el portfolio es *anytime* (ver
-  [Preferencias y búsqueda anytime](#preferencias-y-búsqueda-anytime-iteración-5c)): se
-  queda con el mejor plan dentro del límite de tiempo.
+  [Preferencias y búsqueda anytime](#preferencias-y-búsqueda-anytime)): se queda con el
+  mejor plan dentro del límite de tiempo.
 - Se usa `fork` cuando es seguro: sin CUDA, sin PyTorch cargado en el padre y con un
   solo hilo (también del sistema: un programa que embebe Python suele tener muchos). En
   cualquier otro caso se usa `spawn`, y cada hijo vuelve a importar el script principal:
   si este llama al planificador fuera de `if __name__ == "__main__":`, el hijo lanza un
   error claro en lugar de repetir el trabajo del script, y el padre informa de la causa.
 - Si un miembro falla, informa con estado `ERROR` y un mensaje, pero no tumba el
-  portfolio. Eso incluye no poder arrancarlo (antes, el error se quedaba en el hilo que
-  arranca los de `spawn`) y terminar sin informar (se detecta al momento, con el código
-  de salida).
+  portfolio. Eso incluye no poder arrancarlo y terminar sin informar (se detecta al
+  momento, con el código de salida).
 - Los miembros de `spawn` leen la tarea de un fichero temporal, serializada una vez para
-  todos. Antes viajaba por la tubería de arranque de cada hijo, y CPython mantiene abierto
-  el otro extremo mientras escribe: si el hijo moría al arrancar y la tarea no cabía en la
-  tubería (64 KB; slitherlink p02 ocupa 589 KB), el padre se quedaba esperando para
+  todos. Por la tubería de arranque de cada hijo no sería seguro: CPython mantiene abierto
+  el otro extremo mientras escribe, y si el hijo muere al arrancar y la tarea no cabe en la
+  tubería (64 KB; slitherlink p02 ocupa 589 KB), el padre se quedaría esperando para
   siempre, aunque hubiera límite de tiempo.
 - **Precompilación de Numba:** antes de lanzar los hijos, el padre compila (o carga de la
   caché) los núcleos de Numba si algún miembro los va a usar. Sin esto, un hijo cancelado
-  a mitad de compilar dejaba la caché incompleta, y cada ejecución pagaba la compilación
+  a mitad de compilar dejaría la caché incompleta, y cada ejecución pagaría la compilación
   y la espera del cierre. Con `fork`, los hijos heredan los núcleos ya compilados.
 
 ## Uso desde la terminal
@@ -1048,13 +1040,13 @@ pyplanner solve -t 30 dominio.pddl preferencias.pddl  # el mejor plan en 30 s
   cientos de miles de estados por segundo). Al llegar al límite, la búsqueda termina con
   `limit_reached` y lo explica en el detalle.
 - **Límite duro** (`pyplanner.search.memory`). El límite anterior se consulta cada 32
-  iteraciones y no ve lo que crece de golpe entre dos consultas ni el grounding (una
-  medida de storage agotó así la memoria de WSL). Por eso hay además un límite duro con
+  iteraciones y no ve lo que crece de golpe entre dos consultas ni el grounding. Por eso
+  hay además un límite duro con
   `RLIMIT_DATA`: al pasarlo, cualquier reserva falla y la búsqueda termina con
   `limit_reached`.
   - **Miembros del portfolio:** cada uno se lo pone en su proceso al arrancar, algo por
     encima de su parte (el mayor entre su parte y lo que ya ocupa, más 512 MB o el 25 %).
-    Antes carga PyTorch y CUDA si los usa: importar PyTorch son unos 630 MB.
+    Antes de ponérselo carga PyTorch y CUDA, si los usa: importar PyTorch son unos 630 MB.
   - **CLI:** se pone el total a sí misma antes del grounding. Si se agota al instanciar,
     termina con el código 4.
   - **Como librería**, no se limita al proceso que llama: el grounding y la búsqueda con
@@ -1071,7 +1063,7 @@ pyplanner solve -t 30 dominio.pddl preferencias.pddl  # el mejor plan en 30 s
   - 4: no se ha encontrado plan: se ha llegado a un límite, o la búsqueda no puede
     demostrar que no lo haya (IW, o una tarea temporal en la que se han descartado estados
     repetidos con otra línea temporal; ver
-    [Motor temporal](#motor-temporal-iteración-3b)).
+    [Motor temporal](#motor-temporal)).
 
 ## Uso como librería
 
@@ -1086,588 +1078,3 @@ result = solve(domain, problem, portfolio_for_cores(2), time_limit=60)
 if result.plan is not None:
     print(result.plan.to_ipc())  # o result.plan.to_dict() para el JSON
 ```
-
-## Rendimiento medido
-
-Las medidas hasta la versión 0.8 citan las rutas que tenían entonces los problemas
-(`dominios/…` y `benchmarks/…`). Hoy están en el catálogo PDDLDomains (submódulo
-`vendor/PDDLDomains`), con el mismo contenido; la tabla de equivalencias está en
-[benchmarks.md](benchmarks.md#rutas-anteriores), y `scripts/benchmark.py` mide
-directamente una colección del catálogo.
-
-Medido en la máquina de desarrollo (GTX 970, 12 núcleos) con gripper de las IPC 1998,
-`instance-20`: 42 bolas, 172 hechos y 340 acciones instanciadas.
-
-**Coste de evaluar un estado** (1024 estados de paseos aleatorios):
-
-| Heurística | Python | PyTorch CPU (lote 1024) | PyTorch GPU (lote 64) | PyTorch GPU (lote 1024) |
-|------------|--------|-------------------------|-----------------------|-------------------------|
-| h_add | 164 µs | 15 µs | 21 µs | **5.7 µs** |
-| h_FF | 269 µs | 28 µs | 51 µs | **9.7 µs** |
-
-**Búsqueda completa** (tiempo total del proceso):
-
-| Configuración | Plan | Tiempo |
-|---------------|------|--------|
-| `gbfs-ff-pref` | 165 | 8.0 s |
-| `gbfs-ff-pref`, CPU, lote 64 | 125 | 10.9 s |
-| `gbfs-ff-pref`, GPU, lote 64 | 125 | 7.6 s |
-| `lazy-ff-pref` | 165 | 0.47 s |
-| `gbfs-add` | 167 | 1.1 s |
-| `gbfs-add`, CPU, lote 64 | 163 | 5.0 s |
-| `gbfs-add`, GPU, lote 64 | 163 | 4.1 s |
-| portfolio de 5 núcleos | 129 (ganó `gbfs-goalcount-rnd`) | 0.52 s |
-
-Conclusiones:
-
-- **Evaluar por lotes con tensores sale muy a cuenta:** con lotes grandes, h_add es 11
-  veces más rápida en CPU y 29 en GPU, y h_FF (con la extracción del plan relajado también
-  en tensores) 10 y 28 veces.
-- **Los lotes no aceleran por sí solos la búsqueda completa en tareas de este tamaño:**
-  - importar PyTorch e inicializar CUDA cuesta unos 2 s;
-  - con lotes, la GBFS expande *k* nodos antes de volver a mirar la heurística, así que
-    se guía peor y expande más.
-
-  Compensan cuando la evaluación domina el tiempo total, es decir, con tareas grandes o
-  heurísticas caras. Por eso los lotes son una opción y no el valor por defecto.
-- **El portfolio aporta robustez de verdad:** una configuración muy barata ganó a todas
-  las demás, y además con un plan mejor. Es la diversidad de la que hablábamos.
-
-### Iteración 2: slitherlink
-
-slitherlink p02 (tablero de 4×6, 306 hechos, 1920 acciones con 2400 precondiciones
-negativas) es el caso más duro de los tiers 1 y 2. Lecciones:
-
-- **La heurística domina el tiempo:** más del 90%, y más de la mitad de los estados
-  evaluados son callejones sin salida. Dos cambios en el Dijkstra de referencia duplicaron
-  el ritmo de expansión:
-  - precalcular el número de precondiciones de cada acción;
-  - anotar el mejor soportador durante el recorrido, en lugar de buscarlo después.
-- **La búsqueda voraz pura se atasca.** `gbfs-ff-pref` necesitaba unas 49 000 expansiones
-  (unos 80 s al ritmo medido). Con lotes (*k-best-first search*) el número de expansiones
-  variaba entre 1 400 y 82 000 según el tamaño de lote y la instancia: suerte con el
-  orden, no una mejora fiable.
-- **La exploración por tipos sí es robusta:** con 4 semillas resuelve p02 siempre, en
-  17–24 s y con 9 000–14 000 expansiones. Por eso es la base de los portfolios desde la
-  iteración 2.
-
-### Iteración 2: heurísticas compiladas con Numba
-
-Medido sobre 3000 estados reales de una búsqueda en slitherlink p02 (45% de callejones sin
-salida; los hermanos de cada expansión dan lotes de unos 2,8 estados):
-
-| Opción | µs/estado (h_FF) | Frente a Python |
-|--------|------------------|-----------------|
-| Referencia en Python | ~600 | 1× |
-| Comprobación de alcanzabilidad previa + h_FF solo en estados vivos | 613 | 1,0× |
-| PyTorch CPU / GPU, lotes de 3 | 892 / 1524 | 0,7× / 0,4× |
-| PyTorch GPU, lotes de 256 | 142 | 4,3× |
-| **Numba** | **~42** | **~19×** |
-
-- **La comprobación previa no gana nada.** Los callejones sin salida son *más baratos* que
-  los estados vivos (unos 490 µs frente a 760 µs), así que lo que ahorra en unos lo
-  pierde en otros.
-- **PyTorch no sirve con los lotes pequeños de la búsqueda:** domina el coste fijo de
-  cada llamada.
-- **Numba es 12–19 veces más rápido** según el dominio (gripper, rubiks-cube,
-  slitherlink), con resultados idénticos a la referencia.
-
-Búsqueda completa en slitherlink p02 (CLI, tiempo total del proceso):
-
-| | Python | Numba (`auto`) |
-|--|--------|----------------|
-| `-j 1` | 22,3 s | **3,1 s** |
-| `-j 5` | 23,6 s | **3,6 s** |
-
-El test de tiers completo (tiers 1 y 2, 4 portfolios, validación con VAL) pasó de 97 s a
-18 s. La búsqueda expande exactamente los mismos nodos: la ganancia es pura velocidad.
-Ahora la heurística ya no domina el tiempo total; el siguiente cuello de botella es la
-propia búsqueda en Python (generar sucesores y gestionar las colas).
-
-### Iteración 2: NumPy y generación de sucesores
-
-Se estudió sustituir las listas y los enteros de Python por arrays de NumPy. Medido en el
-código del planificador:
-
-| Operación | Python | NumPy |
-|-----------|--------|-------|
-| Acceso elemento a elemento en un bucle (patrón del Dijkstra de referencia) | 28 ns | 104 ns (3,6× más lento) |
-| Aplicar una acción y calcular el hash del estado | 240 ns (entero bitset) | 1098 ns (array; 5× más lento) |
-| Memoria por estado | 68 B | 418 B |
-| Acciones aplicables (1920 acciones, vectorizado) | 70 µs | 80 µs |
-
-**Conclusión: ahora mismo no nos beneficia usarlo de forma general.** NumPy gana cuando
-un bucle entero corre en C, y eso ya lo aprovechamos dentro de los núcleos de Numba y de
-PyTorch. En el código que va elemento a elemento es más lento. Además, el estado como
-entero de Python es mejor que cualquier array: las operaciones de bits y el hash son una
-sola operación en C sobre un solo objeto.
-
-No es una decisión cerrada. NumPy es ya una dependencia y está disponible. Si en alguna
-iteración aparece una parte concreta que se beneficie de operaciones vectoriales, se usará
-ahí, de forma localizada; por ejemplo, el cálculo numérico de la iteración 3.
-
-El perfil sí mostró que, con la heurística ya compilada, la **generación de sucesores**
-se llevaba el 46% del tiempo: ordenar los candidatos de cada expansión era el 18%.
-Resultados en slitherlink p02 (tiempo de búsqueda, sin arranque del proceso):
-
-| Paso | Tiempo | µs/expansión |
-|------|--------|--------------|
-| Punto de partida (heurística con Numba) | 2,31 s | 210 |
-| Orden canónico sin ordenar | 1,99 s | 177 |
-| Generador de sucesores compilado con Numba | 1,53 s | 137 |
-| Extracción de h_FF recorriendo solo el plan relajado y acciones útiles compactas | **1,44 s** | **129** |
-
-Con la CLI (tiempo total del proceso), slitherlink p02 queda en **2,4 s con 1 núcleo y
-2,5 s con 5**, frente a los 22–24 s de la versión con la heurística en Python. Ahora la
-generación de sucesores es el 5% del tiempo y la heurística compilada unos 35 µs por
-estado (unas tres cuartas partes del total). Bajar más exigiría cambios de algoritmo
-(heurísticas incrementales, menos evaluaciones), no de implementación.
-
-### Iteración 3a: motor numérico
-
-**Llamar a funciones de Numba con muchos arrays es caro.** La primera versión compilada
-del Dijkstra numérico era 4 veces más lenta que la de la iteración 2 (157 µs por estado
-frente a 41 en slitherlink p02). La causa era una función auxiliar (`_offer`) que recibía
-14 argumentos, 9 de ellos arrays, y se llamaba por cada efecto de cada acción disparada.
-El generador de sucesores tenía el mismo problema con la comprobación de precondiciones.
-Escribiendo ese código dentro del bucle (y unificando añadidos y aristas numéricas en una
-sola lista CSR), el Dijkstra bajó a 50 µs y los sucesores volvieron a su coste anterior.
-Las funciones pequeñas con pocos argumentos (las del montículo) no tienen ese problema.
-
-**El desempate (coste, nivel) cuesta un 17% en el núcleo de Numba** (un nivel más por
-hecho y por acción). Se probó un montículo indexado con *decrease-key* en lugar de
-entradas obsoletas: es igual de rápido, pero su memoria está acotada por el número de
-hechos, así que se queda. Las reservas de memoria por estado cuestan menos de 1 µs y no
-merece la pena reutilizarlas.
-
-**PyTorch:** calcular los niveles en un segundo punto fijo duplicaba el tiempo. Se
-obtienen gratis del punto fijo de costes (la última iteración en que baja cada coste). Las
-aristas de añadido ya no multiplican por 1: solo las numéricas llevan multiplicador.
-
-Búsqueda en slitherlink p02 (`gbfs-ff-pref-tb`, tiempo de búsqueda, mismas expansiones):
-
-| Dispositivo | Iteración 2 | Iteración 3a |
-|-------------|-------------|--------------|
-| Numba | 1,55 s | 1,83 s |
-| PyTorch CPU, lote 64 | 6,9 s | 9,5 s |
-| PyTorch GPU, lote 64 | 2,3 s | 2,9 s |
-
-En PyTorch, el resto de la diferencia es `float64`, que mueve el doble de memoria en cada
-`scatter` y `gather`: es el precio de la exactitud.
-
-### Iteración 3b: motor temporal
-
-Instancias de driverlog y zenotravel (IPC 2002, *time-simple*) hasta la 17, con
-`gbfs-ff-pref-tb` y `lazy-ff-pref` (Numba, 60 s): se resuelven 47 de 52. Las instancias
-del tier 3 tardan milisegundos.
-
-- **La heurística domina el tiempo** (más del 80% en driverlog 15). Aplicar un paso
-  (órdenes, red temporal e invariantes) cuesta unos 5 µs.
-- **Se corrigió un derroche en h_FF compilada:** convertía a lista el array entero de
-  acciones útiles (lote × hechos, unos 830 000 elementos por lote en driverlog 15) en
-  lugar de solo la parte usada. Venía de la iteración 2; con tareas grandes costaba 0,7 s.
-- **Se descartó exigir la invariante ya en el inicio** (cuando los efectos `at start` no
-  la tocan). Evita generar inicios que la rompen, pero empeoró la búsqueda: 46 resueltos
-  frente a 47 y un 20% más de tiempo total.
-
-### Iteración 4: predicados derivados
-
-psr-middle p01 y p02 (IPC 2004): unos 400 axiomas en un solo estrato y 28 acciones;
-grounding en 0,25 s. Todas las configuraciones predefinidas los resuelven en
-milisegundos, salvo IW(1), que es incompleta. Los tiempos de la CLI en los tiers 1 y 2 son
-los mismos que antes de añadir los axiomas (medidos en las mismas condiciones).
-
-### Iteración 4: literales iniciales temporizados
-
-satellite p01 y p02 (IPC 2004, ventanas de visibilidad de las antenas). p01 se resuelve
-en milisegundos. En p02 las ventanas restringen de verdad: con 60 s y 2,5 GB por búsqueda,
-`bfws-ff` tarda 0,6 s, `bfws-ff-pref-hybrid` 2,6 s, `gbfs-ff-pref` 3,7 s y
-`bfws-ff-pref` 8,2 s. `gbfs-ff`, `lazy-ff-pref`, `gbfs-goalcount-rnd` y las A* no
-terminan. El portfolio por defecto tarda unos 12 s. La mayoría de los nodos están entre el
-cierre de una antena y el de la otra, donde la heurística no ve que queda poco tiempo.
-
-**Plazos en la heurística** (parte A), medidos en `benchmarks/timed-initial-literals/
-satellite` (p01–p20, 60 s y 2,5 GB por búsqueda, planes validados con VAL):
-
-| Configuración | Sin plazos | Con plazos |
-|---------------|------------|------------|
-| `gbfs-ff-pref` | 4 (973 s) | 5 (917 s) |
-| `bfws-ff-pref` | 3 (1035 s) | 4 (1028 s) |
-| `bfws-ff` | 3 (1039 s) | 4 (1007 s) |
-| `lazy-ff-pref` | 3 (1025 s) | 6 (859 s) |
-| `gbfs-ff-pref-tb` | 4 (999 s) | 4 (990 s) |
-| Alguna de las cinco | 5 (p01–p05) | 8 (además p06, p10 y p14) |
-
-- La comprobación descubre muchos callejones (en p07, 24 000 frente a 3 000 sin plazos) y
-  cuesta más o menos lo mismo que h_FF compilada.
-- No mejora todos los casos pequeños: cambia el recorrido de la búsqueda, y en algunos
-  (`bfws-ff` en p02, de 0,8 a 6,1 s) va peor.
-- Por encima de p06 las búsquedas se ahogan: cada expansión genera unos 270 sucesores en
-  p07 y h_FF no orienta con ventanas. Las perezosas agotan los 2,5 GB. Lo que queda por
-  ganar es de la parte B (plan relajado temporal), que está en el trabajo opcional.
-
-### Iteración 5c: preferencias y búsqueda anytime
-
-storage con preferencias cualitativas (IPC 2006, `benchmarks/preferences/storage`,
-p01–p20), 60 s y 2,5 GB por búsqueda, 3 procesos. Todos los planes son válidos para VAL y
-su métrica coincide con la de VAL:
-
-| | `lazy-ff-pref` | `bfws-ff-pref` |
-|---|---|---|
-| Con plan | 20 de 20 | 20 de 20 |
-| Óptimo demostrado | p01–p03 | p01–p03 |
-| Métrica total | 30 233 | 31 515 |
-
-- **Grounding.** La restricción de cajas incompatibles en zonas contiguas es un `forall`
-  sobre dos cajas y dos zonas: en p20, 2,8 millones de instancias, casi todas triviales.
-  Instanciarlas todas agotó la memoria de WSL en la primera medida. Con el join y el
-  descarte de las triviales quedan 37 000, y el grounding de p20 pasa de 197 s y 2,7 GB a
-  6 s y 350 MB. El índice del join acelera también el grounding de los demás tiers
-  (slitherlink p02, de 0,37 a 0,19 s) con el mismo resultado.
-- **Primer plan e incumbente.** Con los costes reales desde el principio, desde p04
-  `lazy-ff-pref` no encontraba plan en 60 s y `bfws-ff-pref` solo hasta p07. La primera
-  búsqueda con coste unitario da siempre un plan, pero el trivial (todo incumplido), y WA*
-  no lo mejora en 60 s. El incumbente sí: en p03–p06, p08 y p10, la métrica total pasa
-  de 1987 a 1309 (`lazy-ff-pref`) y a 985 (`bfws-ff-pref`); p04, de 81 a 5.
-- **Lo que queda.** En las instancias grandes la métrica sigue alta: cada estado tiene
-  miles de hechos (las marcas de las restricciones-preferencia) y las búsquedas expanden
-  poco (`bfws-ff-pref`, unas 600 expansiones en p20). En p10, la mitad del tiempo de
-  `bfws-ff-pref` es la novedad (un OR de enteros de miles de bits por átomo) y un tercio
-  h_FF compilada.
-- **Las mismas búsquedas en los tiers 1 a 5** (sin preferencias) cuestan lo mismo que
-  antes de la 5c (+1 %, dentro del ruido): la cota, la penalización y el incumbente se
-  comprueban con un solo booleano por sucesor cuando no se usan.
-
-### Iteración 6c: heurística con procesos y eventos
-
-Colecciones PDDL+ de `benchmarks/`, 60 s y 2 GB por búsqueda, 4 procesos. Instancias
-resueltas y tiempo total (las no resueltas cuentan 60 s), antes (1114e1d, la 6b) y
-después de la 6c. Todos los planes de la 6c son válidos para VAL:
-
-| Colección | `bfws-ff-pref` 6b | `bfws-ff-pref` 6c | `lazy-ff-pref` 6b | `lazy-ff-pref` 6c |
-|---|---|---|---|---|
-| car-nodrag (10) | 10, 36,0 s | 10, 26,1 s | 10, 28,7 s | 10, 19,6 s |
-| generator-events (8) | 8, 31,0 s | 8, 9,8 s | 4, 263,8 s | 8, 9,9 s |
-| generator-nonlinear (8) | 8, 75,3 s | 8, 7,5 s | 4, 271,6 s | 8, 7,5 s |
-| generator-toricelli (9) | 5, 342,0 s | 9, 26,2 s | 1, 482,2 s | 9, 15,7 s |
-| generator-linear (8, motor de la 3b) | 8, 8,5 s | 8, 7,6 s | 8, 59,1 s | 8, 57,3 s |
-
-- **generator**: con la proyección, las búsquedas recorren las 1000 esperas casi sin
-  desviarse (unas 1000 expansiones). En generator-toricelli p08, el primer plan de
-  `bfws-ff-pref` falla con δ/10 y se encuentra otro con δ = 0,5.
-- **car-nodrag** no tiene invariantes: hace las mismas búsquedas, un 27-32 % más rápidas
-  por los cambios de rendimiento de las esperas.
-- **generator-linear** va al motor de la 3b y hace las mismas búsquedas; la lentitud de
-  `lazy-ff-pref` ya estaba.
-- **Las mismas búsquedas en los tiers 1 a 5** (52 búsquedas con `lazy-ff-pref` y
-  `bfws-ff-pref`, el mejor de 3): 51 expanden lo mismo, y la otra (satellite p02 con
-  `lazy-ff-pref`) llega al límite de tiempo en las dos versiones. El coste es el mismo
-  (mediana +0,9 %; en slitherlink p02, 7,3-7,6 s en las dos con varias medidas).
-
-### v0.7: ritmos que fijan las acciones
-
-Las mismas colecciones que en la 6c, con la v0.6 (c084fd5) y con los cambios, 60 s y 2 GB
-por búsqueda, 4 procesos. Instancias resueltas y tiempo total; todos los planes son
-válidos para VAL:
-
-| Colección | `bfws-ff-pref` v0.6 | `bfws-ff-pref` | `lazy-ff-pref` v0.6 | `lazy-ff-pref` |
-|---|---|---|---|---|
-| car-nodrag (10) | 10, 33,1 s | 10, 11,5 s | 10, 26,2 s | 10, 5,7 s |
-| generator-events (8) | 8, 9,5 s | 8, 6,2 s | 8, 9,8 s | 8, 5,9 s |
-| generator-nonlinear (8) | 8, 8,7 s | 8, 6,1 s | 8, 8,4 s | 8, 6,4 s |
-| generator-toricelli (9) | 9, 27,0 s | 9, 8,5 s | 9, 16,6 s | 9, 7,7 s |
-| generator-linear (8, motor de la 3b) | 8, 7,4 s | 8, 7,1 s | 8, 53,3 s | 8, 55,1 s |
-
-- **Menos pasos**: la espera hasta el siguiente cambio junta las esperas de δ. En
-  generator-nonlinear p01, `lazy-ff-pref` pasa de 1004 expansiones a 6.
-- **Calidad**: car-nodrag da planes de 15,50 en lugar de 11,03 (ver "Ritmos que fijan las
-  acciones"); en generator, la duración es la misma (1000).
-- **Validación**: en generator-nonlinear p03 y p06, los planes que agotan el combustible
-  justo al final fallaban con δ/10 por el redondeo acumulado, y se buscaban otra vez con
-  δ = 0,5 (13 700 expansiones). Terminando cada espera en el estado de la búsqueda, valen
-  con δ = 1. En generator-toricelli p08, el primer plan sigue fallando con δ/10 (en las
-  dos versiones) y vale con δ = 0,5.
-- **Las mismas búsquedas en los tiers 1 a 5** (52 con `lazy-ff-pref` y `bfws-ff-pref`, el
-  mejor de 3): 51 expanden lo mismo, y la otra (satellite p02 con `lazy-ff-pref`) llega
-  al límite de tiempo en las dos versiones. El coste es el mismo (+0,1 % en total,
-  mediana −0,1 %).
-
-### Iteración 3b: búsqueda por novedad y portfolios
-
-Tiers 1 a 3 y driverlog y zenotravel temporales hasta la 17: 34 instancias, 60 s y
-2,5 GB por búsqueda. Número de instancias resueltas y tiempo total (las no resueltas
-cuentan 60 s):
-
-| Configuración | Resueltas | Tiempo |
-|---------------|-----------|--------|
-| `bfws-ff-pref` | 33 | 165 s |
-| `gbfs-ff-pref-tb` | 33 | 249 s |
-| `lazy-ff-pref` | 32 | 144 s |
-| `lazy-ff-pref-tb` | 31 | 202 s |
-| `wastar-add-3` | 28 | 451 s |
-| `gbfs-goalcount-rnd` | 26 | 469 s |
-| `bfws-ff` / `bfws-goalcount` | 30 / 26 | (medidas aparte) |
-| `iw1` / `iw2` | 6 / 9 | incompletas: solo anchura baja |
-
-- **BFWS con acciones útiles es la mejor configuración individual**, y sin acciones
-  útiles pierde casi toda la ventaja. Ni la exploración por tipos ni la novedad 1 (más
-  barata) la mejoran.
-- **Portfolios:** para cada número de núcleos se eligió, entre estas configuraciones, la
-  combinación con más instancias resueltas y menos tiempo (el del miembro más rápido de
-  cada instancia). BFWS entra en todos: con 1 núcleo, de 249 s a 165 s; con 2, de 119 s a
-  107 s; con 4 y 5, de 117 s a 101 s. WA* sale del de 5 (empataba con `gbfs-ff-pref-tb`,
-  que es la más rápida en slitherlink).
-- **Memoria.** La primera tanda, con 10 procesos, agotó la memoria de la máquina: una
-  búsqueda llegó a 10 GB en menos de 3 minutos. De ahí la línea temporal bajo demanda y el
-  límite de memoria (ver "Motor temporal" y "Uso desde la terminal").
-
-### Trabajo opcional: landmarks y portfolios
-
-Dos conjuntos, 60 s y 1,5 GB por búsqueda, con límite duro de memoria por proceso:
-
-- **Clásicas:** 340 instancias, las 20 primeras de 17 colecciones: las 14 de *satisficing*
-  de la IPC 2011 y recharging-robots, ricochet-robots y slitherlink de la IPC 2023.
-- **No clásicas:** 135 instancias, los tiers y las colecciones de `benchmarks/`, sin
-  repetir, más driverlog y zenotravel temporales hasta la 17.
-
-Las clásicas y las temporales grandes no estaban en git (hoy están en el catálogo, ver
-[benchmarks.md](benchmarks.md)). Instancias resueltas y tiempo total (las no resueltas
-cuentan 60 s):
-
-| Configuración | Clásicas | No clásicas | Total | Tiempo |
-|---------------|----------|-------------|-------|--------|
-| `lazy-ff-lm-pref-tb` | **203** | 114 | **317** | 12984 s |
-| `gbfs-ff-lm-pref` | 193 | 116 | 309 | 13149 s |
-| `bfws-ff-pref` | 187 | 117 | 304 | 14120 s |
-| `lazy-ff-lm-pref` | 189 | 112 | 301 | 13847 s |
-| `gbfs-ff-pref-tb` | 156 | 117 | 273 | 15484 s |
-| `gbfs-ff-pref-hybrid` | 149 | 116 | 265 | 15976 s |
-| `lazy-ff-pref-tb` | 137 | 116 | 253 | 16090 s |
-| `lazy-ff-pref` | 127 | 118 | 245 | 16749 s |
-| `wastar-add-3` | 126 | 82 | 208 | 18638 s |
-| `gbfs-goalcount-rnd` | 120 | 72 | 192 | 18074 s |
-
-- **Los landmarks ganan mucho en las clásicas.** La búsqueda perezosa resuelve 75
-  instancias más y pierde 13 (con exploración por tipos, 73 más y 7 menos), sobre todo en
-  openstacks (20), barman (17), visit-all (16–18) y parking (7–11). BFWS sigue siendo la
-  mejor en floor-tile, no-mystery, ricochet-robots, slitherlink y transport.
-- **En las no clásicas, casi todas resuelven casi todo.** Trucks p01 (tier 5) solo lo
-  resuelven en 60 s `bfws-ff-pref`, `gbfs-ff-lm-pref` y el miembro con GPU, así que cada
-  portfolio necesita uno de los tres.
-- **La GPU no destaca en las temporales grandes.** Driverlog: 122 s frente a 104 s de BFWS;
-  zenotravel: 93 s frente a 70 s de la búsqueda perezosa.
-
-**Portfolios.** Por cada número de núcleos, la combinación con más instancias resueltas y
-menos tiempo (el del miembro más rápido de cada instancia), con la condición de resolver
-todos los tiers. Storage es la suma de las métricas de las preferencias (menos es mejor),
-con el mejor plan de los miembros en cada problema:
-
-| Núcleos | Antes: resueltas · tiempo · storage | Ahora: resueltas · tiempo · storage |
-|---------|-------------------------------------|-------------------------------------|
-| 1 | 304 · 14120 s · 20117 (2 sin plan) | igual |
-| 2 | 314 · 13551 s · 28667 | 352 · 11357 s · 27094 |
-| 3 | (usaba el de 2) | 366 · 10331 s · 27094 |
-| 4 | 357 · 10911 s · 25984 | 371 · 10022 s · 20172 |
-| 5 | 360 · 10638 s · 25975 | 375 · 9758 s · 20053 |
-| 6 | 361 · 10388 s · 25975 | 376 · 9499 s · 20053 |
-| 7 | 369 · 9976 s · 20041 | 378 · 9356 s · 20045 |
-
-- La cadena que empieza por BFWS es la mejor combinación de cada tamaño, del 2 al 7
-  (377 con 6 núcleos y 379 con 7, sin el miembro con GPU). Con
-  1 núcleo, `gbfs-ff-lm-pref` resolvería 5 instancias más, pero con planes mucho peores en
-  storage (33586).
-- El miembro con GPU entra en el de 6 y el de 7 en lugar de `gbfs-ff-pref-tb` y
-  `lazy-ff-lm-pref`: una instancia menos en cada uno y un 1 % más rápidos.
-- Es una sola muestra: `lazy-ff-lm-pref-tb` desempata al azar (semilla 1).
-
-**Problemas encontrados por el camino:**
-
-- **Grounding sin memoria.** 9 instancias fallan en todas las configuraciones al
-  instanciar: 8 de recharging-robots y scanalyzer p18. Recharging-robots p05 tiene 1,39
-  millones de acciones (casi todas de `recharge`, por todos los pares de robots, lugares y
-  niveles de batería) y tarda 391 s y 5,7 GB solo en el grounding: unos 4 KB por acción.
-  Folding y labyrinth (IPC 2023) tardan 118 s y 33 s en el grounding. Arreglado después:
-  ver "Trabajo opcional: grounding de tareas grandes".
-- **VAL sin memoria.** El script de medida validaba en el proceso de la búsqueda, y VAL
-  heredaba su límite duro: en storage p20 (2,3 GB) moría sin veredicto y el plan contaba
-  como inválido. Ahora VAL se ejecuta al final, sin búsquedas en marcha, y si termina sin
-  veredicto el plan queda sin validar. Todos los planes de estas medidas son válidos.
-- **Memoria.** WSL se cayó durante la primera medida; el único proceso sin límite duro
-  era el miembro con GPU. Ahora el script le pone `RLIMIT_DATA`, y la memoria usada no
-  pasó de 8,4 GB de 16.
-
-### Trabajo opcional: grounding de tareas grandes
-
-Al medir los landmarks, 9 de 340 instancias clásicas no llegaban a buscar: se quedaban sin
-memoria en el grounding (recharging-robots p05 tardaba 364 s y 5,7 GB). Tres causas:
-
-- **El punto fijo rehacía todo en cada vuelta.** Cada vuelta volvía a buscar todos los
-  candidatos de todos los esquemas. En recharging-robots cada nivel de batería se alcanza
-  en una vuelta (13 en p02): salían 976 000 candidatos para 139 000 distintos. Ahora es
-  semi-ingenuo: cada esquema solo busca los que usan algún hecho nuevo.
-- **El join no usaba las disyunciones ni las igualdades.** Un parámetro que solo aparece en
-  `(or (connected ?a ?b) (connected ?b ?a))` o en `(= ?y1 ?y2)` probaba todos los objetos,
-  y la normalización descartaba casi todos (en labyrinth, 1 millón de candidatos para
-  78 000 acciones). Ahora cada disyunto es una alternativa del join, y los parámetros
-  iguales se ligan a la vez.
-- **Memoria de los candidatos.** Cada candidato tenía sus propias tuplas de hechos; ahora
-  se comparten (unos pocos cientos de hechos distintos). Los candidatos que nunca son
-  aplicables comparten una sola instancia vacía, y cada candidato se suelta en cuanto da
-  sus acciones. Además, las conjunciones de literales se normalizan sin una DNF por
-  literal.
-
-Las tareas son **idénticas** (la misma representación completa) en 236 instancias: los
-tiers, las colecciones de `benchmarks/`, las cinco primeras de cada colección clásica y
-folding y labyrinth (IPC 2023). Tiempo y pico de memoria del grounding:
-
-| Instancia | Acciones | Antes | Ahora |
-|-----------|----------|-------|-------|
-| folding p02 | 117 537 | 629 s · 3504 MB | 15,9 s · 459 MB |
-| recharging-robots p05 | 1 394 580 | 364 s · 5703 MB | 74,7 s · 2897 MB |
-| folding p01 | 35 801 | 105 s · 837 MB | 4,6 s · 139 MB |
-| recharging-robots p04 | 339 400 | 62,6 s · 1403 MB | 16,9 s · 728 MB |
-| labyrinth p01 | 78 273 | 29,6 s · 769 MB | 4,8 s · 205 MB |
-| storage p20 | 31 759 | 5,5 s · 306 MB | 3,5 s · 231 MB |
-| las 236 | | 1420 s | 217 s |
-
-- Ninguna instancia es más lenta. Las clásicas pasan de 552 s a 135 s; las de los tiers
-  y las de PDDL+ ya eran de décimas.
-- De las 9 que no llegaban a buscar, scanalyzer p18 (373 000 acciones, 18 s y 872 MB) se
-  resuelve ahora con `bfws-ff-pref` y con `lazy-ff-pref`, y recharging-robots p15 con
-  `lazy-ff-pref`. Recharging-robots p13 y p17 llegan a buscar, pero no terminan en 60 s
-  con medio millón de acciones; p05, p16 y p18–p20 siguen sin caber en 1,5 GB.
-- **Satellite con TIL** gasta casi 1 GB en p17 con 17 000 acciones. No es el grounding:
-  la tarea temporal tiene 58 000 hechos (casi todos `running@a`, uno por acción durativa
-  instanciada), y los bitsets de cada acción son enteros de varios KB.
-
-### Trabajo opcional: plan relajado temporal (h_TFF)
-
-Medido en satellite con TIL (IPC 2004, p01–p20), driverlog y zenotravel temporales (IPC
-2002, hasta la 17), greenhouse y trucks; 60 s y 1,5 GB por búsqueda, planes validados con
-VAL. Las colecciones de la IPC 2002 no estaban en git (hoy están en el catálogo, ver
-[benchmarks.md](benchmarks.md)).
-
-**Primero, la memoria.** En satellite, las búsquedas perezosas se quedaban sin memoria antes
-de los 55 s en 13 a 15 de las 20 instancias. No eran los estados: cada expansión genera unos
-280 sucesores en p07 (1200 en p17), y la cola guardaba una entrada (padre, acción) por
-sucesor, de unos 250 B en Python: el 95 % de la memoria. Ahora las acciones de un nodo con
-la misma prioridad van en una sola entrada (ver "Configuración de búsqueda"), con el mismo
-orden: 56 búsquedas idénticas a las de antes (tiers, temporales, TIL, preferencias, PDDL+ y
-clásicas; FIFO, LIFO y exploración por tipos). En p07, 3000 expansiones de `lazy-ff-pref`
-pasan de 362 MB a 199 MB, y ya no se queda sin memoria ninguna. Pero resuelven las mismas
-(6 y 5): el límite era la guía.
-
-**h_TFF frente a h_FF** (con la comprobación de plazos), instancias resueltas:
-
-| Colección | `bfws` | `gbfs` | `lazy` | `lazy-tb` |
-|-----------|--------|--------|--------|-----------|
-| satellite (20) | 4 → **6** | 5 → **7** | 6 → 6 | 5 → **7** |
-| driverlog (17) | 16 → 15 | 16 → 14 | 15 → 14 | 15 → 14 |
-| zenotravel (17) | 17 → 13 | 17 → 13 | 17 → 13 | 16 → 13 |
-
-- **Con TIL guía mucho mejor:** satellite p02 con la perezosa pasa de no resolverse (74 000
-  expansiones) a 101 expansiones; p07, de no resolverse a 596 (perezosa) y 325
-  (inmediata). No siempre: en p04, la inmediata necesita 11 700 expansiones frente a 1300.
-- **Sin TIL es peor:** solo cambian los soportadores (por instante en lugar de por coste), y
-  eso da peores planes relajados. Por eso `tff` es h_FF en las tareas sin TIL.
-- **Variante descartada:** h_FF con sus soportadores por coste, pero sin las acciones que no
-  caben en el tiempo. Sin TIL es h_FF por construcción, pero en satellite hace las mismas
-  expansiones que h_FF (p02: 631 frente a 620; p03, p05 y p06: las mismas): las acciones
-  que no caben casi nunca son las que elige h_FF. La ganancia viene de elegir por instante.
-- Por encima de p08 no se resuelve ninguna: con unos 1200 sucesores por expansión, la
-  inmediata llega a 50–300 expansiones en 60 s y la perezosa a 10 000–50 000 sin plan.
-
-**Portfolios.** En las tareas con TIL (satellite y trucks, 22 instancias), cada miembro con
-h_FF resuelve con h_TFF: BFWS 6 → 8, GBFS 7 → 9, GBFS con exploración por tipos 5 → 8, el
-híbrido 6 → 10, la perezosa con exploración por tipos 6 → 8 (pierde p10) y la perezosa 7 → 7
-(gana p02 y p07, pierde p10 y p14). Así que los miembros pasan a `tff` salvo
-`lazy-ff-pref`. Con los portfolios de los landmarks, el de 1 núcleo pasa de 6 a 8 y los de
-6 y 7, de 11 a 12; los de 2 a 5 no cambian (la perezosa con landmarks no tiene versión con
-`tff`). Con los anteriores, los de 1, 4 y 5–7 núcleos pasaban de 6, 9 y 9 a 8, 11 y 12, y
-con la perezosa también en `tff` el de 2 habría bajado de 9 a 8. En las demás tareas la
-búsqueda es la misma.
-
-### Trabajo opcional: huecos de cobertura
-
-Medido el 2026-10-19 con `medidas/medir-guarda.sh` (local): 60 s y 1,5 GB por búsqueda, 4
-procesos, con `bfws-tff-pref`, `lazy-ff-lm-pref-tb` y `lazy-ff-pref` (los tres primeros
-miembros de los portfolios).
-
-**Grounding con la guarda de inicio.** Las mismas acciones, sin los inicios que nunca
-pueden terminar:
-
-| Instancia | Antes | Con la guarda |
-|-----------|-------|---------------|
-| satellite p17 (TIL) | 5,8 s · 957 MB · 57 916 hechos | 1,7 s · 138 MB · 11 262 hechos |
-| satellite p20 (TIL) | 5,3 s · 800 MB · 54 032 hechos | 2,0 s · 156 MB · 11 804 hechos |
-| storage p06 (preferencias) | 14,9 s · 3,1 GB · 92 216 hechos | 1,5 s · 2228 hechos |
-| storage p10 (preferencias) | con la guarda sin tipos: 25,6 s · 26 845 hechos | 1,3 s · 9565 hechos (con el índice de los monitores) |
-| pathways p08 (preferencias) | no cabía en 3 GB | 0,6 s · 371 hechos |
-
-**Tareas temporales, main (v0.7) frente a la rama** (resueltas por cada miembro):
-
-| Colección | main | Rama | Alguna |
-|-----------|------|------|--------|
-| satellite con TIL (20) | 6 / 6 / 6 | 6 / 6 / 5 | 9 → 9 |
-| driverlog (17) | 16 / 15 / 15 | 16 / 15 / 14 | 16 → 16 |
-| zenotravel (17) | 17 / 16 / 17 | 17 / 16 / 16 | 17 → 17 |
-
-La guarda cambia la heurística, así que cambia la trayectoria: las perezosas ganan 4
-búsquedas y pierden 7 (en satellite, p02 pasa de no resolverse a 108 expansiones, y p04 de
-4098 a no resolverse). En satellite, las búsquedas que resuelven las dos tardan 25 s en
-lugar de 125 s, casi todo por el grounding; en driverlog y zenotravel, 88 y 191 s en
-lugar de 76 y 181 (otras trayectorias). Ninguna instancia deja de resolverse con el
-portfolio.
-
-**Preferencias en tareas temporales** (IPC 2006, *complex*; ver [benchmarks.md](benchmarks.md)):
-
-| Colección | Resueltas (bfws / lazy-lm / lazy) | Alguna | Métrica distinta de VAL |
-|-----------|-----------------------------------|--------|-------------------------|
-| storage (20) | 15 / 16 / 16 | 16 | 0 de 47 |
-| trucks (20) | 20 / 19 / 20 | 20 | 0 de 59 |
-| tpp (20) | 8 / 7 / 7 | 8 | 22 de 22 |
-| pathways (20) | 20 / 20 / 20 | 20 | 60 de 60 |
-| pipesworld (18) | 16 / 9 / 7 | 16 | 0 de 32 |
-
-Todos los planes son válidos. Las métricas distintas de las de VAL son errores de VAL:
-evalúa el `>` estricto de las restricciones de trayectoria como `>=`, así que da por
-cumplida `(sometime (> x 0))` aunque x siga en 0, y por incumplida
-`(sometime-before (> a 0) (> b 0))` desde el principio. Todas las de tpp y pathways
-usan esas comparaciones. Además, en pathways p01 VAL da p0A por incumplida pero no suma su
-peso. En pathways, todos los planes son vacíos: el objetivo duro se cumple al principio, y
-cumplir las preferencias del objetivo cuesta más (cada molécula elegida suma 1 a la
-métrica) de lo que pesan.
-
-Variantes descartadas:
-
-- **La guarda solo en la búsqueda** (la heurística sin ella, y el orden de los sucesores
-  de antes): BFWS hace las mismas búsquedas que main, pero el portfolio resuelve 77
-  preferencias temporales en lugar de 80 (pierde tpp p07 y p09 y pipesworld p16), con
-  mejor métrica en 17 de las 61 que resuelven las dos y peor en 6. Se eligió la cobertura.
-- Al medirla apareció un fallo: la copia a coste unitario del primer plan de la búsqueda
-  *anytime* no cambiaba los costes de la relajación cuando es otra tarea (las variables
-  lineales de la 3b), y la heurística guiaba con las milésimas por paso de las
-  preferencias. Arreglado (`GroundTask.with_unit_costs`).
-
-### Trabajo opcional: búsquedas locales
-
-Medido el 2026-10-19 con `medidas/medir-local.sh` (local): `ehc-tff-pref`, `mrw-tff` y
-`mrw-tff-pref`, 60 s y 1,5 GB por búsqueda, en las 97 instancias que no resolvía ningún
-miembro del portfolio de 7 núcleos en las medidas de los landmarks (slitherlink 15,
-transport 13, floor-tile 12, ricochet-robots 12, satellite con TIL 11, recharging-robots
-11, elevator 10, parc-printer 7 y 6 más).
-
-- **Paseos aleatorios:** ninguna. No es la velocidad: dan de 1 a 14 millones de pasos en
-  60 s (transport p03: 1,4 millones; floor-tile p09: 14 millones), pero no encuentran el
-  camino.
-- **EHC:** 4 (recharging-robots p04 y p15, scanalyzer-3d p18, satellite p08). Pero con el
-  código actual (el grounding de tareas grandes y la guarda de inicio son posteriores a
-  aquellas medidas), las 4 ya las resuelve algún miembro: p04 cinco de los siete (desde
-  27 s), p15 `wastar-add-3` (36 s) y `lazy-ff-pref` (44 s), p18 cinco (desde 25 s) y
-  satellite p08 `gbfs-tff-pref-tb` (18 s) y el híbrido (23 s). EHC solo gana tiempo en
-  satellite p08 (8 s).
-- El resto acaba por tiempo, salvo los 5 errores de memoria al instanciar de
-  recharging-robots.
-
-Así que no se añaden a los portfolios (decisión del usuario): quedan como configuraciones
-predefinidas.

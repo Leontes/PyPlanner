@@ -1,7 +1,7 @@
-"""Tareas con procesos y eventos (PDDL+, iteración 6): tiempo discretizado.
+"""Tareas con procesos y eventos (PDDL+): tiempo discretizado.
 
 El motor sigue a ENHSP (Scala et al.), DiNo y UPMurphi: el tiempo avanza a saltos. También
-resuelve las tareas temporales sin procesos que el motor de la 3b no admite por sus efectos
+resuelve las tareas temporales sin procesos que el motor temporal no admite por sus efectos
 continuos (ritmos que dependen de variables que cambian de forma continua, por ejemplo):
 :func:`pyplanner.grounding.grounder.ground` las pasa aquí.
 
@@ -53,7 +53,7 @@ reutilizan la alcanzabilidad, la normalización y el análisis de qué funciones
 
 **Heurística** (:attr:`DiscreteTask.relaxation`): en la relajación, la espera se convierte
 en una acción con un efecto condicional por proceso, que aumenta cada variable en su
-ritmo × δ (la *h^hbd* de la 3a cuenta las repeticiones si el ritmo es constante, como el
+ritmo × δ (la *h^hbd* numérica cuenta las repeticiones si el ritmo es constante, como el
 reloj de una acción durativa). Si el ritmo es una variable que fijan las acciones, el
 efecto solo cuenta cuando es positivo (ver :mod:`pyplanner.heuristics.relaxation`): la
 relajación tiene que ponerlo en marcha. Los efectos de los eventos sobre hechos son reglas
@@ -73,25 +73,25 @@ que se informa es la duración del plan si es ``(minimize (total-time))``.
 Si falla (un evento que debía dispararse a mitad de una espera, por ejemplo), el
 planificador lo vuelve a buscar con δ/2 (ver :func:`pyplanner.planner.solve`).
 
-**Literales iniciales temporizados** (trabajo opcional, punto 4): son eventos de un reloj
+**Literales iniciales temporizados**: son eventos de un reloj
 global, ``til@clock``, que avanza a ritmo 1 (ver :func:`_timed_literal_events`), así que se
 disparan en su instante exacto. Una espera que acaba justo en el instante de un TIL deja
 pasar además ε: VAL no admite que una acción lea un hecho en el mismo instante en que un TIL
 lo cambia.
 
-**Restricciones de trayectoria** (trabajo opcional, punto 4): los monitores de la 5b, con
+**Restricciones de trayectoria**: los monitores de las tareas sin procesos, con
 los instantes de ``within``, ``hold-after`` y ``hold-during`` como eventos del mismo reloj.
 Como VAL, se comprueban en los sucesos: tras cada acción, y tras una espera solo si un
 evento o un TIL han cambiado los hechos (el final de una espera en la que no pasa nada no
 es un suceso).
 
-**Efectos condicionales en acciones durativas** (trabajo opcional, punto 4): con
-condiciones ``over all``, un vigilante (como en la 3b) que se apaga en cuanto la condición
+**Efectos condicionales en acciones durativas**: con condiciones ``over all``, un
+vigilante (como en el motor temporal) que se apaga en cuanto la condición
 deja de cumplirse, tras cada paso; un efecto continuo condicional se decide al empezar: un
 hecho recuerda si su condición se cumplía, y un proceso aparte lo aplica mientras la acción
 sigue en curso.
 
-**Preferencias** (trabajo opcional, punto 4): como en la 5c, compiladas en costes, con la
+**Preferencias**: como en las tareas sin procesos, compiladas en costes, con la
 fase final al final de las acciones (tras las esperas), fuera del tiempo: no deja pasar ε
 ni dispara eventos. ``_end`` exige además que no haya acciones durativas en curso. La
 métrica ya no es la duración: cada espera cuesta lo que un paso (``step_cost``).
@@ -387,7 +387,7 @@ class DiscreteTask(GroundTask):
     @staticmethod
     def _started(before: State, after: State, running: RunningAction) -> State:
         """Los vigilantes de una acción que empieza (efectos condicionales con condiciones
-        ``over all``, como en la 3b): se activan si se cumplen sus condiciones (las ``at
+        ``over all``, como en el motor temporal): se activan si se cumplen sus condiciones (las ``at
         start`` antes de empezar, las ``over all`` después). Mientras dura, :meth:`settle`
         los apaga en cuanto la condición ``over all`` deja de cumplirse."""
         facts = after.facts
@@ -1013,8 +1013,8 @@ def _compile_durative(
     ]
     end_effects: list[Effect] = [*(_effect_with(e, clock_term) for e in effects[END])]
     # Los efectos continuos: los incondicionales, en el proceso de la acción; cada uno
-    # condicional se decide al empezar (como en la 3b): un hecho recuerda si su condición se
-    # cumplía, y un proceso aparte lo aplica mientras la acción sigue en curso.
+    # condicional se decide al empezar (como en el motor temporal): un hecho recuerda si su
+    # condición se cumplía, y un proceso aparte lo aplica mientras la acción sigue en curso.
     rates: list[Effect] = [NumericEffect("increase", clock_term, Number(1.0))]
     gated: list[Action] = []
     for k, item in enumerate(continuous):

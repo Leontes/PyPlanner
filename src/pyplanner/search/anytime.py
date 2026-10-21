@@ -13,7 +13,7 @@ de coste menor; ver :func:`pyplanner.search.engine.search`):
    :func:`pyplanner.search.engine.search`): cada estado expandido en el que se puede
    terminar es un plan, y va dejando planes cada vez mejores. Con los paseos aleatorios
    no: no terminan si no encuentran plan, así que con la cota se quedarían con todo el
-   tiempo (en storage p02 del tier 5 acababan con métrica 10, y WA* llega a 1);
+   tiempo (en storage p02, de IPC 2006, acababan con métrica 10, y WA* llega a 1);
 3. WA* con h_FF y acciones útiles, con pesos 5, 3, 2 y 1 (y la evaluación perezosa o
    inmediata, la exploración y el desempate de la elegida);
 4. A* con h_max, que es admisible: si agota la cola, el mejor plan es óptimo.

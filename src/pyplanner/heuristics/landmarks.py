@@ -1,4 +1,4 @@
-"""Landmarks de la relajación y su conteo al estilo de LAMA (trabajo opcional, punto 2).
+"""Landmarks de la relajación y su conteo al estilo de LAMA.
 
 Un **landmark** es un hecho que se cumple en algún momento de todo plan. Aquí se calculan los
 de la relajación sin borrados (que también lo son de la tarea), sobre los hechos relajados de

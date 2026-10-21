@@ -1,4 +1,4 @@
-"""Proyección de las invariantes en las tareas con procesos y eventos (iteración 6c).
+"""Proyección de las invariantes en las tareas con procesos y eventos.
 
 Una condición ``over all`` hay que **mantenerla** mientras dura la acción, y la relajación de
 las heurísticas no lo ve: ignora lo que empeora las condiciones (el consumo de combustible de

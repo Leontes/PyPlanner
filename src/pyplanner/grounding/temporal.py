@@ -57,14 +57,14 @@ con una función ``duration@a`` que el programa interpreta como ``t_fin − t_in
 activa al empezar si se cumplen las condiciones, y se apaga en cuanto la condición
 ``over all`` deja de cumplirse mientras dura la acción (ver :class:`_Watch`).
 
-**Predicados derivados** (iteración 4): los axiomas se instancian con el resto de la tarea
+**Predicados derivados**: los axiomas se instancian con el resto de la tarea
 y se recalculan tras cada paso, antes de comprobar las invariantes. Ninguna acción escribe
 un hecho derivado, así que para las órdenes un paso que lee un hecho derivado lee en
 realidad todos los hechos y variables de los que depende (a través de sus axiomas, de forma
 transitiva): queda ordenado después del último paso que cambió cualquiera de ellos. Es
 correcto, aunque puede ordenar más de lo estrictamente necesario.
 
-**Literales iniciales temporizados** (TIL, iteración 4): cada instante distinto *t_k* de los
+**Literales iniciales temporizados** (TIL): cada instante distinto *t_k* de los
 TIL se compila en una acción clásica ``til@k`` de coste 0 que aplica sus literales. Se
 encadenan con hechos ``til-done@k`` (``til@k`` exige ``til-done@(k-1)`` y que no haya
 ocurrido ya), así que la búsqueda los aplica en orden, cuando le conviene. En la red

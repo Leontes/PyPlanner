@@ -19,9 +19,9 @@ Simplificaciones que se aplican sobre la marcha, para que la DNF no crezca sin n
 * se eliminan las cláusulas que contienen a otra más pequeña (*subsumción*).
 
 Si la DNF supera :data:`MAX_CLAUSES` cláusulas se aborta con un error claro: esas fórmulas
-necesitan otra técnica (axiomas, iteración 4).
+hay que escribirlas con predicados derivados.
 
-**Numérico (iteración 3).** Las comparaciones pasan a condiciones canónicas (ver
+**Numérico.** Las comparaciones pasan a condiciones canónicas (ver
 :mod:`pyplanner.grounding.numeric`) y se guardan en la parte numérica de la cláusula. Las
 funciones estáticas se sustituyen por su valor, y las comparaciones sin variables se
 evalúan en el momento. Una comparación que usa una función estática sin valor es falsa, y
@@ -407,7 +407,7 @@ def _simplify(clauses: list[Clause]) -> DNF:
     if len(unique) > MAX_CLAUSES:
         raise UnsupportedFeatureError(
             f"una fórmula da lugar a más de {MAX_CLAUSES} cláusulas al pasarla a forma normal "
-            "disyuntiva; este tipo de fórmulas necesita predicados derivados (iteración 4)"
+            "disyuntiva; este tipo de fórmulas hay que escribirlas con predicados derivados"
         )
     if len(unique) <= 1 or len(unique) > SUBSUMPTION_LIMIT:
         return unique

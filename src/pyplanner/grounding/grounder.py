@@ -36,14 +36,14 @@ Después:
   queda ninguno pasa a ser incondicional;
 * si ninguna cláusula del objetivo es alcanzable, el objetivo queda vacío (imposible).
 
-**Predicados derivados** (iteración 4). Cada regla ``:derived`` se instancia como un
+**Predicados derivados.** Cada regla ``:derived`` se instancia como un
 esquema más del punto fijo: su condición hace de precondición y su cabeza, de añadido. Cada
 cláusula alcanzable de su condición da un :class:`~pyplanner.grounding.task.Axiom`, con el
 estrato de su predicado. Los predicados derivados nunca son estáticos (ninguna acción los
 modifica, pero cambian con los hechos de los que dependen), y el estado inicial trae ya
 calculados sus hechos.
 
-**Preferencias** (iteración 5). Se separan del objetivo y de las precondiciones antes de
+**Preferencias.** Se separan del objetivo y de las precondiciones antes de
 instanciar, y se compilan a costes con los pesos de la métrica (ver
 :mod:`pyplanner.grounding.preferences`).
 """

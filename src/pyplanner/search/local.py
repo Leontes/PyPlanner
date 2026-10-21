@@ -1,6 +1,6 @@
 """Búsquedas locales: *enforced hill-climbing* (FF) y paseos aleatorios (Arvand).
 
-Dan diversidad al portfolio (trabajo opcional, punto 5): no mantienen una cola global como
+Dan diversidad al portfolio: no mantienen una cola global como
 las búsquedas de primero el mejor, sino que avanzan desde el mejor estado encontrado.
 
 **Enforced hill-climbing** (``algorithm="ehc"``; Hoffmann y Nebel, 2001). Desde el estado

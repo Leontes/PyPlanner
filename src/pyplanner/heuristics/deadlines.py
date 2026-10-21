@@ -1,4 +1,4 @@
-"""Plazos de los literales iniciales temporizados en la relajación (iteración 4).
+"""Plazos de los literales iniciales temporizados en la relajación.
 
 La heurística de las tareas temporales (h_FF sobre las acciones de inicio y fin) no sabe
 nada del tiempo: no ve que un TIL que borra un hecho obliga a darse prisa. Este módulo
