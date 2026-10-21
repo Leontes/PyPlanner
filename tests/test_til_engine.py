@@ -14,9 +14,7 @@ from pyplanner.search import PRESETS, SearchStatus, search
 from tests.tasks import build
 from tests.test_heuristics import random_walk_states
 from tests.test_temporal_engine import light
-from tests.tiers import DOMINIOS_DIR
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
+from tests.tiers import VALIDATE, tier_dir
 
 # Una ventana: (open) solo es cierto entre los instantes 10 y 20, y (work) lo necesita
 # durante toda la acción. El hecho solo lo cambian los TIL: no es estático.
@@ -201,7 +199,7 @@ def satellite(name: str) -> TemporalTask:
     from pyplanner.frontend import read_domain, read_problem
     from pyplanner.grounding import ground
 
-    directory = DOMINIOS_DIR / "tier4-pddl22" / "timed-initial-literals" / "satellite"
+    directory = tier_dir("tier4/timed-initial-literals/satellite")
     domain = read_domain(directory / "domain.pddl")
     task = ground(domain, read_problem(directory / f"{name}.pddl", domain))
     assert isinstance(task, TemporalTask)

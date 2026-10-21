@@ -10,7 +10,7 @@ from pyplanner.search import PRESETS, ConfigError, SearchConfig, SearchStatus, s
 from pyplanner.search.engine import EagerSearch
 from tests.tasks import chain
 from tests.test_heuristics import TORCH_DEVICES
-from tests.tiers import DOMINIOS_DIR
+from tests.tiers import tier_dir
 
 requires_numba = pytest.mark.skipif(not numba_available(), reason="Numba no está instalado")
 requires_cuda = pytest.mark.skipif("cuda" not in TORCH_DEVICES, reason="no hay GPU con CUDA")
@@ -20,7 +20,7 @@ def slitherlink() -> object:
     from pyplanner.frontend import read_domain, read_problem
     from pyplanner.grounding import ground
 
-    directory = DOMINIOS_DIR / "tier2-adl" / "slitherlink"
+    directory = tier_dir("tier2/slitherlink")
     domain = read_domain(directory / "domain.pddl")
     return ground(domain, read_problem(directory / "p01.pddl", domain))
 

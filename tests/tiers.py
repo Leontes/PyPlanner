@@ -1,14 +1,32 @@
-"""Descubrimiento de los benchmarks de ``dominios/`` para la evaluación por tiers.
+"""Las instancias de la evaluación por tiers, sacadas del catálogo PDDLDomains.
 
-Cada problema ``pNN.pddl`` que esté en un directorio con ``domain.pddl`` dentro de
-``dominios/tierN-*/`` es una instancia del tier ``N``.
+Los tiers son un dataset del catálogo, ``tests/tiers.toml``, en el formato de los datasets
+de PDDLDomains. Cada grupo ``tier<N>/[<parte>/]<dominio>`` es un dominio del tier ``N`` con
+sus problemas (ver ``docs/tiers.md``).
+
+El catálogo es siempre el del submódulo ``vendor/PDDLDomains``, fijado en un commit. Así los
+tests no dependen de ``$PDDL_DOMINIOS`` ni de otra copia instalada del paquete, y un cambio
+del catálogo solo llega a PyPlanner al actualizar el submódulo. Los grupos se resuelven
+directamente en el catálogo, sin el análisis de los datasets: no se escribe nada en el
+submódulo.
 """
 
-import re
+import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-DOMINIOS_DIR = Path(__file__).resolve().parent.parent / "dominios"
+if TYPE_CHECKING:
+    from pddldomains import Catalog
+
+REPO = Path(__file__).resolve().parent.parent
+#: El submódulo con el catálogo.
+CATALOG_REPO = REPO / "vendor" / "PDDLDomains"
+#: El dataset de los tiers.
+TIERS_FILE = Path(__file__).resolve().with_name("tiers.toml")
+#: VAL, compilado con ``scripts/build_val.sh``.
+VALIDATE = REPO / "tools" / "bin" / "Validate"
 
 #: Tier máximo que el planificador tiene que resolver (con plan válido según VAL).
 #: Se sube al cerrar cada iteración.
@@ -24,28 +42,75 @@ PARSER_TIER = 6
 PARSER_PARTIAL: dict[int, frozenset[str]] = {}
 SUPPORTED_PARTIAL: dict[int, frozenset[str]] = {}
 
-_TIER_DIR = re.compile(r"^tier(\d+)-")
-
 
 @dataclass(frozen=True)
 class Instance:
     """Un problema de benchmark junto con su dominio y su tier."""
 
     tier: int
+    group: str
     domain: Path
     problem: Path
 
     @property
     def id(self) -> str:
         """Identificador legible para pytest, p. ej. ``tier1/gripper/p01``."""
-        rel = self.problem.parent.relative_to(DOMINIOS_DIR)
-        return f"tier{self.tier}/{'/'.join(rel.parts[1:])}/{self.problem.stem}"
+        return f"{self.group}/{self.problem.stem}"
 
     @property
     def subtier(self) -> str | None:
-        """Parte del tier (``numeric``, ``temporal``…) si el dominio está en un subdirectorio."""
-        parts = self.problem.parent.relative_to(DOMINIOS_DIR).parts
+        """Parte del tier (``numeric``, ``temporal``…) si el grupo la tiene."""
+        parts = self.group.split("/")
         return parts[1] if len(parts) > 2 else None
+
+
+@cache
+def catalog() -> "Catalog":
+    """El catálogo del submódulo, con el paquete ``pddldomains`` del propio submódulo."""
+    source = CATALOG_REPO / "src"
+    if not (source / "pddldomains" / "__init__.py").exists():
+        raise RuntimeError(
+            f"falta el submódulo del catálogo en {CATALOG_REPO}: "
+            "git submodule update --init vendor/PDDLDomains"
+        )
+    if str(source) not in sys.path:
+        sys.path.insert(0, str(source))
+    import pddldomains
+
+    loaded = Path(pddldomains.__file__).resolve().parent
+    if loaded != (source / "pddldomains").resolve():
+        raise RuntimeError(f"pddldomains se ha importado de {loaded}, no del submódulo")
+    return pddldomains.Catalog(CATALOG_REPO / "dominios")
+
+
+@cache
+def _groups() -> dict[str, tuple[str, list[str]]]:
+    """Los grupos del dataset: nombre → (colección, problemas)."""
+    catalog()  # importa pddldomains del submódulo
+    from pddldomains.datasets import load_definition
+
+    definition = load_definition(TIERS_FILE)
+    if "select" in definition:
+        raise RuntimeError(f"{TIERS_FILE}: los tiers solo admiten [[group]] explícitos")
+    return {g["name"]: (g["collection"], g["problems"]) for g in definition["group"]}
+
+
+def tier_dir(group: str) -> Path:
+    """El directorio de la colección de un grupo (``tier1/blocksworld``)."""
+    collection, _problems = _groups()[group]
+    return catalog().find(collection).path
+
+
+def discover_instances() -> list[Instance]:
+    """Devuelve todas las instancias de los tiers, ordenadas por tier y grupo."""
+    instances = []
+    for group, (collection_id, problems) in sorted(_groups().items()):
+        tier = int(group.split("/", 1)[0].removeprefix("tier"))
+        collection = catalog().find(collection_id)
+        for name in problems:
+            task = collection.task(name)
+            instances.append(Instance(tier, group, task.domain, task.problem))
+    return instances
 
 
 def parser_supports(instance: Instance) -> bool:
@@ -60,17 +125,3 @@ def planner_supports(instance: Instance) -> bool:
     return instance.tier <= SUPPORTED_TIER or instance.subtier in SUPPORTED_PARTIAL.get(
         instance.tier, frozenset()
     )
-
-
-def discover_instances(root: Path = DOMINIOS_DIR) -> list[Instance]:
-    """Devuelve todas las instancias de ``root``, ordenadas por tier y ruta."""
-    instances = []
-    for tier_dir in sorted(root.iterdir()):
-        match = _TIER_DIR.match(tier_dir.name)
-        if not tier_dir.is_dir() or match is None:
-            continue
-        tier = int(match.group(1))
-        for domain in sorted(tier_dir.rglob("domain.pddl")):
-            for problem in sorted(domain.parent.glob("p*.pddl")):
-                instances.append(Instance(tier, domain, problem))
-    return instances

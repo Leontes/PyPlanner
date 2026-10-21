@@ -15,7 +15,7 @@ from tests.test_heuristics import random_walk_states
 from tests.test_search import GRIPPER
 from tests.test_temporal_engine import light
 from tests.test_til_engine import deadline_heuristic, reachable_states, satellite, window
-from tests.tiers import DOMINIOS_DIR
+from tests.tiers import tier_dir
 
 # La puerta a cierra antes de que quepa la acción que la cruza: h_FF propone cruzarla (tiene
 # el índice menor) y h_TFF, la puerta b.
@@ -35,7 +35,7 @@ TWO_GATES_PROBLEM = """
 
 
 def temporal_tier(path: str, problem: str = "p01") -> TemporalTask:
-    directory = DOMINIOS_DIR / path
+    directory = tier_dir(path)
     domain = read_domain(directory / "domain.pddl")
     task = ground(domain, read_problem(directory / f"{problem}.pddl", domain))
     assert isinstance(task, TemporalTask)
@@ -108,10 +108,10 @@ def tasks_and_states() -> list[tuple[str, TemporalTask, list[State]]]:
         task = satellite(name)
         cases.append((f"satellite-{name}", task, random_walk_states(task, 800, seed=3)))
     for path in (
-        "tier3-pddl21/temporal/driverlog",
-        "tier3-pddl21/temporal/zenotravel",
-        "tier3-pddl21/temporal/greenhouse",
-        "tier5-pddl3/constraints/trucks",
+        "tier3/temporal/driverlog",
+        "tier3/temporal/zenotravel",
+        "tier3/temporal/greenhouse",
+        "tier5/constraints/trucks",
     ):
         task = temporal_tier(path)
         cases.append((path.rsplit("/", 1)[1], task, random_walk_states(task, 400, seed=5)))
@@ -136,7 +136,7 @@ def test_tensors_match_the_reference() -> None:
 @pytest.mark.parametrize("preset", ["gbfs-tff-pref", "lazy-tff-pref", "bfws-tff-pref"])
 def test_tff_searches_find_valid_plans(preset: str) -> None:
     tasks: list[GroundTask] = [window(5), two_gates(), satellite("p01"), satellite("p02")]
-    tasks += [temporal_tier("tier3-pddl21/temporal/driverlog"), GRIPPER]
+    tasks += [temporal_tier("tier3/temporal/driverlog"), GRIPPER]
     for task in tasks:
         result = search(task, PRESETS[preset])
         assert result.status is SearchStatus.SOLVED and result.plan is not None

@@ -26,7 +26,7 @@ from pyplanner.search import (
 )
 from tests.tasks import chain, token
 from tests.test_search import GRIPPER
-from tests.tiers import DOMINIOS_DIR
+from tests.tiers import tier_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -214,7 +214,7 @@ def test_spawn_without_main_guard_does_not_hang_with_large_tasks(tmp_path: Path)
     """Con una tarea grande (slitherlink p02, unos 600 KB serializada), que no cabe en la
     tubería hacia el hijo: si el hijo muere al arrancar, enviarle la tarea por la tubería
     dejaba al padre esperando para siempre. Con el fichero temporal, termina con ERROR."""
-    problem = DOMINIOS_DIR / "tier2-adl" / "slitherlink"
+    problem = tier_dir("tier2/slitherlink")
     script = tmp_path / "unguarded_large.py"
     script.write_text(
         textwrap.dedent(

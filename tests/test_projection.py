@@ -15,7 +15,8 @@ from pyplanner.heuristics.projection import ProjectionHeuristic
 from pyplanner.plan import Plan
 from pyplanner.search import PRESETS, search
 from tests.tasks import build
-from tests.test_discrete_engine import VALIDATE, val
+from tests.test_discrete_engine import val
+from tests.tiers import VALIDATE
 
 # Un generador que tiene que funcionar 10 unidades de tiempo gastando 1 por unidad, y un
 # repostaje de hasta 4 unidades que suma 2 por unidad sin llegar a la capacidad.

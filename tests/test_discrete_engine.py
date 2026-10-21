@@ -24,11 +24,7 @@ from pyplanner.planner import solve
 from pyplanner.search import PRESETS, SearchStatus, search
 from pyplanner.search.novelty import NoveltyTable
 from tests.tasks import build
-from tests.tiers import DOMINIOS_DIR
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
-TIER6 = DOMINIOS_DIR / "tier6-pddlplus"
-
+from tests.tiers import VALIDATE, tier_dir
 
 # --- Integración ---------------------------------------------------------------------
 
@@ -482,7 +478,8 @@ def val(domain: Path, problem: Path, plan: Plan, tmp_path: Path) -> str:
 @pytest.mark.parametrize("name", ["car", "generator"])
 @pytest.mark.parametrize("problem", ["p01", "p02"])
 def test_tier6(name: str, problem: str, tmp_path: Path) -> None:
-    domain_path, problem_path = TIER6 / name / "domain.pddl", TIER6 / name / f"{problem}.pddl"
+    directory = tier_dir(f"tier6/{name}")
+    domain_path, problem_path = directory / "domain.pddl", directory / f"{problem}.pddl"
     domain = read_domain(domain_path)
     result = solve(domain, read_problem(problem_path, domain), [PRESETS["bfws-ff-pref"]],
                    time_limit=60)  # fmt: skip
@@ -496,7 +493,7 @@ def test_tier6(name: str, problem: str, tmp_path: Path) -> None:
 
 
 def test_cli_delta(capsys: pytest.CaptureFixture[str]) -> None:
-    car = TIER6 / "car"
+    car = tier_dir("tier6/car")
     code = main(["solve", "-c", "bfws-ff-pref", "--delta", "0.5",
                  str(car / "domain.pddl"), str(car / "p01.pddl")])  # fmt: skip
     assert code == 0

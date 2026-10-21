@@ -33,7 +33,7 @@ from pyplanner.loader.ast import (
 )
 from pyplanner.pddl import parse_domain, parse_pddl, parse_problem, write_pddl
 from pyplanner.schema import validate_document
-from tests.tiers import DOMINIOS_DIR
+from tests.tiers import tier_dir
 
 PDDL3 = ":typing :preferences :constraints :negative-preconditions :universal-preconditions"
 DOMAIN = f"""
@@ -348,7 +348,7 @@ def test_round_trip_and_schema() -> None:
 
 
 def test_trucks_loads() -> None:
-    path = DOMINIOS_DIR / "tier5-pddl3" / "constraints" / "trucks"
+    path = tier_dir("tier5/constraints/trucks")
     domain = read_domain(path / "domain.pddl")
     result = read_problem(path / "p01.pddl", domain)
     assert result.goal == And()
@@ -374,7 +374,7 @@ def test_trucks_loads() -> None:
 
 
 def test_storage_loads_and_grounds() -> None:
-    path = DOMINIOS_DIR / "tier5-pddl3" / "preferences" / "storage"
+    path = tier_dir("tier5/preferences/storage")
     domain = read_domain(path / "domain.pddl")
     assert domain.supertypes("area") == ("area", "surface", "object")
     result = read_problem(path / "p02.pddl", domain)

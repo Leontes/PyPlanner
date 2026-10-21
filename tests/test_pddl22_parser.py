@@ -25,7 +25,7 @@ from pyplanner.loader.ast import (
 )
 from pyplanner.pddl import parse_domain, parse_pddl, parse_problem, write_pddl
 from pyplanner.schema import validate_document
-from tests.tiers import DOMINIOS_DIR
+from tests.tiers import tier_dir
 
 DERIVED = ":typing :derived-predicates :negative-preconditions :existential-preconditions"
 BASE = "(:types t) (:predicates (p ?x - t) (q ?x - t) (r ?x ?y - t) (s))"
@@ -336,7 +336,7 @@ def test_round_trip_and_schema() -> None:
 )
 @pytest.mark.parametrize("name", ["p01", "p02"])
 def test_tier4_benchmarks_load(directory: str, name: str) -> None:
-    path = DOMINIOS_DIR / "tier4-pddl22" / directory
+    path = tier_dir(f"tier4/{directory}")
     loaded = read_domain(path / "domain.pddl")
     result = read_problem(path / f"{name}.pddl", loaded)
     assert loaded.derived or result.timed_literals

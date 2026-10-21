@@ -31,9 +31,7 @@ from pyplanner.search.engine import _TypeBuckets
 from tests.adl_tasks import ALL, CHOICE, DOORS, LIGHTS, ROTATE
 from tests.tasks import build
 from tests.test_heuristics import ACCELERATED_DEVICES, all_states
-from tests.tiers import DOMINIOS_DIR
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
+from tests.tiers import VALIDATE
 
 
 def task_of(name: str) -> GroundTask:

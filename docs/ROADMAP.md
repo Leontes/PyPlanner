@@ -51,7 +51,8 @@ En cada iteración hay que:
 3. **Documentación**: docstrings en todo el código público y notas de diseño en `docs/`.
 4. **Tests**:
    - unitarios del parser y del motor;
-   - de integración: evaluación por tiers con los dominios de `dominios/` (ver más abajo);
+   - de integración: evaluación por tiers con los dominios del catálogo PDDLDomains (ver
+     más abajo);
    - de validación de planes con VAL. Todo plan que se genere tiene que validarse.
    - La suite de las iteraciones anteriores tiene que seguir pasando: no se admiten regresiones.
 5. **Cierre**: `pytest`, `ruff` y `mypy --strict` sin errores. Después, commit y tag `v0.N`.
@@ -84,9 +85,12 @@ src/pyplanner/
   cli.py
 ```
 
-Fuera de `src/`: `dominios/` (benchmarks de los tiers, que recorren los tests),
-`benchmarks/` (colecciones más grandes para medir el rendimiento, fuera de los tests,
-con `scripts/benchmark.py`), `tests/` y `tools/` (VAL compilado en local).
+Fuera de `src/`: `vendor/PDDLDomains` (submódulo con el catálogo de dominios: los tiers
+de los tests, en `tests/tiers.toml`, y las colecciones para medir el rendimiento con
+`scripts/benchmark.py`), `tests/` y `tools/` (VAL compilado en local). Hasta la versión
+0.8, los tiers estaban copiados en `dominios/` y las colecciones de medida en
+`benchmarks/`: las rutas de las medidas antiguas tienen su equivalencia en
+[benchmarks.md](benchmarks.md#rutas-anteriores).
 
 Decisiones (tomadas en la iteración 1):
 - **Parser propio sin dependencias.** PDDL es s-expresiones, así que basta un lexer
@@ -210,8 +214,9 @@ motor entero. Solo se lleva a GPU la evaluación de la heurística, que sí es r
 
 ## Evaluación por tiers
 
-Los benchmarks están en `dominios/tierN-*/` (detalles y procedencia en
-[dominios/README.md](../dominios/README.md)). Cada tier corresponde a una iteración:
+Los benchmarks son problemas del catálogo PDDLDomains (submódulo `vendor/PDDLDomains`),
+elegidos en el dataset `tests/tiers.toml` (detalles y procedencia en [tiers.md](tiers.md)).
+Cada tier corresponde a una iteración:
 
 | Tier | Contenido | Obligatorio desde |
 |------|-----------|-------------------|

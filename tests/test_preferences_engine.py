@@ -25,10 +25,9 @@ from pyplanner.schema import validate_document
 from pyplanner.search import PRESETS, SearchStatus, search
 from pyplanner.search.anytime import anytime_schedule, search_anytime
 from tests.tasks import build
-from tests.tiers import DOMINIOS_DIR
+from tests.tiers import VALIDATE, tier_dir
 
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
-STORAGE = DOMINIOS_DIR / "tier5-pddl3" / "preferences" / "storage"
+STORAGE = tier_dir("tier5/preferences/storage")
 
 # Lámparas que se encienden y se apagan.
 SWITCHES = """

@@ -2,15 +2,28 @@
 
 Uso::
 
-    python scripts/benchmark.py benchmarks/timed-initial-literals/satellite \\
+    python scripts/benchmark.py ipc-2004/satellite-time-time-windows-strips \\
         -c gbfs-ff-pref bfws-ff-pref -t 60 -m 2500 -w 4
+    python scripts/benchmark.py -d tests/tiers.toml -c bfws-ff-pref -p p01
 
-El directorio tiene ``domain.pddl`` y problemas ``pNN.pddl`` (o un dominio por problema,
-``domain-pNN.pddl``, como en algunas colecciones de las IPC). Cada par (problema,
-configuración) se resuelve en su propio proceso con un límite de tiempo y de memoria; los
-planes se validan con VAL (``tools/bin/Validate``) si está compilado. La salida es una tabla
-por problema y un resumen por configuración (resueltos y tiempo total, contando el límite
-para los no resueltos), y opcionalmente un JSON con todas las filas.
+Los problemas salen del catálogo PDDLDomains del submódulo ``vendor/PDDLDomains`` (el mismo
+que usan los tests, ver ``tests/tiers.py``):
+
+* una colección, por su identificador o, si no es ambigua, por su parte final
+  (``satellite-time-time-windows-strips``);
+* o un dataset (``-d``): un nombre de ``datasets/`` del catálogo o un fichero ``.toml`` con
+  el mismo formato. Construirlo analiza las colecciones con el analizador del catálogo, que
+  guarda su caché en el submódulo (en ``.cache/``, fuera de git).
+
+También vale un directorio con ``domain.pddl`` y problemas ``pNN.pddl`` (o un dominio por
+problema, ``domain-pNN.pddl``, como en algunas colecciones de las IPC).
+
+Cada par (problema, configuración) se resuelve en su propio proceso con un límite de tiempo
+y de memoria; los planes se validan con VAL (``tools/bin/Validate``) si está compilado. La
+salida es una tabla por problema y un resumen por configuración (resueltos y tiempo total,
+contando el límite para los no resueltos), y opcionalmente un JSON con todas las filas. Las
+filas del catálogo llevan además la colección (``collection``) y, en un dataset, el grupo
+(``group``).
 
 Con preferencias, la búsqueda es *anytime* (el mejor plan en el límite de tiempo): la tabla
 da además la métrica del plan (con la de VAL si no coincide) y si es óptimo, y el resumen,
@@ -46,6 +59,7 @@ import multiprocessing
 import re
 import resource
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -159,9 +173,37 @@ def _domain_of(problem: Path) -> Path:
     return own if own.exists() else problem.with_name("domain.pddl")
 
 
+def _problems(source: str | None, dataset: str | None) -> list[tuple[dict[str, str], Path, Path]]:
+    """Los problemas que medir: (campos que los identifican en la fila, dominio, problema)."""
+    if source is not None and Path(source).is_dir():
+        return [({}, _domain_of(p), p) for p in sorted(Path(source).glob("p[0-9]*.pddl"))]
+    sys.path.insert(0, str(ROOT))
+    from tests.tiers import catalog
+
+    domains = catalog()  # siempre el del submódulo (y desde aquí se puede importar pddldomains)
+    if dataset is not None:
+        from pddldomains.datasets import load_dataset
+
+        return [
+            ({"group": e.group, "collection": e.task.collection}, e.task.domain, e.task.problem)
+            for e in load_dataset(dataset, domains).entries
+        ]
+    assert source is not None
+    collection = domains.find(source)
+    return [({"collection": collection.id}, t.domain, t.problem) for t in collection.tasks]
+
+
+def _label(row: dict[str, Any]) -> str:
+    """El problema de una fila, con su grupo si es de un dataset."""
+    return f"{row['group']}/{row['problem']}" if "group" in row else str(row["problem"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("directory", type=Path, help="directorio con domain.pddl y pNN.pddl")
+    parser.add_argument(
+        "source", nargs="?", help="colección del catálogo o directorio con domain.pddl y pNN.pddl"
+    )
+    parser.add_argument("-d", "--dataset", help="dataset del catálogo (nombre o fichero .toml)")
     parser.add_argument("-c", "--configs", nargs="+", default=["gbfs-ff-pref"])
     parser.add_argument("-p", "--problems", nargs="*", help="problemas (p01 p02...); todos")
     parser.add_argument("-t", "--time", type=float, default=60.0, help="segundos por búsqueda")
@@ -169,6 +211,8 @@ def main() -> None:
     parser.add_argument("-w", "--workers", type=int, default=4, help=f"máximo {MAX_WORKERS}")
     parser.add_argument("-o", "--output", type=Path, help="JSON con todas las filas")
     args = parser.parse_args()
+    if (args.source is None) == (args.dataset is None):
+        parser.error("hay que dar una colección o un directorio, o bien un dataset (-d)")
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers tiene que estar entre 1 y {MAX_WORKERS}")
     from pyplanner.search import PRESETS
@@ -185,14 +229,16 @@ def main() -> None:
             f"caben en el 80% de la memoria disponible ({available} MB): baja -w o -m"
         )
 
-    problems = sorted(args.directory.glob("p[0-9]*.pddl"))
+    problems = _problems(args.source, args.dataset)
     if args.problems:
-        problems = [p for p in problems if p.stem in set(args.problems)]
+        problems = [p for p in problems if p[2].stem in set(args.problems)]
+    idents = [ident for ident, _domain, _problem in problems for _config in args.configs]
     jobs = [
-        (str(_domain_of(problem)), str(problem), config, args.time, args.memory)
-        for problem in problems
+        (str(domain), str(problem), config, args.time, args.memory)
+        for _ident, domain, problem in problems
         for config in args.configs
     ]
+    width = max([5, *(len(_label({**i, "problem": p.stem})) for i, _d, p in problems)])
     context = multiprocessing.get_context("spawn")
     rows: list[dict[str, Any]] = []
     # Un proceso nuevo por trabajo: uno reutilizado conserva la memoria de la búsqueda
@@ -201,12 +247,13 @@ def main() -> None:
         max_workers=args.workers, mp_context=context, max_tasks_per_child=1
     ) as pool:
         futures = [pool.submit(run_one, *job) for job in jobs]
-        for job, future in zip(jobs, futures, strict=True):
+        for ident, job, future in zip(idents, jobs, futures, strict=True):
             try:
                 row = future.result()
             except Exception as error:  # noqa: BLE001 - se informa y se sigue
                 row = {"problem": Path(job[1]).stem, "config": job[2], "status": "error",
                        "time": None, "error": str(error)}  # fmt: skip
+            row = {**ident, **row}
             rows.append(row)
             quality = ""
             if row.get("metric") is not None:
@@ -218,7 +265,7 @@ def main() -> None:
             if row.get("error"):
                 quality = f" {row['error'] or 'MemoryError'}"
             print(
-                f"{row['problem']:5} {row['config']:22} {row['status']:14} "
+                f"{_label(row):{width}} {row['config']:22} {row['status']:14} "
                 f"t={row['time'] if row['time'] is not None else '-':>8} "
                 f"exp={row.get('expanded', '-'):>8} "
                 f"callejones={row.get('dead_ends', '-'):>7}{quality}",
@@ -230,7 +277,7 @@ def main() -> None:
         print("\nValidación con VAL (solo los planes no válidos o con otra métrica):")
         for job, row in zip(jobs, rows, strict=True):
             validate(row, job[0], job[1], int(0.8 * available))
-            name = f"  {row['problem']:5} {row['config']:22}"
+            name = f"  {_label(row):{width}} {row['config']:22}"
             metric, val_metric = row.get("metric"), row.get("val_metric")
             if row.get("val_error"):
                 print(f"{name} sin validar: {row['val_error']}")

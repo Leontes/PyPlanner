@@ -1,4 +1,5 @@
-"""Comprobaciones de integridad del conjunto de benchmarks de ``dominios/``."""
+"""Comprobaciones de integridad de los tiers (``tests/tiers.toml``, del catálogo
+PDDLDomains)."""
 
 from tests.tiers import PARSER_TIER, SUPPORTED_TIER, discover_instances
 

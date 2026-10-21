@@ -12,9 +12,7 @@ from pyplanner.heuristics import create_heuristic
 from pyplanner.plan import Plan, simulate
 from pyplanner.search import PRESETS, SearchStatus, search
 from tests.tasks import build
-from tests.tiers import DOMINIOS_DIR
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
+from tests.tiers import VALIDATE, tier_dir
 
 # Lámparas que se encienden y se apagan.
 SWITCHES = """
@@ -232,7 +230,7 @@ def test_temporal_untimed_constraints(tmp_path: Path) -> None:
 
 
 def test_trucks() -> None:
-    path = DOMINIOS_DIR / "tier5-pddl3" / "constraints" / "trucks"
+    path = tier_dir("tier5/constraints/trucks")
     domain, problem = (path / "domain.pddl").read_text(), (path / "p01.pddl").read_text()
     task, plan = solve(domain, problem, "bfws-ff-pref")
     assert len(task.monitors) == 3

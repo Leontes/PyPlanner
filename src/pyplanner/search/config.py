@@ -260,8 +260,9 @@ PRESETS: dict[str, SearchConfig] = {
 
 #: Portfolios por número de núcleos. Cada uno contiene al anterior y añade la configuración
 #: que más aporta. Elegidos con los landmarks (trabajo opcional, punto 2) en 475 instancias:
-#: 17 colecciones clásicas de las IPC 2011 y 2023, los tiers y las colecciones de
-#: ``benchmarks/`` (ver motor-busqueda.md). Cada portfolio resuelve todos los tiers:
+#: 17 colecciones clásicas de las IPC 2011 y 2023, los tiers y las colecciones de medida
+#: del catálogo PDDLDomains (ver motor-busqueda.md y benchmarks.md). Cada portfolio
+#: resuelve todos los tiers:
 #:
 #: * 1 núcleo: BFWS con acciones útiles, la configuración más robusta (resuelve todos los
 #:   tiers) y con los mejores planes con preferencias;

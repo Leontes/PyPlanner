@@ -52,6 +52,8 @@ addopts = "-ra"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# El submódulo del catálogo (PDDLDomains) tiene su propia configuración.
+extend-exclude = ["vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
@@ -60,6 +62,8 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+# pddldomains se importa del submódulo del catálogo (ver tests/tiers.py).
+mypy_path = "vendor/PDDLDomains/src"
 
 [[tool.mypy.overrides]]
 # SciPy no trae anotaciones de tipos.
@@ -82,3 +86,8 @@ disallow_untyped_calls = false
 module = ["numba", "numba.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# El catálogo se comprueba en su propio repositorio: aquí solo se usan sus tipos.
+module = ["pddldomains", "pddldomains.*"]
+follow_imports = "silent"

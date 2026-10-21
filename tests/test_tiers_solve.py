@@ -15,9 +15,7 @@ import pytest
 from pyplanner.frontend import read_domain, read_problem
 from pyplanner.planner import solve
 from pyplanner.search import PORTFOLIOS, SearchStatus, portfolio_for_cores
-from tests.tiers import DOMINIOS_DIR, Instance, discover_instances, planner_supports
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
+from tests.tiers import VALIDATE, Instance, discover_instances, planner_supports
 
 requires_val = pytest.mark.skipif(
     not VALIDATE.exists(), reason="VAL no está compilado (scripts/build_val.sh)"

@@ -16,9 +16,7 @@ from pyplanner.plan import Plan, simulate
 from pyplanner.schema import validate_document
 from pyplanner.search import PRESETS, SearchStatus, search
 from tests.tasks import build
-from tests.tiers import DOMINIOS_DIR
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
+from tests.tiers import VALIDATE
 
 # Robots que se mueven entre sitios. (loc ?r) es una función de objetos; (holder ?b) también,
 # y puede estar indefinida (nadie la lleva).

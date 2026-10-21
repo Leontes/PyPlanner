@@ -17,9 +17,7 @@ from pyplanner.search import PRESETS, SearchStatus, search
 from pyplanner.search.engine import EagerSearch
 from tests.tasks import build
 from tests.test_heuristics import ACCELERATED_DEVICES, all_states
-from tests.tiers import DOMINIOS_DIR
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
+from tests.tiers import VALIDATE
 
 # Un grafo dirigido cuyos arcos se pueden cortar. reach es el cierre transitivo desde el
 # origen (regla recursiva, estrato 0) e isolated, su negación sobre los nodos (estrato 1).

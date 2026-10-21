@@ -30,9 +30,7 @@ from pyplanner.loader.ast import (
 )
 from pyplanner.pddl import parse_domain, parse_pddl, parse_problem, write_pddl
 from pyplanner.schema import validate_document
-from tests.tiers import DOMINIOS_DIR
-
-TIER6 = DOMINIOS_DIR / "tier6-pddlplus"
+from tests.tiers import tier_dir
 
 # Un depósito que se llena mientras el grifo está abierto y se desborda si pasa de 10.
 TANK = """
@@ -93,8 +91,9 @@ def test_processes_and_events_in_documents() -> None:
 
 @pytest.mark.parametrize("domain", ["car", "generator"])
 def test_tier6_documents_round_trip(domain: str) -> None:
+    directory = tier_dir(f"tier6/{domain}")
     for name in ("domain", "p01", "p02"):
-        doc = parse_pddl((TIER6 / domain / f"{name}.pddl").read_text(), locations=False)
+        doc = parse_pddl((directory / f"{name}.pddl").read_text(), locations=False)
         validate_document(doc)
         assert parse_pddl(write_pddl(doc), locations=False) == doc
 
@@ -157,12 +156,12 @@ def test_processes_and_events_in_the_ast() -> None:
 
 
 def test_tier6_processes() -> None:
-    car = read_domain(TIER6 / "car" / "domain.pddl")
+    car = read_domain(tier_dir("tier6/car") / "domain.pddl")
     [moving] = car.processes
     assert isinstance(moving.effect, DurativeAnd) and len(moving.effect.args) == 3
     assert moving.effect.args[1] == ContinuousEffect("increase", FluentTerm("d"), FluentTerm("v"))
     assert [e.name for e in car.events] == ["engineexplode"]
-    generator = read_domain(TIER6 / "generator" / "domain.pddl")
+    generator = read_domain(tier_dir("tier6/generator") / "domain.pddl")
     [refuelling] = generator.processes
     assert isinstance(refuelling.effect, DurativeAnd)
     rate = refuelling.effect.args[0].rate  # type: ignore[union-attr]
@@ -217,9 +216,10 @@ def test_processes_from_json() -> None:
 
 def test_tier6_problems_load() -> None:
     for name in ("car", "generator"):
-        domain = read_domain(TIER6 / name / "domain.pddl")
+        directory = tier_dir(f"tier6/{name}")
+        domain = read_domain(directory / "domain.pddl")
         for problem in ("p01", "p02"):
-            assert read_problem(TIER6 / name / f"{problem}.pddl", domain).values
+            assert read_problem(directory / f"{problem}.pddl", domain).values
 
 
 def test_processes_ground_to_a_discrete_task() -> None:

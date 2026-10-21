@@ -1089,6 +1089,12 @@ if result.plan is not None:
 
 ## Rendimiento medido
 
+Las medidas hasta la versión 0.8 citan las rutas que tenían entonces los problemas
+(`dominios/…` y `benchmarks/…`). Hoy están en el catálogo PDDLDomains (submódulo
+`vendor/PDDLDomains`), con el mismo contenido; la tabla de equivalencias está en
+[benchmarks.md](benchmarks.md#rutas-anteriores), y `scripts/benchmark.py` mide
+directamente una colección del catálogo.
+
 Medido en la máquina de desarrollo (GTX 970, 12 núcleos) con gripper de las IPC 1998,
 `instance-20`: 42 bolas, 172 hechos y 340 acciones instanciadas.
 
@@ -1424,9 +1430,9 @@ Dos conjuntos, 60 s y 1,5 GB por búsqueda, con límite duro de memoria por proc
 - **No clásicas:** 135 instancias, los tiers y las colecciones de `benchmarks/`, sin
   repetir, más driverlog y zenotravel temporales hasta la 17.
 
-Las clásicas y las temporales grandes no están en git (ver
-[benchmarks/README.md](../benchmarks/README.md)). Instancias resueltas y tiempo total (las no
-resueltas cuentan 60 s):
+Las clásicas y las temporales grandes no estaban en git (hoy están en el catálogo, ver
+[benchmarks.md](benchmarks.md)). Instancias resueltas y tiempo total (las no resueltas
+cuentan 60 s):
 
 | Configuración | Clásicas | No clásicas | Total | Tiempo |
 |---------------|----------|-------------|-------|--------|
@@ -1538,8 +1544,8 @@ folding y labyrinth (IPC 2023). Tiempo y pico de memoria del grounding:
 
 Medido en satellite con TIL (IPC 2004, p01–p20), driverlog y zenotravel temporales (IPC
 2002, hasta la 17), greenhouse y trucks; 60 s y 1,5 GB por búsqueda, planes validados con
-VAL. Las colecciones de la IPC 2002 no están en git (ver
-[benchmarks/README.md](../benchmarks/README.md)).
+VAL. Las colecciones de la IPC 2002 no estaban en git (hoy están en el catálogo, ver
+[benchmarks.md](benchmarks.md)).
 
 **Primero, la memoria.** En satellite, las búsquedas perezosas se quedaban sin memoria antes
 de los 55 s en 13 a 15 de las 20 instancias. No eran los estados: cada expansión genera unos
@@ -1613,7 +1619,7 @@ lugar de 125 s, casi todo por el grounding; en driverlog y zenotravel, 88 y 191 
 lugar de 76 y 181 (otras trayectorias). Ninguna instancia deja de resolverse con el
 portfolio.
 
-**Preferencias en tareas temporales** (IPC 2006, *complex*; ver `benchmarks/README.md`):
+**Preferencias en tareas temporales** (IPC 2006, *complex*; ver [benchmarks.md](benchmarks.md)):
 
 | Colección | Resueltas (bfws / lazy-lm / lazy) | Alguna | Métrica distinta de VAL |
 |-----------|-----------------------------------|--------|-------------------------|

@@ -24,9 +24,8 @@ from pyplanner.search import PRESETS, SearchStatus, search
 from tests.tasks import build
 from tests.test_heuristics import ACCELERATED_DEVICES
 from tests.test_numeric_engine import reachable
-from tests.tiers import DOMINIOS_DIR
+from tests.tiers import VALIDATE, tier_dir
 
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
 requires_val = pytest.mark.skipif(not VALIDATE.exists(), reason="VAL no está compilado")
 
 # Concurrencia obligatoria: arreglar el fusible necesita luz durante toda la acción, y la
@@ -439,12 +438,13 @@ def test_relaxation_integrates_continuous_effects() -> None:
 
 
 # --- Certificación: combinaciones poco habituales ------------------------------------
-# No hay benchmarks públicos que las usen: el dominio ad hoc greenhouse (dominios/tier3-pddl21/
-# temporal/greenhouse) las reúne todas. Aquí se prueba con más problemas y pieza a pieza.
+# No hay benchmarks públicos que las usen: el dominio ad hoc greenhouse (tier3/temporal/
+# greenhouse, propios/greenhouse en el catálogo) las reúne todas. Aquí se prueba con más
+# problemas y pieza a pieza.
 
-GREENHOUSE_DOMAIN = (
-    DOMINIOS_DIR / "tier3-pddl21" / "temporal" / "greenhouse" / "domain.pddl"
-).read_text(encoding="utf-8")
+GREENHOUSE_DOMAIN = (tier_dir("tier3/temporal/greenhouse") / "domain.pddl").read_text(
+    encoding="utf-8"
+)
 GREENHOUSE_PROBLEM = """
 (define (problem gh1) (:domain greenhouse) (:objects t1 t2 - tank)
   (:init {init} (idle) (= (water t1) 0) (= (water t2) 0) (= (reserve) 0) (= (budget) 10))

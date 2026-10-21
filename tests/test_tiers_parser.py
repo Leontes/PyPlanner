@@ -1,4 +1,5 @@
-"""Evaluación por tiers del parser: fases 1 y 2 sobre los benchmarks de ``dominios/``."""
+"""Evaluación por tiers del parser: fases 1 y 2 sobre las instancias de los tiers
+(``tests/tiers.toml``, del catálogo PDDLDomains)."""
 
 import pytest
 

@@ -25,13 +25,11 @@ from pyplanner.search import (
     search,
 )
 from tests.tasks import build, chain, fork, goal_state, token, unreachable
-from tests.tiers import DOMINIOS_DIR
-
-VALIDATE = DOMINIOS_DIR.parent / "tools" / "bin" / "Validate"
+from tests.tiers import VALIDATE, tier_dir
 
 
 def tier1(domain: str, problem: str) -> GroundTask:
-    base = DOMINIOS_DIR / "tier1-strips" / domain
+    base = tier_dir(f"tier1/{domain}")
     loaded = read_domain(base / "domain.pddl")
     return ground(loaded, read_problem(base / f"{problem}.pddl", loaded))
 
@@ -275,24 +273,25 @@ def test_random_walks_are_reproducible_and_without_cycles() -> None:
 @pytest.mark.parametrize("name", ["ehc-tff-pref", "mrw-tff-pref"])
 @pytest.mark.parametrize(
     "instance",
-    ["tier3-pddl21/temporal/driverlog/p02", "tier5-pddl3/preferences/storage/p02"],
+    ["tier3/temporal/driverlog/p02", "tier5/preferences/storage/p02"],
 )
 def test_local_searches_in_temporal_and_preference_tasks(
     name: str, instance: str, tmp_path: Path
 ) -> None:
     """Planes válidos (VAL) en una tarea temporal y con preferencias (la búsqueda anytime
     encadena después WA*: con los paseos aleatorios, sin el paso con los costes reales)."""
-    base = DOMINIOS_DIR / instance
-    domain = read_domain(base.parent / "domain.pddl")
-    problem = read_problem(base.with_suffix(".pddl"), domain)
+    group, _, stem = instance.rpartition("/")
+    base = tier_dir(group)
+    domain_path, problem_path = base / "domain.pddl", base / f"{stem}.pddl"
+    domain = read_domain(domain_path)
+    problem = read_problem(problem_path, domain)
     result = solve(domain, problem, [PRESETS[name]], 10)
     assert result.plan is not None
     if VALIDATE.exists():
         plan_file = tmp_path / "plan"
         plan_file.write_text(result.plan.to_ipc())
         output = subprocess.run(
-            [str(VALIDATE), str(base.parent / "domain.pddl"), str(base.with_suffix(".pddl")),
-             str(plan_file)],
+            [str(VALIDATE), str(domain_path), str(problem_path), str(plan_file)],
             capture_output=True, text=True, check=False,
         ).stdout  # fmt: skip
         assert "Plan valid" in output, output
